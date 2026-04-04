@@ -6,7 +6,7 @@ import tempfile
 import pytest
 from PIL import Image
 
-from Convertir3x4 import convert_centered, ASPECT_W, ASPECT_H, JPEG_QUALITY
+from Convertir3x4 import convert_centered, convert_double, ASPECT_W, ASPECT_H, JPEG_QUALITY
 
 
 @pytest.fixture
@@ -116,3 +116,64 @@ class TestConvertCentered:
 
         result = Image.open(out)
         assert abs(result.size[0] / result.size[1] - ASPECT_W / ASPECT_H) < 0.01
+
+
+class TestConvertDouble:
+    def test_two_images_ratio(self, temp_dir):
+        src1 = os.path.join(temp_dir, "img1.jpg")
+        src2 = os.path.join(temp_dir, "img2.jpg")
+        out = os.path.join(temp_dir, "out.jpg")
+        _make_test_image(src1, 1200, 800)
+        _make_test_image(src2, 1000, 700)
+
+        convert_double([src1, src2], out)
+
+        img = Image.open(out)
+        assert abs(img.size[0] / img.size[1] - ASPECT_W / ASPECT_H) < 0.01
+
+    def test_two_images_created(self, temp_dir):
+        src1 = os.path.join(temp_dir, "img1.jpg")
+        src2 = os.path.join(temp_dir, "img2.jpg")
+        out = os.path.join(temp_dir, "out.jpg")
+        _make_test_image(src1, 800, 600)
+        _make_test_image(src2, 800, 600)
+
+        convert_double([src1, src2], out)
+
+        assert os.path.exists(out)
+        assert os.path.getsize(out) > 0
+
+    def test_single_image_ratio(self, temp_dir):
+        """Foto impar sola: debe ser 3:4."""
+        src = os.path.join(temp_dir, "solo.jpg")
+        out = os.path.join(temp_dir, "out.jpg")
+        _make_test_image(src, 1200, 800)
+
+        convert_double([src], out)
+
+        img = Image.open(out)
+        assert abs(img.size[0] / img.size[1] - ASPECT_W / ASPECT_H) < 0.01
+
+    def test_different_sizes(self, temp_dir):
+        """Dos fotos de tamaños muy distintos."""
+        src1 = os.path.join(temp_dir, "big.jpg")
+        src2 = os.path.join(temp_dir, "small.jpg")
+        out = os.path.join(temp_dir, "out.jpg")
+        _make_test_image(src1, 2000, 1500)
+        _make_test_image(src2, 400, 300)
+
+        convert_double([src1, src2], out)
+
+        img = Image.open(out)
+        assert abs(img.size[0] / img.size[1] - ASPECT_W / ASPECT_H) < 0.01
+
+    def test_output_is_jpeg(self, temp_dir):
+        src1 = os.path.join(temp_dir, "img1.jpg")
+        src2 = os.path.join(temp_dir, "img2.jpg")
+        out = os.path.join(temp_dir, "out.jpg")
+        _make_test_image(src1, 800, 600)
+        _make_test_image(src2, 800, 600)
+
+        convert_double([src1, src2], out)
+
+        assert Image.open(out).format == "JPEG"

@@ -69,6 +69,38 @@ def _make_textured_bg(width: int, height: int, colors: list[tuple[int, int, int]
     return bg
 
 
+def _make_zoned_bg(
+    width: int, height: int,
+    colors_top: list[tuple[int, int, int]],
+    colors_bottom: list[tuple[int, int, int]],
+) -> Image.Image:
+    """Genera un fondo donde los colores de arriba dominan arriba y los de abajo dominan abajo."""
+    bg = Image.new("RGB", (width, height), colors_top[0])
+    draw = ImageDraw.Draw(bg)
+
+    # Manchas con colores de arriba en la mitad superior
+    for _ in range(random.randint(5, 8)):
+        color = _vary_color(random.choice(colors_top), 30)
+        cx = random.randint(-width // 4, width + width // 4)
+        cy = random.randint(-height // 4, height // 2)
+        rx = random.randint(width // 4, width)
+        ry = random.randint(height // 6, height // 3)
+        draw.ellipse([cx - rx, cy - ry, cx + rx, cy + ry], fill=color)
+
+    # Manchas con colores de abajo en la mitad inferior
+    for _ in range(random.randint(5, 8)):
+        color = _vary_color(random.choice(colors_bottom), 30)
+        cx = random.randint(-width // 4, width + width // 4)
+        cy = random.randint(height // 2, height + height // 4)
+        rx = random.randint(width // 4, width)
+        ry = random.randint(height // 6, height // 3)
+        draw.ellipse([cx - rx, cy - ry, cx + rx, cy + ry], fill=color)
+
+    # Blur fuerte para fusionar todo suavemente
+    bg = bg.filter(ImageFilter.GaussianBlur(radius=min(width, height) // 4))
+    return bg
+
+
 def convert_centered(src_path: str, out_path: str):
     """Convierte una imagen a 3:4 con fondo de color dominante texturizado."""
     img = Image.open(src_path).convert("RGB")
@@ -90,6 +122,84 @@ def convert_centered(src_path: str, out_path: str):
     x = (canvas_w - src_w) // 2
     y = (canvas_h - src_h) // 2
     bg.paste(img, (x, y))
+
+    bg.save(out_path, "JPEG", quality=JPEG_QUALITY)
+
+
+def convert_double(paths: list[str], out_path: str):
+    """Apila 2 fotos (o 1) verticalmente en un canvas 3:4 con fondo texturizado."""
+    images = [Image.open(p).convert("RGB") for p in paths]
+
+    if len(images) == 1:
+        # Foto sola: va en la mitad superior
+        img = images[0]
+        src_w, src_h = img.size
+        if src_w / src_h > ASPECT_W / ASPECT_H:
+            canvas_w = src_w
+            canvas_h = int(src_w * ASPECT_H / ASPECT_W)
+        else:
+            canvas_h = src_h
+            canvas_w = int(src_h * ASPECT_W / ASPECT_H)
+
+        colors = _dominant_colors(img)
+        bg = _make_textured_bg(canvas_w, canvas_h, colors)
+        x = (canvas_w - src_w) // 2
+        bg.paste(img, (x, 0))
+        bg.save(out_path, "JPEG", quality=JPEG_QUALITY)
+        return
+
+    # 2 fotos: apilar verticalmente
+    img1, img2 = images[0], images[1]
+
+    # Determinar cuál es más ancha (por aspect ratio)
+    ar1 = img1.size[0] / img1.size[1]
+    ar2 = img2.size[0] / img2.size[1]
+
+    # La más ancha va primero (arriba), la más alta abajo
+    if ar1 >= ar2:
+        img_wide, img_tall = img1, img2
+    else:
+        img_wide, img_tall = img2, img1
+
+    # Canvas basado en la imagen más grande
+    canvas_w = max(img_wide.size[0], img_tall.size[0])
+    canvas_h = int(canvas_w * ASPECT_H / ASPECT_W)
+    margin = int(canvas_h * 0.02)  # 2% de margen mínimo
+
+    def fit_image(img, max_w, max_h):
+        w, h = img.size
+        scale = min(max_w / w, max_h / h)
+        return img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+
+    # La más ancha ocupa el ancho disponible, limitada al 45% de alto
+    wide_max_w = canvas_w - margin * 2
+    wide_max_h = int(canvas_h * 0.45)
+    img_wide_fit = fit_image(img_wide, wide_max_w, wide_max_h)
+
+    # La más alta usa el espacio restante
+    tall_max_w = canvas_w - margin * 2
+    tall_max_h = canvas_h - img_wide_fit.size[1] - margin * 3
+    img_tall_fit = fit_image(img_tall, tall_max_w, tall_max_h)
+
+    # Márgenes dinámicos con el espacio sobrante
+    used_h = img_wide_fit.size[1] + img_tall_fit.size[1]
+    remaining = canvas_h - used_h
+    margin = remaining // 3
+
+    # Fondo zonificado: colores de arriba para arriba, colores de abajo para abajo
+    colors_top = _dominant_colors(img_wide)
+    colors_bottom = _dominant_colors(img_tall)
+    bg = _make_zoned_bg(canvas_w, canvas_h, colors_top, colors_bottom)
+
+    # Foto ancha centrada arriba
+    x1 = (canvas_w - img_wide_fit.size[0]) // 2
+    y1 = margin
+    bg.paste(img_wide_fit, (x1, y1))
+
+    # Foto alta centrada abajo
+    x2 = (canvas_w - img_tall_fit.size[0]) // 2
+    y2 = margin + img_wide_fit.size[1] + margin
+    bg.paste(img_tall_fit, (x2, y2))
 
     bg.save(out_path, "JPEG", quality=JPEG_QUALITY)
 
@@ -694,7 +804,27 @@ class App(QMainWindow):
 
     # -------------------------------------------------------- Acción 2: Doble foto
     def _action_doble_foto(self):
-        pass  # Fase 3
+        paths = self._get_selected_paths()
+        if len(paths) < 2:
+            return
+        out_dir = self._ask_output_dir()
+        if not out_dir:
+            return
+
+        # Agrupar de a 2 (si impar, la última queda sola)
+        pairs = []
+        for i in range(0, len(paths), 2):
+            pairs.append(paths[i:i + 2])
+
+        out_names = []
+        for pair in pairs:
+            n1 = os.path.splitext(os.path.basename(pair[0]))[0]
+            n2 = os.path.splitext(os.path.basename(pair[1]))[0] if len(pair) > 1 else ""
+            out_names.append(f"{n1}+{n2}_3x4.jpg" if n2 else f"{n1}_3x4.jpg")
+        if not self._check_overwrite(out_names, out_dir):
+            return
+
+        self._run_pairs_in_thread(convert_double, pairs, out_dir)
 
     # -------------------------------------------------------- Acción 3: Foto y fondo
     def _action_foto_fondo(self):
