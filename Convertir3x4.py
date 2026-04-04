@@ -2,10 +2,15 @@
 
 import json
 import os
+import platform
+import random
+import subprocess
 import sys
+import threading
 
-from PyQt6.QtCore import Qt, QSize, QRect, QPoint, QSettings, QStandardPaths
+from PyQt6.QtCore import Qt, QSize, QRect, QPoint, QSettings, QStandardPaths, pyqtSignal
 from PyQt6.QtGui import QIcon, QPixmap, QPainter, QPen, QColor
+from PIL import Image, ImageDraw, ImageFilter
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QListWidget, QListWidgetItem, QFileDialog,
@@ -16,6 +21,87 @@ from PyQt6.QtWidgets import (
 APP_TITLE = "Convertir a 3:4 — CDLM"
 THUMB_SIZE = 130
 IMAGE_FILTER = "Imágenes (*.jpg *.jpeg *.png *.bmp *.webp);;Todos (*.*)"
+JPEG_QUALITY = 92
+BLUR_RADIUS = 40
+ASPECT_W, ASPECT_H = 3, 4
+
+
+def _dominant_colors(img: Image.Image, n: int = 5) -> list[tuple[int, int, int]]:
+    """Extrae los N colores más frecuentes de una imagen (reducida)."""
+    small = img.copy()
+    small.thumbnail((80, 80), Image.LANCZOS)
+    # Cuantizar a pocos colores
+    quantized = small.quantize(colors=n, method=Image.Quantize.FASTOCTREE)
+    palette = quantized.getpalette()
+    # Contar frecuencia de cada índice
+    counts = sorted(quantized.getcolors(), reverse=True)
+    colors = []
+    for _, idx in counts[:n]:
+        r, g, b = palette[idx * 3], palette[idx * 3 + 1], palette[idx * 3 + 2]
+        colors.append((r, g, b))
+    return colors
+
+
+def _vary_color(color: tuple[int, int, int], amount: int = 25) -> tuple[int, int, int]:
+    """Varía ligeramente un color RGB."""
+    return tuple(max(0, min(255, c + random.randint(-amount, amount))) for c in color)
+
+
+def _make_textured_bg(width: int, height: int, colors: list[tuple[int, int, int]]) -> Image.Image:
+    """Genera un fondo con textura suave usando los colores dominantes de la foto."""
+    base_color = colors[0]
+    bg = Image.new("RGB", (width, height), base_color)
+    draw = ImageDraw.Draw(bg)
+
+    # Dibujar manchas suaves con los colores de la paleta
+    n_blobs = random.randint(8, 15)
+    for _ in range(n_blobs):
+        color = _vary_color(random.choice(colors), 30)
+        # Elipses grandes en posiciones aleatorias
+        cx = random.randint(-width // 4, width + width // 4)
+        cy = random.randint(-height // 4, height + height // 4)
+        rx = random.randint(width // 4, width)
+        ry = random.randint(height // 4, height)
+        draw.ellipse([cx - rx, cy - ry, cx + rx, cy + ry], fill=color)
+
+    # Blur fuerte para suavizar las manchas
+    bg = bg.filter(ImageFilter.GaussianBlur(radius=min(width, height) // 4))
+    return bg
+
+
+def convert_centered(src_path: str, out_path: str):
+    """Convierte una imagen a 3:4 con fondo de color dominante texturizado."""
+    img = Image.open(src_path).convert("RGB")
+    src_w, src_h = img.size
+
+    # Calcular tamaño del canvas 3:4 basado en la imagen
+    if src_w / src_h > ASPECT_W / ASPECT_H:
+        canvas_w = src_w
+        canvas_h = int(src_w * ASPECT_H / ASPECT_W)
+    else:
+        canvas_h = src_h
+        canvas_w = int(src_h * ASPECT_W / ASPECT_H)
+
+    # Fondo: textura con colores dominantes de la foto
+    colors = _dominant_colors(img)
+    bg = _make_textured_bg(canvas_w, canvas_h, colors)
+
+    # Centrar la imagen original
+    x = (canvas_w - src_w) // 2
+    y = (canvas_h - src_h) // 2
+    bg.paste(img, (x, y))
+
+    bg.save(out_path, "JPEG", quality=JPEG_QUALITY)
+
+
+def open_folder(path: str):
+    """Abre una carpeta en Finder/Explorer."""
+    if platform.system() == "Darwin":
+        subprocess.Popen(["open", path])
+    elif platform.system() == "Windows":
+        subprocess.Popen(["explorer", path])
+    else:
+        subprocess.Popen(["xdg-open", path])
 
 DARK_STYLE = """
 QMainWindow, QWidget { background-color: #1a1d23; color: #e0e0e0; }
@@ -179,6 +265,9 @@ class ReorderListWidget(QListWidget):
 
 
 class App(QMainWindow):
+    _progress_signal = pyqtSignal(int)
+    _done_signal = pyqtSignal(str)
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle(APP_TITLE)
@@ -190,6 +279,9 @@ class App(QMainWindow):
         self._pixmap_cache: dict[str, QPixmap] = {}  # path -> pixmap original
 
         self.settings = QSettings("CDLM", "Convertir3x4")
+
+        self._progress_signal.connect(self._on_progress)
+        self._done_signal.connect(self._on_processing_done)
 
         self._build_ui()
         self._connect_signals()
@@ -500,13 +592,111 @@ class App(QMainWindow):
         self._save_state()
         super().closeEvent(event)
 
-    # -------------------------------------------------------- Acciones (placeholder)
-    def _action_foto_centrada(self):
-        pass  # Fase 2
+    # -------------------------------------------------------- Procesamiento común
+    def _get_selected_paths(self) -> list[str]:
+        """Retorna los paths de las fotos seleccionadas en orden."""
+        items = self.list_widget.selectedItems()
+        rows = sorted(self.list_widget.row(item) for item in items)
+        return [self.list_widget.item(r).data(PATH_ROLE) for r in rows]
 
+    def _ask_output_dir(self) -> str | None:
+        last_out = self.settings.value("last_output_dir", "")
+        path = QFileDialog.getExistingDirectory(self, "Carpeta de salida", last_out)
+        if path:
+            self.settings.setValue("last_output_dir", path)
+        return path or None
+
+    def _check_overwrite(self, out_names: list[str], out_dir: str) -> bool:
+        """Verifica si hay archivos existentes y pide confirmación."""
+        existing = [n for n in out_names if os.path.exists(os.path.join(out_dir, n))]
+        if not existing:
+            return True
+        n = len(existing)
+        if n <= 5:
+            detail = "\n".join(f"  • {name}" for name in existing)
+        else:
+            detail = "\n".join(f"  • {name}" for name in existing[:5])
+            detail += f"\n  … y {n - 5} más"
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Icon.Warning)
+        msg.setWindowTitle("Archivos existentes")
+        msg.setText(f"{n} archivo(s) ya existen en la carpeta de salida:")
+        msg.setInformativeText(f"{detail}\n\n¿Sobreescribir?")
+        msg.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        msg.setDefaultButton(QMessageBox.StandardButton.No)
+        return msg.exec() == QMessageBox.StandardButton.Yes
+
+    def _run_in_thread(self, func, paths, out_dir, **kwargs):
+        """Ejecuta el procesamiento en hilo separado con barra de progreso."""
+        total = len(paths)
+        self.progress.setMaximum(total)
+        self.progress.setValue(0)
+        self.progress.setVisible(True)
+        self._set_buttons_enabled(False)
+
+        def worker():
+            for i, path in enumerate(paths):
+                name = os.path.splitext(os.path.basename(path))[0]
+                out_path = os.path.join(out_dir, f"{name}_3x4.jpg")
+                func(path, out_path, **kwargs)
+                self._progress_signal.emit(i + 1)
+            self._done_signal.emit(out_dir)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _run_pairs_in_thread(self, func, pairs, out_dir):
+        """Ejecuta procesamiento de pares en hilo separado."""
+        total = len(pairs)
+        self.progress.setMaximum(total)
+        self.progress.setValue(0)
+        self.progress.setVisible(True)
+        self._set_buttons_enabled(False)
+
+        def worker():
+            for i, pair in enumerate(pairs):
+                name1 = os.path.splitext(os.path.basename(pair[0]))[0]
+                name2 = os.path.splitext(os.path.basename(pair[1]))[0] if len(pair) > 1 else ""
+                suffix = f"{name1}+{name2}_3x4.jpg" if name2 else f"{name1}_3x4.jpg"
+                out_path = os.path.join(out_dir, suffix)
+                func(pair, out_path)
+                self._progress_signal.emit(i + 1)
+            self._done_signal.emit(out_dir)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_progress(self, value: int):
+        self.progress.setValue(value)
+
+    def _set_buttons_enabled(self, enabled: bool):
+        for btn in (self.btn_load, self.btn_clear, self.btn_centrada,
+                    self.btn_doble, self.btn_foto_fondo):
+            btn.setEnabled(enabled)
+
+    def _on_processing_done(self, out_dir: str):
+        self.progress.setVisible(False)
+        self._update_buttons()
+        self.btn_load.setEnabled(True)
+        self._update_count()
+        open_folder(out_dir)
+
+    # -------------------------------------------------------- Acción 1: Foto centrada
+    def _action_foto_centrada(self):
+        paths = self._get_selected_paths()
+        if not paths:
+            return
+        out_dir = self._ask_output_dir()
+        if not out_dir:
+            return
+        out_names = [os.path.splitext(os.path.basename(p))[0] + "_3x4.jpg" for p in paths]
+        if not self._check_overwrite(out_names, out_dir):
+            return
+        self._run_in_thread(lambda p, o: convert_centered(p, o), paths, out_dir)
+
+    # -------------------------------------------------------- Acción 2: Doble foto
     def _action_doble_foto(self):
         pass  # Fase 3
 
+    # -------------------------------------------------------- Acción 3: Foto y fondo
     def _action_foto_fondo(self):
         pass  # Fase 4
 

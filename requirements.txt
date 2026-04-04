@@ -1,3 +1,4 @@
 pillow
 PyQt6
 pyinstaller
+pytest
