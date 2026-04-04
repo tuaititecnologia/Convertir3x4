@@ -14,7 +14,8 @@ from PIL import Image, ImageDraw, ImageFilter
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QListWidget, QListWidgetItem, QFileDialog,
-    QProgressBar, QAbstractItemView, QMessageBox, QSlider,
+    QProgressBar, QAbstractItemView, QMessageBox, QSlider, QFrame,
+    QSizePolicy,
 )
 
 # --- Constantes ---
@@ -204,6 +205,40 @@ def convert_double(paths: list[str], out_path: str):
     bg.save(out_path, "JPEG", quality=JPEG_QUALITY)
 
 
+def convert_on_background(src_path: str, bg_path: str, out_path: str):
+    """Monta una foto en la mitad superior de un canvas 3:4 con fondo personalizado."""
+    img = Image.open(src_path).convert("RGB")
+    bg_img = Image.open(bg_path).convert("RGB")
+
+    # Canvas 3:4 basado en la imagen más grande
+    canvas_w = max(img.size[0], bg_img.size[0])
+    canvas_h = int(canvas_w * ASPECT_H / ASPECT_W)
+
+    # Escalar fondo para cubrir el canvas
+    bg_scale = max(canvas_w / bg_img.size[0], canvas_h / bg_img.size[1])
+    bg_resized = bg_img.resize(
+        (int(bg_img.size[0] * bg_scale), int(bg_img.size[1] * bg_scale)), Image.LANCZOS)
+    # Crop centrado al canvas
+    bx = (bg_resized.size[0] - canvas_w) // 2
+    by = (bg_resized.size[1] - canvas_h) // 2
+    bg = bg_resized.crop((bx, by, bx + canvas_w, by + canvas_h))
+
+    # Foto en la mitad superior con márgenes ~5%
+    margin = int(canvas_w * 0.05)
+    max_w = canvas_w - margin * 2
+    max_h = int(canvas_h * 0.50) - margin
+
+    w, h = img.size
+    scale = min(max_w / w, max_h / h)
+    img_fit = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+
+    x = (canvas_w - img_fit.size[0]) // 2
+    y = margin
+    bg.paste(img_fit, (x, y))
+
+    bg.save(out_path, "JPEG", quality=JPEG_QUALITY)
+
+
 def open_folder(path: str):
     """Abre una carpeta en Finder/Explorer."""
     if platform.system() == "Darwin":
@@ -227,12 +262,22 @@ QPushButton#btn_clear { background-color: #3a2030; border-color: #5a3048; color:
 QPushButton#btn_clear:hover { background-color: #4a2840; border-color: #7a4060; }
 QPushButton#btn_load { background-color: #1a3550; border-color: #2a5070; color: #70b8ff; }
 QPushButton#btn_load:hover { background-color: #204060; border-color: #3070a0; }
-QPushButton#btn_centrada { background-color: #1a3a2a; border-color: #2a5a3a; color: #70d090; }
-QPushButton#btn_centrada:hover { background-color: #204a34; border-color: #30704a; }
-QPushButton#btn_doble { background-color: #1a3a2a; border-color: #2a5a3a; color: #70d090; }
-QPushButton#btn_doble:hover { background-color: #204a34; border-color: #30704a; }
-QPushButton#btn_foto_fondo { background-color: #1a3a2a; border-color: #2a5a3a; color: #70d090; }
-QPushButton#btn_foto_fondo:hover { background-color: #204a34; border-color: #30704a; }
+QPushButton#btn_action { background-color: #1a3a2a; border-color: #2a5a3a; color: #70d090; }
+QPushButton#btn_action:hover { background-color: #204a34; border-color: #30704a; }
+QPushButton#btn_action:disabled { color: #445544; background-color: #1e2520; border-color: #252a35; }
+QPushButton#btn_load_bg {
+    background-color: transparent; border: none; color: #6680a0;
+    font-size: 12px; padding: 4px 8px;
+}
+QPushButton#btn_load_bg:hover { color: #88aacc; }
+QFrame#sidebar {
+    background-color: #1e2230; border: 1px solid #2a3040; border-radius: 6px;
+}
+QFrame#separator { background-color: #2a3040; }
+QLabel#section_title { color: #7090b0; font-size: 12px; font-weight: bold; }
+QLabel#bg_preview {
+    background-color: #252a38; border: 1px solid #3a4558; border-radius: 4px;
+}
 QListWidget {
     background-color: #1e2230; border: 1px solid #2a3040; border-radius: 6px;
     outline: none;
@@ -381,12 +426,13 @@ class App(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(APP_TITLE)
-        self.resize(960, 640)
-        self.setMinimumSize(700, 450)
+        self.resize(1100, 660)
+        self.setMinimumSize(850, 450)
 
         self.sort_field: str | None = None
         self.sort_asc: bool = True
         self._pixmap_cache: dict[str, QPixmap] = {}  # path -> pixmap original
+        self._bg_path: str | None = None
 
         self.settings = QSettings("CDLM", "Convertir3x4")
 
@@ -400,9 +446,13 @@ class App(QMainWindow):
     def _build_ui(self):
         central = QWidget()
         self.setCentralWidget(central)
-        layout = QVBoxLayout(central)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(6)
+        main_layout = QHBoxLayout(central)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(8)
+
+        # ==================== ZONA IZQUIERDA (grilla) ====================
+        left_layout = QVBoxLayout()
+        left_layout.setSpacing(6)
 
         # --- Toolbar superior ---
         toolbar_layout = QHBoxLayout()
@@ -420,23 +470,7 @@ class App(QMainWindow):
         toolbar_layout.addWidget(self.lbl_count)
 
         toolbar_layout.addStretch()
-
-        self.btn_centrada = QPushButton("Foto centrada")
-        self.btn_centrada.setObjectName("btn_centrada")
-        self.btn_centrada.setEnabled(False)
-        toolbar_layout.addWidget(self.btn_centrada)
-
-        self.btn_doble = QPushButton("Doble foto")
-        self.btn_doble.setObjectName("btn_doble")
-        self.btn_doble.setEnabled(False)
-        toolbar_layout.addWidget(self.btn_doble)
-
-        self.btn_foto_fondo = QPushButton("Foto y fondo")
-        self.btn_foto_fondo.setObjectName("btn_foto_fondo")
-        self.btn_foto_fondo.setEnabled(False)
-        toolbar_layout.addWidget(self.btn_foto_fondo)
-
-        layout.addLayout(toolbar_layout)
+        left_layout.addLayout(toolbar_layout)
 
         # --- Grilla de imágenes ---
         self.list_widget = ReorderListWidget()
@@ -446,7 +480,7 @@ class App(QMainWindow):
         self.list_widget.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.list_widget.setSpacing(6)
         self.list_widget.setWordWrap(True)
-        layout.addWidget(self.list_widget)
+        left_layout.addWidget(self.list_widget)
 
         # --- Barra inferior: ordenamiento + slider ---
         bottom_layout = QHBoxLayout()
@@ -474,18 +508,97 @@ class App(QMainWindow):
         self.thumb_slider.setValue(THUMB_SIZE)
         self.thumb_slider.setFixedWidth(150)
         bottom_layout.addWidget(self.thumb_slider)
-        layout.addLayout(bottom_layout)
+        left_layout.addLayout(bottom_layout)
 
         # --- Barra de progreso (oculta) ---
         self.progress = QProgressBar()
         self.progress.setVisible(False)
-        layout.addWidget(self.progress)
+        left_layout.addWidget(self.progress)
+
+        main_layout.addLayout(left_layout, stretch=1)
+
+        # ==================== SIDEBAR DERECHA (acciones) ====================
+        sidebar = QFrame()
+        sidebar.setObjectName("sidebar")
+        sidebar.setFixedWidth(200)
+        sidebar_layout = QVBoxLayout(sidebar)
+        sidebar_layout.setContentsMargins(14, 16, 14, 16)
+        sidebar_layout.setSpacing(0)
+
+        # --- Sección: Foto centrada ---
+        lbl1 = QLabel("FOTO CENTRADA")
+        lbl1.setObjectName("section_title")
+        sidebar_layout.addWidget(lbl1)
+        sidebar_layout.addSpacing(8)
+
+        self.btn_centrada = QPushButton("Convertir")
+        self.btn_centrada.setObjectName("btn_action")
+        self.btn_centrada.setEnabled(False)
+        sidebar_layout.addWidget(self.btn_centrada)
+
+        # Separador
+        sidebar_layout.addSpacing(14)
+        sep1 = QFrame()
+        sep1.setObjectName("separator")
+        sep1.setFrameShape(QFrame.Shape.HLine)
+        sep1.setFixedHeight(1)
+        sidebar_layout.addWidget(sep1)
+        sidebar_layout.addSpacing(14)
+
+        # --- Sección: Doble foto ---
+        lbl2 = QLabel("DOBLE FOTO")
+        lbl2.setObjectName("section_title")
+        sidebar_layout.addWidget(lbl2)
+        sidebar_layout.addSpacing(8)
+
+        self.btn_doble = QPushButton("Convertir")
+        self.btn_doble.setObjectName("btn_action")
+        self.btn_doble.setEnabled(False)
+        sidebar_layout.addWidget(self.btn_doble)
+
+        # Separador
+        sidebar_layout.addSpacing(14)
+        sep2 = QFrame()
+        sep2.setObjectName("separator")
+        sep2.setFrameShape(QFrame.Shape.HLine)
+        sep2.setFixedHeight(1)
+        sidebar_layout.addWidget(sep2)
+        sidebar_layout.addSpacing(14)
+
+        # --- Sección: Foto y fondo ---
+        lbl3 = QLabel("FOTO Y FONDO")
+        lbl3.setObjectName("section_title")
+        sidebar_layout.addWidget(lbl3)
+        sidebar_layout.addSpacing(8)
+
+        self.lbl_bg_preview = QLabel("Sin fondo")
+        self.lbl_bg_preview.setObjectName("bg_preview")
+        self.lbl_bg_preview.setFixedHeight(110)
+        self.lbl_bg_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_bg_preview.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.lbl_bg_preview.mousePressEvent = lambda e: self._load_background()
+        sidebar_layout.addWidget(self.lbl_bg_preview)
+        sidebar_layout.addSpacing(8)
+
+        self.btn_load_bg = QPushButton("Cargar fondo")
+        self.btn_load_bg.setObjectName("btn_load_bg")
+        sidebar_layout.addWidget(self.btn_load_bg)
+        sidebar_layout.addSpacing(12)
+
+        self.btn_foto_fondo = QPushButton("Convertir")
+        self.btn_foto_fondo.setObjectName("btn_action")
+        self.btn_foto_fondo.setEnabled(False)
+        sidebar_layout.addWidget(self.btn_foto_fondo)
+
+        sidebar_layout.addStretch()
+        main_layout.addWidget(sidebar)
 
     def _connect_signals(self):
         self.btn_load.clicked.connect(self._load_images)
         self.btn_clear.clicked.connect(self._clear_images)
         self.btn_centrada.clicked.connect(self._action_foto_centrada)
         self.btn_doble.clicked.connect(self._action_doble_foto)
+        self.btn_load_bg.clicked.connect(self._load_background)
         self.btn_foto_fondo.clicked.connect(self._action_foto_fondo)
         self.btn_sort_nombre.clicked.connect(lambda: self._toggle_sort("nombre"))
         self.btn_sort_fecha.clicked.connect(lambda: self._toggle_sort("fecha"))
@@ -620,7 +733,30 @@ class App(QMainWindow):
         n = len(self.list_widget.selectedItems())
         self.btn_centrada.setEnabled(n >= 1)
         self.btn_doble.setEnabled(n >= 2 and n % 2 == 0)
-        self.btn_foto_fondo.setEnabled(n >= 1)
+        self.btn_foto_fondo.setEnabled(n >= 1 and self._bg_path is not None)
+
+    # -------------------------------------------------------- Fondo
+    def _load_background(self):
+        last_dir = self.settings.value("last_dir", "")
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Seleccionar imagen de fondo", last_dir, IMAGE_FILTER,
+        )
+        if not path:
+            return
+        self.settings.setValue("last_dir", os.path.dirname(path))
+        self._bg_path = path
+
+        # Mostrar preview
+        pixmap = QPixmap(path)
+        if not pixmap.isNull():
+            preview_w = self.lbl_bg_preview.width() - 4
+            preview_h = self.lbl_bg_preview.height() - 4
+            self.lbl_bg_preview.setPixmap(pixmap.scaled(
+                preview_w, preview_h,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            ))
+        self._update_buttons()
 
     # -------------------------------------------------------- Zoom thumbnails
     def _on_thumb_resize(self, size: int):
@@ -736,7 +872,7 @@ class App(QMainWindow):
         msg.setDefaultButton(QMessageBox.StandardButton.No)
         return msg.exec() == QMessageBox.StandardButton.Yes
 
-    def _run_in_thread(self, func, paths, out_dir, **kwargs):
+    def _run_in_thread(self, func, paths, out_dir, suffix="_3x4.jpg", **kwargs):
         """Ejecuta el procesamiento en hilo separado con barra de progreso."""
         total = len(paths)
         self.progress.setMaximum(total)
@@ -747,7 +883,7 @@ class App(QMainWindow):
         def worker():
             for i, path in enumerate(paths):
                 name = os.path.splitext(os.path.basename(path))[0]
-                out_path = os.path.join(out_dir, f"{name}_3x4.jpg")
+                out_path = os.path.join(out_dir, f"{name}{suffix}")
                 func(path, out_path, **kwargs)
                 self._progress_signal.emit(i + 1)
             self._done_signal.emit(out_dir)
@@ -779,7 +915,7 @@ class App(QMainWindow):
 
     def _set_buttons_enabled(self, enabled: bool):
         for btn in (self.btn_load, self.btn_clear, self.btn_centrada,
-                    self.btn_doble, self.btn_foto_fondo):
+                    self.btn_doble, self.btn_foto_fondo, self.btn_load_bg):
             btn.setEnabled(enabled)
 
     def _on_processing_done(self, out_dir: str):
@@ -828,7 +964,23 @@ class App(QMainWindow):
 
     # -------------------------------------------------------- Acción 3: Foto y fondo
     def _action_foto_fondo(self):
-        pass  # Fase 4
+        paths = self._get_selected_paths()
+        if not paths or not self._bg_path:
+            return
+
+        out_dir = self._ask_output_dir()
+        if not out_dir:
+            return
+
+        bg_path = self._bg_path
+        out_names = [os.path.splitext(os.path.basename(p))[0] + "_fondo_3x4.jpg" for p in paths]
+        if not self._check_overwrite(out_names, out_dir):
+            return
+
+        self._run_in_thread(
+            lambda p, o: convert_on_background(p, bg_path, o), paths, out_dir,
+            suffix="_fondo_3x4.jpg",
+        )
 
 
 if __name__ == "__main__":

@@ -6,7 +6,7 @@ import tempfile
 import pytest
 from PIL import Image
 
-from Convertir3x4 import convert_centered, convert_double, ASPECT_W, ASPECT_H, JPEG_QUALITY
+from Convertir3x4 import convert_centered, convert_double, convert_on_background, ASPECT_W, ASPECT_H, JPEG_QUALITY
 
 
 @pytest.fixture
@@ -177,3 +177,71 @@ class TestConvertDouble:
         convert_double([src1, src2], out)
 
         assert Image.open(out).format == "JPEG"
+
+
+class TestConvertOnBackground:
+    def test_ratio(self, temp_dir):
+        src = os.path.join(temp_dir, "photo.jpg")
+        bg = os.path.join(temp_dir, "bg.jpg")
+        out = os.path.join(temp_dir, "out.jpg")
+        _make_test_image(src, 1200, 800)
+        _make_test_image(bg, 1600, 1200)
+
+        convert_on_background(src, bg, out)
+
+        img = Image.open(out)
+        assert abs(img.size[0] / img.size[1] - ASPECT_W / ASPECT_H) < 0.01
+
+    def test_output_created(self, temp_dir):
+        src = os.path.join(temp_dir, "photo.jpg")
+        bg = os.path.join(temp_dir, "bg.jpg")
+        out = os.path.join(temp_dir, "out.jpg")
+        _make_test_image(src, 800, 600)
+        _make_test_image(bg, 1000, 1000)
+
+        convert_on_background(src, bg, out)
+
+        assert os.path.exists(out)
+        assert os.path.getsize(out) > 0
+
+    def test_photo_in_upper_half(self, temp_dir):
+        """La foto debe estar en la mitad superior del canvas."""
+        src = os.path.join(temp_dir, "photo.jpg")
+        bg = os.path.join(temp_dir, "bg.jpg")
+        out = os.path.join(temp_dir, "out.jpg")
+        img = Image.new("RGB", (800, 600), color="red")
+        img.save(src, "JPEG")
+        bg_img = Image.new("RGB", (1000, 1000), color="blue")
+        bg_img.save(bg, "JPEG")
+
+        convert_on_background(src, bg, out)
+
+        result = Image.open(out)
+        w, h = result.size
+        center_top = result.getpixel((w // 2, h // 4))
+        assert center_top[0] > 200  # rojo (foto)
+        center_bottom = result.getpixel((w // 2, int(h * 0.80)))
+        assert center_bottom[2] > 200  # azul (fondo)
+
+    def test_output_is_jpeg(self, temp_dir):
+        src = os.path.join(temp_dir, "photo.jpg")
+        bg = os.path.join(temp_dir, "bg.jpg")
+        out = os.path.join(temp_dir, "out.jpg")
+        _make_test_image(src, 800, 600)
+        _make_test_image(bg, 1000, 1000)
+
+        convert_on_background(src, bg, out)
+
+        assert Image.open(out).format == "JPEG"
+
+    def test_vertical_photo(self, temp_dir):
+        src = os.path.join(temp_dir, "vertical.jpg")
+        bg = os.path.join(temp_dir, "bg.jpg")
+        out = os.path.join(temp_dir, "out.jpg")
+        _make_test_image(src, 600, 1200)
+        _make_test_image(bg, 1000, 1000)
+
+        convert_on_background(src, bg, out)
+
+        img = Image.open(out)
+        assert abs(img.size[0] / img.size[1] - ASPECT_W / ASPECT_H) < 0.01
