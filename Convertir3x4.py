@@ -883,7 +883,7 @@ class App(QMainWindow):
         def worker():
             for i, path in enumerate(paths):
                 name = os.path.splitext(os.path.basename(path))[0]
-                out_path = os.path.join(out_dir, f"{name}{suffix}")
+                out_path = os.path.join(out_dir, f"{i+1:04d}_{name}{suffix}")
                 func(path, out_path, **kwargs)
                 self._progress_signal.emit(i + 1)
             self._done_signal.emit(out_dir)
@@ -902,8 +902,8 @@ class App(QMainWindow):
             for i, pair in enumerate(pairs):
                 name1 = os.path.splitext(os.path.basename(pair[0]))[0]
                 name2 = os.path.splitext(os.path.basename(pair[1]))[0] if len(pair) > 1 else ""
-                suffix = f"{name1}+{name2}_3x4.jpg" if name2 else f"{name1}_3x4.jpg"
-                out_path = os.path.join(out_dir, suffix)
+                names = f"{name1}+{name2}" if name2 else name1
+                out_path = os.path.join(out_dir, f"{i+1:04d}_{names}_3x4.jpg")
                 func(pair, out_path)
                 self._progress_signal.emit(i + 1)
             self._done_signal.emit(out_dir)
@@ -933,7 +933,7 @@ class App(QMainWindow):
         out_dir = self._ask_output_dir()
         if not out_dir:
             return
-        out_names = [os.path.splitext(os.path.basename(p))[0] + "_3x4.jpg" for p in paths]
+        out_names = [f"{i+1:04d}_{os.path.splitext(os.path.basename(p))[0]}_3x4.jpg" for i, p in enumerate(paths)]
         if not self._check_overwrite(out_names, out_dir):
             return
         self._run_in_thread(lambda p, o: convert_centered(p, o), paths, out_dir)
@@ -953,10 +953,11 @@ class App(QMainWindow):
             pairs.append(paths[i:i + 2])
 
         out_names = []
-        for pair in pairs:
+        for i, pair in enumerate(pairs):
             n1 = os.path.splitext(os.path.basename(pair[0]))[0]
             n2 = os.path.splitext(os.path.basename(pair[1]))[0] if len(pair) > 1 else ""
-            out_names.append(f"{n1}+{n2}_3x4.jpg" if n2 else f"{n1}_3x4.jpg")
+            names = f"{n1}+{n2}" if n2 else n1
+            out_names.append(f"{i+1:04d}_{names}_3x4.jpg")
         if not self._check_overwrite(out_names, out_dir):
             return
 
@@ -973,7 +974,7 @@ class App(QMainWindow):
             return
 
         bg_path = self._bg_path
-        out_names = [os.path.splitext(os.path.basename(p))[0] + "_fondo_3x4.jpg" for p in paths]
+        out_names = [f"{i+1:04d}_{os.path.splitext(os.path.basename(p))[0]}_fondo_3x4.jpg" for i, p in enumerate(paths)]
         if not self._check_overwrite(out_names, out_dir):
             return
 
