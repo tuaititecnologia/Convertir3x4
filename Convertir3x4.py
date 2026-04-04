@@ -258,8 +258,12 @@ QPushButton:hover { background-color: #354060; border-color: #4a5a78; }
 QPushButton:pressed { background-color: #0078d4; }
 QPushButton:disabled { color: #555555; background-color: #1e2230; border-color: #252a35; }
 QPushButton[active="true"] { border-color: #0078d4; color: #5aafff; }
-QPushButton#btn_clear { background-color: #3a2030; border-color: #5a3048; color: #e08090; }
-QPushButton#btn_clear:hover { background-color: #4a2840; border-color: #7a4060; }
+QPushButton#btn_icon {
+    background-color: transparent; border: 1px solid #2a3040; border-radius: 4px;
+    font-size: 16px; padding: 0px;
+}
+QPushButton#btn_icon:hover { background-color: #354060; border-color: #4a5a78; }
+QPushButton#btn_icon:disabled { opacity: 0.3; background-color: transparent; border-color: #252a35; }
 QPushButton#btn_load { background-color: #1a3550; border-color: #2a5070; color: #70b8ff; }
 QPushButton#btn_load:hover { background-color: #204060; border-color: #3070a0; }
 QPushButton#btn_action { background-color: #1a3a2a; border-color: #2a5a3a; color: #70d090; }
@@ -316,6 +320,7 @@ MTIME_ROLE = Qt.ItemDataRole.UserRole + 1
 
 class ReorderListWidget(QListWidget):
     """QListWidget con drag & drop manual para reordenar."""
+    orderChanged = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -382,6 +387,7 @@ class ReorderListWidget(QListWidget):
                 self.insertItem(insert_row, new_item)
                 self.clearSelection()
                 new_item.setSelected(True)
+                self.orderChanged.emit()
 
             self.unsetCursor()
 
@@ -433,6 +439,9 @@ class App(QMainWindow):
         self.sort_asc: bool = True
         self._pixmap_cache: dict[str, QPixmap] = {}  # path -> pixmap original
         self._bg_path: str | None = None
+        self._project_path: str | None = None
+        self._project_dirty: bool = False
+        self._clean_snapshot: tuple = ((), None)
 
         self.settings = QSettings("CDLM", "Convertir3x4")
 
@@ -442,6 +451,7 @@ class App(QMainWindow):
         self._build_ui()
         self._connect_signals()
         self._restore_state()
+        self._clean_snapshot = self._current_snapshot()
 
     def _build_ui(self):
         central = QWidget()
@@ -457,14 +467,40 @@ class App(QMainWindow):
         # --- Toolbar superior ---
         toolbar_layout = QHBoxLayout()
 
+        self.btn_new_project = QPushButton("\U0001F4C4")
+        self.btn_new_project.setObjectName("btn_icon")
+        self.btn_new_project.setToolTip("Nuevo proyecto")
+        self.btn_new_project.setFixedSize(32, 32)
+        toolbar_layout.addWidget(self.btn_new_project)
+
+        self.btn_load_project = QPushButton("\U0001F4C2")
+        self.btn_load_project.setObjectName("btn_icon")
+        self.btn_load_project.setToolTip("Abrir proyecto")
+        self.btn_load_project.setFixedSize(32, 32)
+        toolbar_layout.addWidget(self.btn_load_project)
+
+        self.btn_save_project = QPushButton("\U0001F4BE")
+        self.btn_save_project.setObjectName("btn_icon")
+        self.btn_save_project.setToolTip("Guardar proyecto")
+        self.btn_save_project.setFixedSize(32, 32)
+        self.btn_save_project.setEnabled(False)
+        toolbar_layout.addWidget(self.btn_save_project)
+
+        self.btn_close_project = QPushButton("\u2716")
+        self.btn_close_project.setObjectName("btn_icon")
+        self.btn_close_project.setToolTip("Cerrar proyecto")
+        self.btn_close_project.setFixedSize(32, 32)
+        self.btn_close_project.setEnabled(False)
+        toolbar_layout.addWidget(self.btn_close_project)
+
+        separator = QFrame()
+        separator.setFrameShape(QFrame.Shape.VLine)
+        separator.setFrameShadow(QFrame.Shadow.Sunken)
+        toolbar_layout.addWidget(separator)
+
         self.btn_load = QPushButton("Cargar imágenes")
         self.btn_load.setObjectName("btn_load")
         toolbar_layout.addWidget(self.btn_load)
-
-        self.btn_clear = QPushButton("Quitar todas")
-        self.btn_clear.setObjectName("btn_clear")
-        self.btn_clear.setEnabled(False)
-        toolbar_layout.addWidget(self.btn_clear)
 
         self.lbl_count = QLabel("0 fotos cargadas")
         toolbar_layout.addWidget(self.lbl_count)
@@ -595,7 +631,10 @@ class App(QMainWindow):
 
     def _connect_signals(self):
         self.btn_load.clicked.connect(self._load_images)
-        self.btn_clear.clicked.connect(self._clear_images)
+        self.btn_new_project.clicked.connect(self._new_project)
+        self.btn_load_project.clicked.connect(self._load_project)
+        self.btn_save_project.clicked.connect(self._save_project)
+        self.btn_close_project.clicked.connect(self._close_project)
         self.btn_centrada.clicked.connect(self._action_foto_centrada)
         self.btn_doble.clicked.connect(self._action_doble_foto)
         self.btn_load_bg.clicked.connect(self._load_background)
@@ -603,6 +642,7 @@ class App(QMainWindow):
         self.btn_sort_nombre.clicked.connect(lambda: self._toggle_sort("nombre"))
         self.btn_sort_fecha.clicked.connect(lambda: self._toggle_sort("fecha"))
         self.list_widget.itemSelectionChanged.connect(self._update_buttons)
+        self.list_widget.orderChanged.connect(self._mark_dirty)
         self.thumb_slider.valueChanged.connect(self._on_thumb_resize)
 
     # -------------------------------------------------------- Pixmap cache
@@ -627,21 +667,36 @@ class App(QMainWindow):
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation))
 
-    # -------------------------------------------------------- Vaciar
-    def _clear_images(self):
-        n = self.list_widget.count()
-        msg = QMessageBox(self)
-        msg.setIcon(QMessageBox.Icon.Warning)
-        msg.setWindowTitle("Quitar todas")
-        msg.setText(f"¿Quitar las {n} fotos de la grilla?")
-        msg.setInformativeText("Las fotos originales no se modifican.")
-        msg.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-        msg.setDefaultButton(QMessageBox.StandardButton.No)
-        if msg.exec() == QMessageBox.StandardButton.Yes:
-            self.list_widget.clear()
-            self._pixmap_cache.clear()
-            self._update_count()
-            self._update_buttons()
+    # -------------------------------------------------------- Proyecto: nuevo / cerrar
+    def _reset_project(self):
+        """Limpia todo el estado del proyecto."""
+        self.list_widget.clear()
+        self._pixmap_cache.clear()
+        self._bg_path = None
+        self.lbl_bg_preview.clear()
+        self.lbl_bg_preview.setText("Sin fondo")
+        self._project_path = None
+        self._mark_clean()
+        self._update_count()
+        self._update_buttons()
+
+    def _new_project(self):
+        if self._project_dirty:
+            resp = self._ask_save_before_action()
+            if resp == QMessageBox.StandardButton.Cancel:
+                return
+            if resp == QMessageBox.StandardButton.Yes:
+                self._save_project()
+        self._reset_project()
+
+    def _close_project(self):
+        if self._project_dirty:
+            resp = self._ask_save_before_action()
+            if resp == QMessageBox.StandardButton.Cancel:
+                return
+            if resp == QMessageBox.StandardButton.Yes:
+                self._save_project()
+        self._reset_project()
 
     # -------------------------------------------------------- Carga
     def _load_images(self):
@@ -672,6 +727,7 @@ class App(QMainWindow):
             self.list_widget.addItem(item)
 
         self._update_count()
+        self._mark_dirty()
 
     # -------------------------------------------------------- Ordenamiento
     def _toggle_sort(self, field: str):
@@ -722,18 +778,178 @@ class App(QMainWindow):
         self.btn_sort_fecha.style().polish(self.btn_sort_fecha)
 
         self._update_count()
+        self._mark_dirty()
 
     # -------------------------------------------------------- Estado
     def _update_count(self):
         n = self.list_widget.count()
         self.lbl_count.setText(f"{n} fotos cargadas")
-        self.btn_clear.setEnabled(n > 0)
+        has_content = n > 0 or self._bg_path is not None
+        self.btn_save_project.setEnabled(has_content or self._project_path is not None)
+        self.btn_close_project.setEnabled(has_content or self._project_path is not None)
 
     def _update_buttons(self):
         n = len(self.list_widget.selectedItems())
         self.btn_centrada.setEnabled(n >= 1)
         self.btn_doble.setEnabled(n >= 2 and n % 2 == 0)
         self.btn_foto_fondo.setEnabled(n >= 1 and self._bg_path is not None)
+
+    # -------------------------------------------------------- Proyectos
+    @staticmethod
+    def _read_project_file(path: str) -> dict | str:
+        """Lee y valida un archivo de proyecto. Retorna dict o mensaje de error."""
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                project = json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            return f"No se pudo leer el proyecto:\n{e}"
+        if not isinstance(project, dict):
+            return "El archivo no es un proyecto válido."
+        images = project.get("images", [])
+        if not isinstance(images, list):
+            return "El archivo no es un proyecto válido."
+        # Filtrar entradas que no sean strings
+        project["images"] = [p for p in images if isinstance(p, str)]
+        return project
+
+    def _current_snapshot(self) -> tuple:
+        """Retorna una representación del estado actual para comparar cambios."""
+        paths = tuple(
+            self.list_widget.item(i).data(PATH_ROLE)
+            for i in range(self.list_widget.count())
+        )
+        return (paths, self._bg_path)
+
+    def _mark_clean(self):
+        self._clean_snapshot = self._current_snapshot()
+        self._project_dirty = False
+        self._update_title()
+
+    def _mark_dirty(self):
+        dirty = self._current_snapshot() != self._clean_snapshot
+        if dirty != self._project_dirty:
+            self._project_dirty = dirty
+            self._update_title()
+
+    def _update_title(self):
+        title = APP_TITLE
+        if self._project_path:
+            name = os.path.splitext(os.path.basename(self._project_path))[0]
+            title = f"{name} — {APP_TITLE}"
+        if self._project_dirty:
+            title = f"● {title}"
+        self.setWindowTitle(title)
+
+    def _write_project(self, path: str):
+        images = []
+        for i in range(self.list_widget.count()):
+            images.append(self.list_widget.item(i).data(PATH_ROLE))
+        project = {
+            "version": 1,
+            "images": images,
+            "background": self._bg_path,
+        }
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(project, f, ensure_ascii=False, indent=2)
+        self._project_path = path
+        self._mark_clean()
+
+    def _save_project(self):
+        if self._project_path:
+            self._write_project(self._project_path)
+        else:
+            self._save_project_as()
+
+    def _save_project_as(self):
+        last_dir = self.settings.value("last_project_dir", "")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Guardar proyecto", last_dir,
+            "Proyecto Convertir 3×4 (*.c3x4)",
+        )
+        if not path:
+            return
+        self.settings.setValue("last_project_dir", os.path.dirname(path))
+        self._write_project(path)
+
+    def _load_project(self):
+        if self._project_dirty:
+            resp = self._ask_save_before_action()
+            if resp == QMessageBox.StandardButton.Cancel:
+                return
+            if resp == QMessageBox.StandardButton.Yes:
+                self._save_project()
+
+        last_dir = self.settings.value("last_project_dir", "")
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Abrir proyecto", last_dir,
+            "Proyecto Convertir 3×4 (*.c3x4)",
+        )
+        if not path:
+            return
+        self.settings.setValue("last_project_dir", os.path.dirname(path))
+
+        result = self._read_project_file(path)
+        if isinstance(result, str):
+            QMessageBox.critical(self, "Error", result)
+            return
+        project = result
+
+        image_paths = project["images"]
+        bg_path = project.get("background")
+
+        # Verificar archivos faltantes
+        missing = [p for p in image_paths if not os.path.exists(p)]
+        if missing:
+            n = len(missing)
+            detail = "\n".join(f"  • {os.path.basename(p)}" for p in missing[:10])
+            if n > 10:
+                detail += f"\n  … y {n - 10} más"
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Icon.Warning)
+            msg.setWindowTitle("Archivos no encontrados")
+            msg.setText(f"{n} imagen(es) del proyecto no se encontraron:")
+            msg.setInformativeText(detail)
+            msg.exec()
+
+        # Limpiar y cargar
+        self.list_widget.clear()
+        self._pixmap_cache.clear()
+
+        size = self.thumb_slider.value()
+        for p in image_paths:
+            if not os.path.exists(p):
+                continue
+            icon = self._make_icon(p, size)
+            if icon is None:
+                continue
+            item = QListWidgetItem()
+            item.setIcon(icon)
+            item.setText(os.path.basename(p))
+            item.setData(PATH_ROLE, p)
+            item.setData(MTIME_ROLE, os.path.getmtime(p))
+            self.list_widget.addItem(item)
+
+        # Restaurar fondo
+        if bg_path and os.path.exists(bg_path):
+            self._bg_path = bg_path
+            pixmap = QPixmap(bg_path)
+            if not pixmap.isNull():
+                preview_w = self.lbl_bg_preview.width() - 4
+                preview_h = self.lbl_bg_preview.height() - 4
+                self.lbl_bg_preview.setPixmap(pixmap.scaled(
+                    preview_w, preview_h,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                ))
+        else:
+            self._bg_path = None
+            self.lbl_bg_preview.clear()
+            self.lbl_bg_preview.setText("Sin fondo")
+
+        self._project_path = path
+        self._mark_clean()
+        self._update_count()
+        self._update_buttons()
 
     # -------------------------------------------------------- Fondo
     def _load_background(self):
@@ -757,6 +973,7 @@ class App(QMainWindow):
                 Qt.TransformationMode.SmoothTransformation,
             ))
         self._update_buttons()
+        self._mark_dirty()
 
     # -------------------------------------------------------- Zoom thumbnails
     def _on_thumb_resize(self, size: int):
@@ -834,7 +1051,28 @@ class App(QMainWindow):
                 msg = f"{n} fotos ya no están disponibles:\n\n{detail}\n  … y {n - 5} más"
             QMessageBox.information(self, "Fotos no encontradas", msg)
 
+    def _ask_save_before_action(self) -> QMessageBox.StandardButton:
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Icon.Question)
+        msg.setWindowTitle("Cambios sin guardar")
+        msg.setText("El proyecto tiene cambios sin guardar.")
+        msg.setInformativeText("¿Guardar antes de continuar?")
+        msg.setStandardButtons(
+            QMessageBox.StandardButton.Yes
+            | QMessageBox.StandardButton.No
+            | QMessageBox.StandardButton.Cancel,
+        )
+        msg.setDefaultButton(QMessageBox.StandardButton.Yes)
+        return msg.exec()
+
     def closeEvent(self, event):
+        if self._project_dirty:
+            resp = self._ask_save_before_action()
+            if resp == QMessageBox.StandardButton.Cancel:
+                event.ignore()
+                return
+            if resp == QMessageBox.StandardButton.Yes:
+                self._save_project()
         self._save_state()
         super().closeEvent(event)
 
@@ -914,8 +1152,10 @@ class App(QMainWindow):
         self.progress.setValue(value)
 
     def _set_buttons_enabled(self, enabled: bool):
-        for btn in (self.btn_load, self.btn_clear, self.btn_centrada,
-                    self.btn_doble, self.btn_foto_fondo, self.btn_load_bg):
+        for btn in (self.btn_load, self.btn_centrada,
+                    self.btn_doble, self.btn_foto_fondo, self.btn_load_bg,
+                    self.btn_new_project, self.btn_load_project,
+                    self.btn_save_project, self.btn_close_project):
             btn.setEnabled(enabled)
 
     def _on_processing_done(self, out_dir: str):

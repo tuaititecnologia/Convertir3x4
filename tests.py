@@ -1,12 +1,13 @@
 """Tests para las funciones de procesamiento de imagen."""
 
+import json
 import os
 import tempfile
 
 import pytest
 from PIL import Image
 
-from Convertir3x4 import convert_centered, convert_double, convert_on_background, ASPECT_W, ASPECT_H, JPEG_QUALITY
+from Convertir3x4 import convert_centered, convert_double, convert_on_background, App, ASPECT_W, ASPECT_H, JPEG_QUALITY
 
 
 @pytest.fixture
@@ -245,3 +246,76 @@ class TestConvertOnBackground:
 
         img = Image.open(out)
         assert abs(img.size[0] / img.size[1] - ASPECT_W / ASPECT_H) < 0.01
+
+
+class TestReadProjectFile:
+    def _write(self, temp_dir, content: str) -> str:
+        path = os.path.join(temp_dir, "test.c3x4")
+        with open(path, "w") as f:
+            f.write(content)
+        return path
+
+    def test_valid_project(self, temp_dir):
+        data = {"version": 1, "images": ["/a.jpg", "/b.jpg"], "background": None}
+        path = self._write(temp_dir, json.dumps(data))
+        result = App._read_project_file(path)
+        assert isinstance(result, dict)
+        assert result["images"] == ["/a.jpg", "/b.jpg"]
+
+    def test_valid_with_background(self, temp_dir):
+        data = {"version": 1, "images": ["/a.jpg"], "background": "/bg.jpg"}
+        path = self._write(temp_dir, json.dumps(data))
+        result = App._read_project_file(path)
+        assert result["background"] == "/bg.jpg"
+
+    def test_empty_images(self, temp_dir):
+        data = {"version": 1, "images": [], "background": None}
+        path = self._write(temp_dir, json.dumps(data))
+        result = App._read_project_file(path)
+        assert isinstance(result, dict)
+        assert result["images"] == []
+
+    def test_broken_json(self, temp_dir):
+        path = self._write(temp_dir, "{not valid json!!!")
+        result = App._read_project_file(path)
+        assert isinstance(result, str)
+
+    def test_empty_file(self, temp_dir):
+        path = self._write(temp_dir, "")
+        result = App._read_project_file(path)
+        assert isinstance(result, str)
+
+    def test_json_array_instead_of_dict(self, temp_dir):
+        path = self._write(temp_dir, '["/a.jpg", "/b.jpg"]')
+        result = App._read_project_file(path)
+        assert isinstance(result, str)
+
+    def test_json_string_instead_of_dict(self, temp_dir):
+        path = self._write(temp_dir, '"hello"')
+        result = App._read_project_file(path)
+        assert isinstance(result, str)
+
+    def test_images_not_a_list(self, temp_dir):
+        data = {"version": 1, "images": "not a list"}
+        path = self._write(temp_dir, json.dumps(data))
+        result = App._read_project_file(path)
+        assert isinstance(result, str)
+
+    def test_missing_images_key(self, temp_dir):
+        data = {"version": 1}
+        path = self._write(temp_dir, json.dumps(data))
+        result = App._read_project_file(path)
+        assert isinstance(result, dict)
+        assert result["images"] == []
+
+    def test_non_string_entries_filtered(self, temp_dir):
+        data = {"version": 1, "images": ["/a.jpg", 123, None, "/b.jpg"]}
+        path = self._write(temp_dir, json.dumps(data))
+        result = App._read_project_file(path)
+        assert isinstance(result, dict)
+        assert result["images"] == ["/a.jpg", "/b.jpg"]
+
+    def test_nonexistent_file(self, temp_dir):
+        path = os.path.join(temp_dir, "no_existe.c3x4")
+        result = App._read_project_file(path)
+        assert isinstance(result, str)
