@@ -4,42 +4,48 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**Convertir a 3:4 — CDLM** is a Python GUI desktop app that converts horizontal photos into 3:4 portrait format for a church display screen. It uses tkinter for the interface and Pillow for image processing. The final deliverable is a single Windows `.exe` built with PyInstaller and distributed via GitHub Actions.
+**Convertir a 3:4 — CDLM** is a Python GUI desktop app that converts photos into 3:4 portrait format for a church display screen. Uses PyQt6 for the interface and Pillow for image processing. Distributed as a single `.exe` via GitHub Actions.
 
 ## Commands
 
 ```bash
-# Install dependencies
-pip install -r requirements.txt
+# Setup
+python -m venv venv && source venv/bin/activate && pip install -r requirements.txt
 
-# Run the application
+# Run
 python Convertir3x4.py
 
-# Build the Windows executable
+# Tests
+python -m pytest tests.py -v
+
+# Build executable
 pyinstaller Convertir3x4.spec
-# or: pyinstaller --onefile --windowed --name Convertir3x4 Convertir3x4.py
 ```
 
 ## Architecture
 
-- **`Convertir3x4.py`** — Single-file application containing all GUI and image processing logic
-- **`Convertir3x4.spec`** — PyInstaller build spec (`--onefile --windowed`)
-- **`.github/workflows/build.yml`** — CI: builds `.exe` on Windows runner, uploads artifact, creates release on `v*` tags
+Single-file app (`Convertir3x4.py`) with all GUI and image processing logic. Three processing functions at module level, UI in the `App` class.
 
-### Image Processing Pipeline
+### Image Processing Functions
 
-- Single photo conversion: original centered on 3:4 canvas, letterbox areas filled with a blurred (GaussianBlur radius 40) scaled version of the same image
-- Two-photo combination: photos stacked vertically on a single 3:4 canvas, scaled proportionally to fit, blur fill in remaining gaps
-- Output format: JPEG, quality 92
-- Supported inputs: jpg, jpeg, png, bmp, webp
+- `convert_centered(src, out)` — Photo on 3:4 canvas with textured background from dominant colors (not blur of the image itself)
+- `convert_double(paths, out)` — Two photos stacked vertically on 3:4 canvas. Wider photo gets up to 45% height, taller photo fills remaining space. Background uses `_make_zoned_bg` (colors from each photo dominate their respective half)
+- `convert_on_background(src, bg, out)` — Photo in upper half of 3:4 canvas over a user-provided background image, lower half left free for text overlay
 
-### UI Conventions
+### Background Generation
 
-- Dark theme: background `#1e1e1e`, panels/cells `#2d2d2d`, selection highlight `#0078d4`
-- Thumbnail grid with single-click and Ctrl+Click multi-selection
-- Batch processing runs in a separate thread with progress bar to avoid freezing the UI
-- Output folder selected via dialog before processing
+- `_dominant_colors(img)` — Extracts palette via FASTOCTREE quantization
+- `_make_textured_bg(w, h, colors)` — Random soft blobs with dominant colors, heavily blurred
+- `_make_zoned_bg(w, h, colors_top, colors_bottom)` — Same as above but spatially coherent (top colors dominate top, bottom colors dominate bottom)
+
+### UI Structure
+
+- **PyQt6** with dark theme stylesheet and custom `ReorderListWidget` (manual drag & drop since Qt's `InternalMove` is broken in `IconMode`)
+- **Left panel**: toolbar (load/clear), image grid (`QListWidget` in `IconMode`), bottom bar (sort buttons + zoom slider)
+- **Right sidebar**: action sections separated by lines (Foto centrada, Doble foto, Foto y fondo with background preview)
+- State persistence via `QSettings` (image paths, window geometry, thumb size, last directories)
+- Processing runs in `threading.Thread`, progress communicated via `pyqtSignal`
 
 ## Language
 
-The UI and user-facing text are in **Spanish**. INSTRUCTIONS.md is also in Spanish.
+UI and user-facing text are in **Spanish**.
