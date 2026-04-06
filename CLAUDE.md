@@ -32,10 +32,16 @@ Single-file app (`Convertir3x4.py`) with all GUI and image processing logic. Thr
 - `convert_double(paths, out)` — Two photos stacked vertically on 3:4 canvas. Wider photo gets up to 45% height, taller photo fills remaining space. Background uses `_make_zoned_bg` (colors from each photo dominate their respective half)
 - `convert_on_background(src, bg, out)` — Photo in upper half of 3:4 canvas over a user-provided background image, lower half left free for text overlay
 
+### Video Export Functions
+
+- `convert_centered_video(src, out, ...)` — Same as `convert_centered` but outputs MP4 with animated background (subtle pan via Lissajous path over oversized background)
+- `convert_double_video(paths, out, ...)` — Same as `convert_double` but outputs MP4 with animated background
+- `_write_video_frames(oversized_bg, canvas_w, canvas_h, paste_fn, out_path, ...)` — Shared helper that generates frames with Lissajous camera movement and writes MP4 via imageio/ffmpeg
+
 ### Background Generation
 
 - `_dominant_colors(img)` — Extracts palette via FASTOCTREE quantization
-- `_make_textured_bg(w, h, colors)` — Random soft blobs with dominant colors, heavily blurred
+- `_make_textured_bg(w, h, colors)` — Random soft blobs with dominant colors, heavily blurred. For video, called at 1.3x canvas size to allow pan animation
 - `_make_zoned_bg(w, h, colors_top, colors_bottom)` — Same as above but spatially coherent (top colors dominate top, bottom colors dominate bottom)
 
 ### UI Structure
