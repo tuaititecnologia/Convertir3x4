@@ -1,12 +1,16 @@
 """Convertir a 3:4 — CDLM: Convierte fotos a formato 3:4 portrait."""
 
 import json
+import math
 import os
 import platform
 import random
 import subprocess
 import sys
 import threading
+
+import imageio
+import numpy as np
 
 from PyQt6.QtCore import Qt, QSize, QRect, QPoint, QSettings, QStandardPaths, pyqtSignal
 from PyQt6.QtGui import QIcon, QPixmap, QPainter, QPen, QColor
@@ -15,7 +19,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QListWidget, QListWidgetItem, QFileDialog,
     QProgressBar, QAbstractItemView, QMessageBox, QSlider, QFrame,
-    QSizePolicy, QComboBox,
+    QSizePolicy, QComboBox, QCheckBox,
 )
 
 # --- Constantes ---
@@ -24,6 +28,10 @@ THUMB_SIZE = 130
 IMAGE_FILTER = "Imágenes (*.jpg *.jpeg *.png *.bmp *.webp);;Todos (*.*)"
 JPEG_QUALITY = 92
 BLUR_RADIUS = 40
+VIDEO_FPS = 24
+VIDEO_DURATION = 30
+VIDEO_OVERSIZE = 1.6
+VIDEO_MAX_WIDTH = 1920
 ASPECT_RATIOS = [
     ("8:9 — LED CDLM", 8, 9),
     ("3:4", 3, 4),
@@ -35,7 +43,7 @@ ASPECT_RATIOS = [
 DEFAULT_ASPECT_W, DEFAULT_ASPECT_H = 8, 9
 
 
-def _darken(color: tuple[int, int, int], factor: float = 0.45) -> tuple[int, int, int]:
+def _darken(color: tuple[int, int, int], factor: float = 0.6) -> tuple[int, int, int]:
     """Oscurece un color RGB multiplicando cada canal por *factor* (0-1)."""
     return tuple(int(c * factor) for c in color)
 
@@ -56,7 +64,7 @@ def _dominant_colors(img: Image.Image, n: int = 5) -> list[tuple[int, int, int]]
     return colors
 
 
-def _vary_color(color: tuple[int, int, int], amount: int = 25) -> tuple[int, int, int]:
+def _vary_color(color: tuple[int, int, int], amount: int = 35) -> tuple[int, int, int]:
     """Varía ligeramente un color RGB."""
     return tuple(max(0, min(255, c + random.randint(-amount, amount))) for c in color)
 
@@ -252,6 +260,144 @@ def convert_on_background(src_path: str, bg_path: str, out_path: str, aspect: tu
     bg.save(out_path, "JPEG", quality=JPEG_QUALITY)
 
 
+def _write_video_frames(oversized_bg, canvas_w, canvas_h, paste_fn, out_path,
+                        fps=VIDEO_FPS, duration=VIDEO_DURATION, progress_cb=None):
+    """Genera un MP4 con pan sutil sobre un fondo oversized."""
+    margin_x = (oversized_bg.width - canvas_w) // 2
+    margin_y = (oversized_bg.height - canvas_h) // 2
+    total_frames = fps * duration
+
+    writer = imageio.get_writer(out_path, fps=fps, codec="libx264",
+                                macro_block_size=1,
+                                output_params=["-crf", "23", "-pix_fmt", "yuv420p"])
+    try:
+        for i in range(total_frames):
+            t = i / total_frames
+            cx = margin_x + int(margin_x * (0.7 * math.sin(2 * math.pi * t)
+                                            + 0.3 * math.sin(4 * math.pi * t)))
+            cy = margin_y + int(margin_y * (0.7 * math.sin(2 * math.pi * t * 0.7)
+                                            + 0.3 * math.cos(3 * math.pi * t)))
+            frame = oversized_bg.crop((cx, cy, cx + canvas_w, cy + canvas_h))
+            paste_fn(frame)
+            writer.append_data(np.asarray(frame))
+            if progress_cb:
+                progress_cb(i + 1, total_frames)
+    finally:
+        writer.close()
+
+
+def convert_centered_video(src_path: str, out_path: str, aspect: tuple[int, int] = None,
+                           fps: int = VIDEO_FPS, duration: int = VIDEO_DURATION,
+                           progress_cb=None):
+    """Genera un MP4 con fondo animado y foto centrada estática."""
+    aw, ah = aspect or (DEFAULT_ASPECT_W, DEFAULT_ASPECT_H)
+    img = Image.open(src_path).convert("RGB")
+    src_w, src_h = img.size
+
+    if src_w / src_h > aw / ah:
+        canvas_w = src_w
+        canvas_h = int(src_w * ah / aw)
+    else:
+        canvas_h = src_h
+        canvas_w = int(src_h * aw / ah)
+
+    # Limitar resolución
+    if canvas_w > VIDEO_MAX_WIDTH:
+        scale = VIDEO_MAX_WIDTH / canvas_w
+        canvas_w = VIDEO_MAX_WIDTH
+        canvas_h = int(canvas_h * scale)
+        img = img.resize((int(src_w * scale), int(src_h * scale)), Image.LANCZOS)
+        src_w, src_h = img.size
+
+    colors = _dominant_colors(img)
+    os_w = int(canvas_w * VIDEO_OVERSIZE)
+    os_h = int(canvas_h * VIDEO_OVERSIZE)
+    oversized_bg = _make_textured_bg(os_w, os_h, colors)
+
+    photo_x = (canvas_w - src_w) // 2
+    photo_y = (canvas_h - src_h) // 2
+
+    def paste_fn(frame):
+        frame.paste(img, (photo_x, photo_y))
+
+    _write_video_frames(oversized_bg, canvas_w, canvas_h, paste_fn, out_path,
+                        fps, duration, progress_cb)
+
+
+def convert_double_video(paths: list[str], out_path: str, aspect: tuple[int, int] = None,
+                         fps: int = VIDEO_FPS, duration: int = VIDEO_DURATION,
+                         progress_cb=None):
+    """Genera un MP4 con fondo animado y dos fotos apiladas verticalmente."""
+    aw, ah = aspect or (DEFAULT_ASPECT_W, DEFAULT_ASPECT_H)
+    images = [Image.open(p).convert("RGB") for p in paths]
+
+    if len(images) == 1:
+        convert_centered_video(paths[0], out_path, aspect, fps, duration, progress_cb)
+        return
+
+    img1, img2 = images[0], images[1]
+    ar1 = img1.size[0] / img1.size[1]
+    ar2 = img2.size[0] / img2.size[1]
+
+    if ar1 >= ar2:
+        img_wide, img_tall = img1, img2
+    else:
+        img_wide, img_tall = img2, img1
+
+    canvas_w = max(img_wide.size[0], img_tall.size[0])
+    canvas_h = int(canvas_w * ah / aw)
+
+    # Limitar resolución
+    if canvas_w > VIDEO_MAX_WIDTH:
+        scale_factor = VIDEO_MAX_WIDTH / canvas_w
+        canvas_w = VIDEO_MAX_WIDTH
+        canvas_h = int(canvas_h * scale_factor)
+        img_wide = img_wide.resize(
+            (int(img_wide.size[0] * scale_factor), int(img_wide.size[1] * scale_factor)),
+            Image.LANCZOS)
+        img_tall = img_tall.resize(
+            (int(img_tall.size[0] * scale_factor), int(img_tall.size[1] * scale_factor)),
+            Image.LANCZOS)
+
+    margin = int(canvas_h * 0.02)
+
+    def fit_image(img, max_w, max_h):
+        w, h = img.size
+        s = min(max_w / w, max_h / h)
+        return img.resize((int(w * s), int(h * s)), Image.LANCZOS)
+
+    wide_max_w = canvas_w - margin * 2
+    wide_max_h = int(canvas_h * 0.45)
+    img_wide_fit = fit_image(img_wide, wide_max_w, wide_max_h)
+
+    tall_max_w = canvas_w - margin * 2
+    tall_max_h = canvas_h - img_wide_fit.size[1] - margin * 3
+    img_tall_fit = fit_image(img_tall, tall_max_w, tall_max_h)
+
+    used_h = img_wide_fit.size[1] + img_tall_fit.size[1]
+    remaining = canvas_h - used_h
+    margin = remaining // 3
+
+    colors_top = _dominant_colors(img_wide)
+    colors_bottom = _dominant_colors(img_tall)
+
+    os_w = int(canvas_w * VIDEO_OVERSIZE)
+    os_h = int(canvas_h * VIDEO_OVERSIZE)
+    oversized_bg = _make_zoned_bg(os_w, os_h, colors_top, colors_bottom)
+
+    x1 = (canvas_w - img_wide_fit.size[0]) // 2
+    y1 = margin
+    x2 = (canvas_w - img_tall_fit.size[0]) // 2
+    y2 = margin + img_wide_fit.size[1] + margin
+
+    def paste_fn(frame):
+        frame.paste(img_wide_fit, (x1, y1))
+        frame.paste(img_tall_fit, (x2, y2))
+
+    _write_video_frames(oversized_bg, canvas_w, canvas_h, paste_fn, out_path,
+                        fps, duration, progress_cb)
+
+
 def open_folder(path: str):
     """Abre una carpeta en Finder/Explorer."""
     if platform.system() == "Darwin":
@@ -335,6 +481,13 @@ QComboBox QAbstractItemView {
     background-color: #252a38; color: #e0e0e0; border: 1px solid #3a4558;
     selection-background-color: #1a3050;
 }
+QCheckBox { color: #8899aa; font-size: 12px; spacing: 6px; }
+QCheckBox::indicator {
+    width: 14px; height: 14px; border: 1px solid #3a4558;
+    border-radius: 3px; background-color: #252a38;
+}
+QCheckBox::indicator:checked { background-color: #0078d4; border-color: #0078d4; }
+QCheckBox::indicator:hover { border-color: #4a5a78; }
 """
 
 # Rol custom para guardar el path completo y la fecha de modificación
@@ -591,6 +744,11 @@ class App(QMainWindow):
         lbl_group_actions = QLabel("ACCIONES")
         lbl_group_actions.setObjectName("group_title")
         sidebar_layout.addWidget(lbl_group_actions)
+        sidebar_layout.addSpacing(8)
+
+        self.chk_video = QCheckBox("Exportar como video")
+        self.chk_video.setToolTip("Genera un MP4 con fondo animado en lugar de imagen estática")
+        sidebar_layout.addWidget(self.chk_video)
         sidebar_layout.addSpacing(12)
 
         # --- Foto centrada ---
@@ -1216,6 +1374,53 @@ class App(QMainWindow):
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def _run_video_in_thread(self, func, paths, out_dir, suffix="_3x4.mp4", aspect=None):
+        """Ejecuta generación de video en hilo separado con progreso por frame."""
+        total_frames = VIDEO_FPS * VIDEO_DURATION * len(paths)
+        self.progress.setMaximum(total_frames)
+        self.progress.setValue(0)
+        self.progress.setVisible(True)
+        self._set_buttons_enabled(False)
+
+        def worker():
+            for i, path in enumerate(paths):
+                name = os.path.splitext(os.path.basename(path))[0]
+                out_path = os.path.join(out_dir, f"{i+1:04d}_{name}{suffix}")
+                base_frames = i * VIDEO_FPS * VIDEO_DURATION
+
+                def progress_cb(frame, _total, _base=base_frames):
+                    self._progress_signal.emit(_base + frame)
+
+                func(path, out_path, aspect=aspect, progress_cb=progress_cb)
+            self._done_signal.emit(out_dir)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _run_video_pairs_in_thread(self, func, pairs, out_dir, aspect=None):
+        """Ejecuta generación de video de pares en hilo separado."""
+        total_frames = VIDEO_FPS * VIDEO_DURATION * len(pairs)
+        sfx = self._ratio_suffix()
+        self.progress.setMaximum(total_frames)
+        self.progress.setValue(0)
+        self.progress.setVisible(True)
+        self._set_buttons_enabled(False)
+
+        def worker():
+            for i, pair in enumerate(pairs):
+                name1 = os.path.splitext(os.path.basename(pair[0]))[0]
+                name2 = os.path.splitext(os.path.basename(pair[1]))[0] if len(pair) > 1 else ""
+                names = f"{name1}+{name2}" if name2 else name1
+                out_path = os.path.join(out_dir, f"{i+1:04d}_{names}{sfx}.mp4")
+                base_frames = i * VIDEO_FPS * VIDEO_DURATION
+
+                def progress_cb(frame, _total, _base=base_frames):
+                    self._progress_signal.emit(_base + frame)
+
+                func(pair, out_path, aspect=aspect, progress_cb=progress_cb)
+            self._done_signal.emit(out_dir)
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def _on_progress(self, value: int):
         self.progress.setValue(value)
 
@@ -1245,11 +1450,16 @@ class App(QMainWindow):
         if not out_dir:
             return
         sfx = self._ratio_suffix()
-        out_names = [f"{i+1:04d}_{os.path.splitext(os.path.basename(p))[0]}{sfx}.jpg" for i, p in enumerate(paths)]
+        video = self.chk_video.isChecked()
+        ext = ".mp4" if video else ".jpg"
+        out_names = [f"{i+1:04d}_{os.path.splitext(os.path.basename(p))[0]}{sfx}{ext}" for i, p in enumerate(paths)]
         if not self._check_overwrite(out_names, out_dir):
             return
         aspect = (self._aspect_w, self._aspect_h)
-        self._run_in_thread(lambda p, o: convert_centered(p, o, aspect=aspect), paths, out_dir, suffix=f"{sfx}.jpg")
+        if video:
+            self._run_video_in_thread(convert_centered_video, paths, out_dir, suffix=f"{sfx}.mp4", aspect=aspect)
+        else:
+            self._run_in_thread(lambda p, o: convert_centered(p, o, aspect=aspect), paths, out_dir, suffix=f"{sfx}.jpg")
 
     # -------------------------------------------------------- Acción 2: Doble foto
     def _action_doble_foto(self):
@@ -1266,17 +1476,22 @@ class App(QMainWindow):
             pairs.append(paths[i:i + 2])
 
         sfx = self._ratio_suffix()
+        video = self.chk_video.isChecked()
+        ext = ".mp4" if video else ".jpg"
         out_names = []
         for i, pair in enumerate(pairs):
             n1 = os.path.splitext(os.path.basename(pair[0]))[0]
             n2 = os.path.splitext(os.path.basename(pair[1]))[0] if len(pair) > 1 else ""
             names = f"{n1}+{n2}" if n2 else n1
-            out_names.append(f"{i+1:04d}_{names}{sfx}.jpg")
+            out_names.append(f"{i+1:04d}_{names}{sfx}{ext}")
         if not self._check_overwrite(out_names, out_dir):
             return
 
         aspect = (self._aspect_w, self._aspect_h)
-        self._run_pairs_in_thread(convert_double, pairs, out_dir, aspect=aspect)
+        if video:
+            self._run_video_pairs_in_thread(convert_double_video, pairs, out_dir, aspect=aspect)
+        else:
+            self._run_pairs_in_thread(convert_double, pairs, out_dir, aspect=aspect)
 
     # -------------------------------------------------------- Acción 3: Foto y fondo
     def _action_foto_fondo(self):

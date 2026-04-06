@@ -2,3 +2,6 @@ pillow
 PyQt6
 pyinstaller
 pytest
+numpy
+imageio
+imageio-ffmpeg

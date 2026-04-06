@@ -7,7 +7,12 @@ import tempfile
 import pytest
 from PIL import Image
 
-from Convertir3x4 import convert_centered, convert_double, convert_on_background, App, DEFAULT_ASPECT_W as ASPECT_W, DEFAULT_ASPECT_H as ASPECT_H, JPEG_QUALITY
+from Convertir3x4 import (
+    convert_centered, convert_double, convert_on_background,
+    convert_centered_video, convert_double_video,
+    App, DEFAULT_ASPECT_W as ASPECT_W, DEFAULT_ASPECT_H as ASPECT_H,
+    JPEG_QUALITY, VIDEO_FPS,
+)
 
 
 @pytest.fixture
@@ -319,3 +324,50 @@ class TestReadProjectFile:
         path = os.path.join(temp_dir, "no_existe.c3x4")
         result = App._read_project_file(path)
         assert isinstance(result, str)
+
+
+class TestConvertCenteredVideo:
+    def test_output_file_created(self, temp_dir):
+        src = os.path.join(temp_dir, "photo.jpg")
+        out = os.path.join(temp_dir, "out.mp4")
+        _make_test_image(src, 400, 300)
+
+        convert_centered_video(src, out, duration=1, fps=4)
+
+        assert os.path.exists(out)
+        assert os.path.getsize(out) > 0
+
+    def test_progress_callback(self, temp_dir):
+        src = os.path.join(temp_dir, "photo.jpg")
+        out = os.path.join(temp_dir, "out.mp4")
+        _make_test_image(src, 200, 150)
+
+        calls = []
+        convert_centered_video(src, out, duration=1, fps=4,
+                               progress_cb=lambda f, t: calls.append((f, t)))
+
+        assert len(calls) == 4
+        assert calls[-1] == (4, 4)
+
+
+class TestConvertDoubleVideo:
+    def test_two_images_created(self, temp_dir):
+        src1 = os.path.join(temp_dir, "wide.jpg")
+        src2 = os.path.join(temp_dir, "tall.jpg")
+        out = os.path.join(temp_dir, "out.mp4")
+        _make_test_image(src1, 800, 400)
+        _make_test_image(src2, 400, 800)
+
+        convert_double_video([src1, src2], out, duration=1, fps=4)
+
+        assert os.path.exists(out)
+        assert os.path.getsize(out) > 0
+
+    def test_single_image_fallback(self, temp_dir):
+        src = os.path.join(temp_dir, "photo.jpg")
+        out = os.path.join(temp_dir, "out.mp4")
+        _make_test_image(src, 400, 300)
+
+        convert_double_video([src], out, duration=1, fps=4)
+
+        assert os.path.exists(out)
