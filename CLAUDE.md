@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**Convertir a 3:4 — CDLM** is a Python GUI desktop app that converts photos into 3:4 portrait format for a church display screen. Uses PyQt6 for the interface and Pillow for image processing. Distributed as a single `.exe` via GitHub Actions.
+**Convertir a 3:4 — CDLM** is a Python GUI desktop app that converts photos into a configurable aspect ratio (default 8:9, matching the LED screen) for a church display screen. Uses PyQt6 for the interface and Pillow for image processing. Distributed as a single `.exe` via GitHub Actions.
 
 ## Commands
 
@@ -12,11 +12,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Setup
 python -m venv venv && source venv/bin/activate && pip install -r requirements.txt
 
-# Run
-python Convertir3x4.py
+# Run — always use the venv python, `python` may not resolve correctly
+./venv/bin/python Convertir3x4.py
 
-# Tests
-python -m pytest tests.py -v
+# Tests — use the venv python directly (shell activation doesn't work in non-interactive shells)
+./venv/bin/python -m pytest tests.py -v
 
 # Build executable
 pyinstaller Convertir3x4.spec
