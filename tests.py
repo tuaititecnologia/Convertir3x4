@@ -7,7 +7,7 @@ import tempfile
 import pytest
 from PIL import Image
 
-from Convertir3x4 import convert_centered, convert_double, convert_on_background, App, ASPECT_W, ASPECT_H, JPEG_QUALITY
+from Convertir3x4 import convert_centered, convert_double, convert_on_background, App, DEFAULT_ASPECT_W as ASPECT_W, DEFAULT_ASPECT_H as ASPECT_H, JPEG_QUALITY
 
 
 @pytest.fixture

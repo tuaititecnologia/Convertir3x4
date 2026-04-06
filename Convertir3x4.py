@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QListWidget, QListWidgetItem, QFileDialog,
     QProgressBar, QAbstractItemView, QMessageBox, QSlider, QFrame,
-    QSizePolicy,
+    QSizePolicy, QComboBox,
 )
 
 # --- Constantes ---
@@ -24,11 +24,24 @@ THUMB_SIZE = 130
 IMAGE_FILTER = "Imágenes (*.jpg *.jpeg *.png *.bmp *.webp);;Todos (*.*)"
 JPEG_QUALITY = 92
 BLUR_RADIUS = 40
-ASPECT_W, ASPECT_H = 3, 4
+ASPECT_RATIOS = [
+    ("8:9 — LED CDLM", 8, 9),
+    ("3:4", 3, 4),
+    ("2:3", 2, 3),
+    ("4:5", 4, 5),
+    ("9:16", 9, 16),
+    ("1:1", 1, 1),
+]
+DEFAULT_ASPECT_W, DEFAULT_ASPECT_H = 8, 9
+
+
+def _darken(color: tuple[int, int, int], factor: float = 0.45) -> tuple[int, int, int]:
+    """Oscurece un color RGB multiplicando cada canal por *factor* (0-1)."""
+    return tuple(int(c * factor) for c in color)
 
 
 def _dominant_colors(img: Image.Image, n: int = 5) -> list[tuple[int, int, int]]:
-    """Extrae los N colores más frecuentes de una imagen (reducida)."""
+    """Extrae los N colores más frecuentes de una imagen (reducida), oscurecidos."""
     small = img.copy()
     small.thumbnail((80, 80), Image.LANCZOS)
     # Cuantizar a pocos colores
@@ -39,7 +52,7 @@ def _dominant_colors(img: Image.Image, n: int = 5) -> list[tuple[int, int, int]]
     colors = []
     for _, idx in counts[:n]:
         r, g, b = palette[idx * 3], palette[idx * 3 + 1], palette[idx * 3 + 2]
-        colors.append((r, g, b))
+        colors.append(_darken((r, g, b)))
     return colors
 
 
@@ -102,18 +115,18 @@ def _make_zoned_bg(
     return bg
 
 
-def convert_centered(src_path: str, out_path: str):
-    """Convierte una imagen a 3:4 con fondo de color dominante texturizado."""
+def convert_centered(src_path: str, out_path: str, aspect: tuple[int, int] = None):
+    """Convierte una imagen al aspect ratio configurado con fondo de color dominante texturizado."""
+    aw, ah = aspect or (DEFAULT_ASPECT_W, DEFAULT_ASPECT_H)
     img = Image.open(src_path).convert("RGB")
     src_w, src_h = img.size
 
-    # Calcular tamaño del canvas 3:4 basado en la imagen
-    if src_w / src_h > ASPECT_W / ASPECT_H:
+    if src_w / src_h > aw / ah:
         canvas_w = src_w
-        canvas_h = int(src_w * ASPECT_H / ASPECT_W)
+        canvas_h = int(src_w * ah / aw)
     else:
         canvas_h = src_h
-        canvas_w = int(src_h * ASPECT_W / ASPECT_H)
+        canvas_w = int(src_h * aw / ah)
 
     # Fondo: textura con colores dominantes de la foto
     colors = _dominant_colors(img)
@@ -127,20 +140,20 @@ def convert_centered(src_path: str, out_path: str):
     bg.save(out_path, "JPEG", quality=JPEG_QUALITY)
 
 
-def convert_double(paths: list[str], out_path: str):
-    """Apila 2 fotos (o 1) verticalmente en un canvas 3:4 con fondo texturizado."""
+def convert_double(paths: list[str], out_path: str, aspect: tuple[int, int] = None):
+    """Apila 2 fotos (o 1) verticalmente en un canvas con fondo texturizado."""
+    aw, ah = aspect or (DEFAULT_ASPECT_W, DEFAULT_ASPECT_H)
     images = [Image.open(p).convert("RGB") for p in paths]
 
     if len(images) == 1:
-        # Foto sola: va en la mitad superior
         img = images[0]
         src_w, src_h = img.size
-        if src_w / src_h > ASPECT_W / ASPECT_H:
+        if src_w / src_h > aw / ah:
             canvas_w = src_w
-            canvas_h = int(src_w * ASPECT_H / ASPECT_W)
+            canvas_h = int(src_w * ah / aw)
         else:
             canvas_h = src_h
-            canvas_w = int(src_h * ASPECT_W / ASPECT_H)
+            canvas_w = int(src_h * aw / ah)
 
         colors = _dominant_colors(img)
         bg = _make_textured_bg(canvas_w, canvas_h, colors)
@@ -164,7 +177,7 @@ def convert_double(paths: list[str], out_path: str):
 
     # Canvas basado en la imagen más grande
     canvas_w = max(img_wide.size[0], img_tall.size[0])
-    canvas_h = int(canvas_w * ASPECT_H / ASPECT_W)
+    canvas_h = int(canvas_w * ah / aw)
     margin = int(canvas_h * 0.02)  # 2% de margen mínimo
 
     def fit_image(img, max_w, max_h):
@@ -205,14 +218,14 @@ def convert_double(paths: list[str], out_path: str):
     bg.save(out_path, "JPEG", quality=JPEG_QUALITY)
 
 
-def convert_on_background(src_path: str, bg_path: str, out_path: str):
-    """Monta una foto en la mitad superior de un canvas 3:4 con fondo personalizado."""
+def convert_on_background(src_path: str, bg_path: str, out_path: str, aspect: tuple[int, int] = None):
+    """Monta una foto en la mitad superior de un canvas con fondo personalizado."""
+    aw, ah = aspect or (DEFAULT_ASPECT_W, DEFAULT_ASPECT_H)
     img = Image.open(src_path).convert("RGB")
     bg_img = Image.open(bg_path).convert("RGB")
 
-    # Canvas 3:4 basado en la imagen más grande
     canvas_w = max(img.size[0], bg_img.size[0])
-    canvas_h = int(canvas_w * ASPECT_H / ASPECT_W)
+    canvas_h = int(canvas_w * ah / aw)
 
     # Escalar fondo para cubrir el canvas
     bg_scale = max(canvas_w / bg_img.size[0], canvas_h / bg_img.size[1])
@@ -278,6 +291,7 @@ QFrame#sidebar {
     background-color: #1e2230; border: 1px solid #2a3040; border-radius: 6px;
 }
 QFrame#separator { background-color: #2a3040; }
+QLabel#group_title { color: #556070; font-size: 11px; font-weight: bold; letter-spacing: 2px; }
 QLabel#section_title { color: #7090b0; font-size: 12px; font-weight: bold; }
 QLabel#bg_preview {
     background-color: #252a38; border: 1px solid #3a4558; border-radius: 4px;
@@ -311,6 +325,16 @@ QPushButton#btn_sort {
 }
 QPushButton#btn_sort:hover { color: #88aacc; }
 QPushButton#btn_sort[active="true"] { color: #5aafff; }
+QComboBox {
+    background-color: #252a38; color: #e0e0e0; border: 1px solid #3a4558;
+    border-radius: 4px; padding: 4px 8px; font-size: 12px;
+}
+QComboBox:hover { border-color: #4a5a78; }
+QComboBox::drop-down { border: none; }
+QComboBox QAbstractItemView {
+    background-color: #252a38; color: #e0e0e0; border: 1px solid #3a4558;
+    selection-background-color: #1a3050;
+}
 """
 
 # Rol custom para guardar el path completo y la fecha de modificación
@@ -444,6 +468,8 @@ class App(QMainWindow):
         self._clean_snapshot: tuple = ((), None)
 
         self.settings = QSettings("CDLM", "Convertir3x4")
+        self._aspect_w = self.settings.value("aspect_w", DEFAULT_ASPECT_W, type=int)
+        self._aspect_h = self.settings.value("aspect_h", DEFAULT_ASPECT_H, type=int)
 
         self._progress_signal.connect(self._on_progress)
         self._done_signal.connect(self._on_processing_done)
@@ -553,7 +579,7 @@ class App(QMainWindow):
 
         main_layout.addLayout(left_layout, stretch=1)
 
-        # ==================== SIDEBAR DERECHA (acciones) ====================
+        # ==================== SIDEBAR DERECHA ====================
         sidebar = QFrame()
         sidebar.setObjectName("sidebar")
         sidebar.setFixedWidth(200)
@@ -561,18 +587,23 @@ class App(QMainWindow):
         sidebar_layout.setContentsMargins(14, 16, 14, 16)
         sidebar_layout.setSpacing(0)
 
-        # --- Sección: Foto centrada ---
-        lbl1 = QLabel("FOTO CENTRADA")
+        # ── ACCIONES ──
+        lbl_group_actions = QLabel("ACCIONES")
+        lbl_group_actions.setObjectName("group_title")
+        sidebar_layout.addWidget(lbl_group_actions)
+        sidebar_layout.addSpacing(12)
+
+        # --- Foto centrada ---
+        lbl1 = QLabel("Foto centrada")
         lbl1.setObjectName("section_title")
         sidebar_layout.addWidget(lbl1)
-        sidebar_layout.addSpacing(8)
+        sidebar_layout.addSpacing(6)
 
         self.btn_centrada = QPushButton("Convertir")
         self.btn_centrada.setObjectName("btn_action")
         self.btn_centrada.setEnabled(False)
         sidebar_layout.addWidget(self.btn_centrada)
 
-        # Separador
         sidebar_layout.addSpacing(14)
         sep1 = QFrame()
         sep1.setObjectName("separator")
@@ -581,18 +612,17 @@ class App(QMainWindow):
         sidebar_layout.addWidget(sep1)
         sidebar_layout.addSpacing(14)
 
-        # --- Sección: Doble foto ---
-        lbl2 = QLabel("DOBLE FOTO")
+        # --- Doble foto ---
+        lbl2 = QLabel("Doble foto")
         lbl2.setObjectName("section_title")
         sidebar_layout.addWidget(lbl2)
-        sidebar_layout.addSpacing(8)
+        sidebar_layout.addSpacing(6)
 
         self.btn_doble = QPushButton("Convertir")
         self.btn_doble.setObjectName("btn_action")
         self.btn_doble.setEnabled(False)
         sidebar_layout.addWidget(self.btn_doble)
 
-        # Separador
         sidebar_layout.addSpacing(14)
         sep2 = QFrame()
         sep2.setObjectName("separator")
@@ -601,11 +631,11 @@ class App(QMainWindow):
         sidebar_layout.addWidget(sep2)
         sidebar_layout.addSpacing(14)
 
-        # --- Sección: Foto y fondo ---
-        lbl3 = QLabel("FOTO Y FONDO")
+        # --- Foto y fondo ---
+        lbl3 = QLabel("Foto y fondo")
         lbl3.setObjectName("section_title")
         sidebar_layout.addWidget(lbl3)
-        sidebar_layout.addSpacing(8)
+        sidebar_layout.addSpacing(6)
 
         self.lbl_bg_preview = QLabel("Sin fondo")
         self.lbl_bg_preview.setObjectName("bg_preview")
@@ -627,6 +657,35 @@ class App(QMainWindow):
         sidebar_layout.addWidget(self.btn_foto_fondo)
 
         sidebar_layout.addStretch()
+
+        # ── CONFIGURACIÓN ──
+        sep_config = QFrame()
+        sep_config.setObjectName("separator")
+        sep_config.setFrameShape(QFrame.Shape.HLine)
+        sep_config.setFixedHeight(1)
+        sidebar_layout.addWidget(sep_config)
+        sidebar_layout.addSpacing(12)
+
+        lbl_group_config = QLabel("CONFIGURACIÓN")
+        lbl_group_config.setObjectName("group_title")
+        sidebar_layout.addWidget(lbl_group_config)
+        sidebar_layout.addSpacing(12)
+
+        lbl_ratio = QLabel("Proporción")
+        lbl_ratio.setObjectName("section_title")
+        sidebar_layout.addWidget(lbl_ratio)
+        sidebar_layout.addSpacing(6)
+
+        self.combo_ratio = QComboBox()
+        saved_key = f"{self._aspect_w}:{self._aspect_h}"
+        current_idx = 0
+        for i, (label, w, h) in enumerate(ASPECT_RATIOS):
+            self.combo_ratio.addItem(label, (w, h))
+            if f"{w}:{h}" == saved_key:
+                current_idx = i
+        self.combo_ratio.setCurrentIndex(current_idx)
+        sidebar_layout.addWidget(self.combo_ratio)
+
         main_layout.addWidget(sidebar)
 
     def _connect_signals(self):
@@ -644,6 +703,14 @@ class App(QMainWindow):
         self.list_widget.itemSelectionChanged.connect(self._update_buttons)
         self.list_widget.orderChanged.connect(self._mark_dirty)
         self.thumb_slider.valueChanged.connect(self._on_thumb_resize)
+        self.combo_ratio.currentIndexChanged.connect(self._on_aspect_changed)
+
+    def _on_aspect_changed(self):
+        w, h = self.combo_ratio.currentData()
+        self._aspect_w = w
+        self._aspect_h = h
+        self.settings.setValue("aspect_w", w)
+        self.settings.setValue("aspect_h", h)
 
     # -------------------------------------------------------- Pixmap cache
     def _cached_pixmap(self, path: str) -> QPixmap | None:
@@ -1128,9 +1195,10 @@ class App(QMainWindow):
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _run_pairs_in_thread(self, func, pairs, out_dir):
+    def _run_pairs_in_thread(self, func, pairs, out_dir, aspect=None):
         """Ejecuta procesamiento de pares en hilo separado."""
         total = len(pairs)
+        sfx = self._ratio_suffix()
         self.progress.setMaximum(total)
         self.progress.setValue(0)
         self.progress.setVisible(True)
@@ -1141,8 +1209,8 @@ class App(QMainWindow):
                 name1 = os.path.splitext(os.path.basename(pair[0]))[0]
                 name2 = os.path.splitext(os.path.basename(pair[1]))[0] if len(pair) > 1 else ""
                 names = f"{name1}+{name2}" if name2 else name1
-                out_path = os.path.join(out_dir, f"{i+1:04d}_{names}_3x4.jpg")
-                func(pair, out_path)
+                out_path = os.path.join(out_dir, f"{i+1:04d}_{names}{sfx}.jpg")
+                func(pair, out_path, aspect=aspect)
                 self._progress_signal.emit(i + 1)
             self._done_signal.emit(out_dir)
 
@@ -1165,6 +1233,9 @@ class App(QMainWindow):
         self._update_count()
         open_folder(out_dir)
 
+    def _ratio_suffix(self):
+        return f"_{self._aspect_w}x{self._aspect_h}"
+
     # -------------------------------------------------------- Acción 1: Foto centrada
     def _action_foto_centrada(self):
         paths = self._get_selected_paths()
@@ -1173,10 +1244,12 @@ class App(QMainWindow):
         out_dir = self._ask_output_dir()
         if not out_dir:
             return
-        out_names = [f"{i+1:04d}_{os.path.splitext(os.path.basename(p))[0]}_3x4.jpg" for i, p in enumerate(paths)]
+        sfx = self._ratio_suffix()
+        out_names = [f"{i+1:04d}_{os.path.splitext(os.path.basename(p))[0]}{sfx}.jpg" for i, p in enumerate(paths)]
         if not self._check_overwrite(out_names, out_dir):
             return
-        self._run_in_thread(lambda p, o: convert_centered(p, o), paths, out_dir)
+        aspect = (self._aspect_w, self._aspect_h)
+        self._run_in_thread(lambda p, o: convert_centered(p, o, aspect=aspect), paths, out_dir, suffix=f"{sfx}.jpg")
 
     # -------------------------------------------------------- Acción 2: Doble foto
     def _action_doble_foto(self):
@@ -1192,16 +1265,18 @@ class App(QMainWindow):
         for i in range(0, len(paths), 2):
             pairs.append(paths[i:i + 2])
 
+        sfx = self._ratio_suffix()
         out_names = []
         for i, pair in enumerate(pairs):
             n1 = os.path.splitext(os.path.basename(pair[0]))[0]
             n2 = os.path.splitext(os.path.basename(pair[1]))[0] if len(pair) > 1 else ""
             names = f"{n1}+{n2}" if n2 else n1
-            out_names.append(f"{i+1:04d}_{names}_3x4.jpg")
+            out_names.append(f"{i+1:04d}_{names}{sfx}.jpg")
         if not self._check_overwrite(out_names, out_dir):
             return
 
-        self._run_pairs_in_thread(convert_double, pairs, out_dir)
+        aspect = (self._aspect_w, self._aspect_h)
+        self._run_pairs_in_thread(convert_double, pairs, out_dir, aspect=aspect)
 
     # -------------------------------------------------------- Acción 3: Foto y fondo
     def _action_foto_fondo(self):
@@ -1214,13 +1289,15 @@ class App(QMainWindow):
             return
 
         bg_path = self._bg_path
-        out_names = [f"{i+1:04d}_{os.path.splitext(os.path.basename(p))[0]}_fondo_3x4.jpg" for i, p in enumerate(paths)]
+        sfx = self._ratio_suffix()
+        out_names = [f"{i+1:04d}_{os.path.splitext(os.path.basename(p))[0]}_fondo{sfx}.jpg" for i, p in enumerate(paths)]
         if not self._check_overwrite(out_names, out_dir):
             return
 
+        aspect = (self._aspect_w, self._aspect_h)
         self._run_in_thread(
-            lambda p, o: convert_on_background(p, bg_path, o), paths, out_dir,
-            suffix="_fondo_3x4.jpg",
+            lambda p, o: convert_on_background(p, bg_path, o, aspect=aspect), paths, out_dir,
+            suffix=f"_fondo{sfx}.jpg",
         )
 
 
