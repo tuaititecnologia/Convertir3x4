@@ -60,12 +60,14 @@ jobs:
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
+        with:
+          path: artifacts
 
       - name: Rename binaries for release
         run: |
-          mv Convertir3x4-windows/Convertir3x4.exe Convertir3x4-windows.exe
-          mv Convertir3x4-macos/Convertir3x4 Convertir3x4-macos
-          mv Convertir3x4-linux/Convertir3x4 Convertir3x4-linux
+          mv artifacts/Convertir3x4-windows/Convertir3x4.exe Convertir3x4-windows.exe
+          mv artifacts/Convertir3x4-macos/Convertir3x4 Convertir3x4-macos
+          mv artifacts/Convertir3x4-linux/Convertir3x4 Convertir3x4-linux
 
       - name: Create release
         uses: softprops/action-gh-release@v2
