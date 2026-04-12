@@ -1,14 +1,20 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 import imageio_ffmpeg
+from PyInstaller.utils.hooks import copy_metadata
+
 _ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+
+_metadata = []
+for pkg in ('imageio', 'imageio_ffmpeg', 'numpy', 'Pillow'):
+    _metadata += copy_metadata(pkg)
 
 a = Analysis(
     ['Convertir3x4.py'],
     pathex=[],
     binaries=[(_ffmpeg_exe, 'imageio_ffmpeg/binaries')],
-    datas=[],
-    hiddenimports=['imageio', 'imageio_ffmpeg', 'numpy'],
+    datas=_metadata,
+    hiddenimports=['imageio', 'imageio_ffmpeg', 'imageio.plugins.ffmpeg', 'numpy'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
