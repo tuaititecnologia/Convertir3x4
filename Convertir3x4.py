@@ -23,7 +23,12 @@ from PyQt6.QtWidgets import (
 )
 
 # --- Constantes ---
-APP_TITLE = "Convertir a 3:4 — CDLM"
+try:
+    from _version import APP_VERSION
+except ImportError:
+    APP_VERSION = "dev"
+
+APP_TITLE = f"Convertir a 3:4 — CDLM ({APP_VERSION})"
 THUMB_SIZE = 130
 IMAGE_FILTER = "Imágenes (*.jpg *.jpeg *.png *.bmp *.webp);;Todos (*.*)"
 JPEG_QUALITY = 92

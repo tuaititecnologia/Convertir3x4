@@ -41,6 +41,16 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Write version file
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            VERSION="${GITHUB_REF_NAME}"
+          else
+            VERSION="dev-${GITHUB_SHA::7}"
+          fi
+          echo "APP_VERSION = \"${VERSION}\"" > _version.py
+
       - name: Build executable
         run: pyinstaller Convertir3x4.spec
 
@@ -65,15 +75,16 @@ jobs:
 
       - name: Rename binaries for release
         run: |
-          mv artifacts/Convertir3x4-windows/Convertir3x4.exe Convertir3x4-windows.exe
-          mv artifacts/Convertir3x4-macos/Convertir3x4 Convertir3x4-macos
-          mv artifacts/Convertir3x4-linux/Convertir3x4 Convertir3x4-linux
+          VERSION="${GITHUB_REF_NAME}"
+          mv artifacts/Convertir3x4-windows/Convertir3x4.exe "Convertir3x4-${VERSION}-windows.exe"
+          mv artifacts/Convertir3x4-macos/Convertir3x4 "Convertir3x4-${VERSION}-macos"
+          mv artifacts/Convertir3x4-linux/Convertir3x4 "Convertir3x4-${VERSION}-linux"
 
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            Convertir3x4-windows.exe
-            Convertir3x4-macos
-            Convertir3x4-linux
+            Convertir3x4-${{ github.ref_name }}-windows.exe
+            Convertir3x4-${{ github.ref_name }}-macos
+            Convertir3x4-${{ github.ref_name }}-linux
           generate_release_notes: true
