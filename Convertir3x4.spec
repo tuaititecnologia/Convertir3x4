@@ -1,5 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import sys
+
 import imageio_ffmpeg
 from PyInstaller.utils.hooks import copy_metadata
 
@@ -38,3 +40,15 @@ exe = EXE(
     console=False,
     windowed=True,
 )
+
+if sys.platform == 'darwin':
+    app = BUNDLE(
+        exe,
+        name='Convertir3x4.app',
+        icon=None,
+        bundle_identifier='com.cdlm.convertir3x4',
+        info_plist={
+            'NSHighResolutionCapable': True,
+            'LSMinimumSystemVersion': '11.0',
+        },
+    )

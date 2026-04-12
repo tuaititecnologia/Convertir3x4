@@ -17,7 +17,7 @@ jobs:
             artifact-path: dist/Convertir3x4.exe
           - os: macos-latest
             artifact-name: Convertir3x4-macos
-            artifact-path: dist/Convertir3x4
+            artifact-path: dist/Convertir3x4.dmg
           - os: ubuntu-latest
             artifact-name: Convertir3x4-linux
             artifact-path: dist/Convertir3x4
@@ -54,6 +54,20 @@ jobs:
       - name: Build executable
         run: pyinstaller Convertir3x4.spec
 
+      - name: Build DMG (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install create-dmg
+          create-dmg \
+            --volname "Convertir3x4" \
+            --window-size 540 380 \
+            --icon-size 120 \
+            --icon "Convertir3x4.app" 140 180 \
+            --app-drop-link 400 180 \
+            --no-internet-enable \
+            "dist/Convertir3x4.dmg" \
+            "dist/Convertir3x4.app"
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -77,7 +91,7 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME}"
           mv artifacts/Convertir3x4-windows/Convertir3x4.exe "Convertir3x4-${VERSION}-windows.exe"
-          mv artifacts/Convertir3x4-macos/Convertir3x4 "Convertir3x4-${VERSION}-macos"
+          mv artifacts/Convertir3x4-macos/Convertir3x4.dmg "Convertir3x4-${VERSION}-macos.dmg"
           mv artifacts/Convertir3x4-linux/Convertir3x4 "Convertir3x4-${VERSION}-linux"
 
       - name: Create release
@@ -85,6 +99,6 @@ jobs:
         with:
           files: |
             Convertir3x4-${{ github.ref_name }}-windows.exe
-            Convertir3x4-${{ github.ref_name }}-macos
+            Convertir3x4-${{ github.ref_name }}-macos.dmg
             Convertir3x4-${{ github.ref_name }}-linux
           generate_release_notes: true
