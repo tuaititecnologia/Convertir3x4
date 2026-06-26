@@ -6,3 +6,6 @@ dist/
 build/
 .pytest_cache/
 _version.py
+.env
+*.db
+*.sqlite3
