@@ -9,6 +9,8 @@ from PyQt6.QtWidgets import QMainWindow, QTabWidget
 
 from .config import APP_TITLE
 from .ui.tabs.tab_convertir import ConvertTab
+from .ui.tabs.tab_buscar import BuscarTab
+from .ui.tabs.tab_motor import MotorTab
 
 
 class MainWindow(QMainWindow):
@@ -23,11 +25,28 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
 
+        self.buscar_tab = BuscarTab()
+        self.tabs.addTab(self.buscar_tab, "Buscar")
+
+        self.motor_tab = MotorTab()
+        self.motor_tab.catalogChanged.connect(self.buscar_tab.refresh)
+        self.tabs.addTab(self.motor_tab, "Catalogar")
+
         self.convert_tab = ConvertTab()
         self.convert_tab.titleChanged.connect(self.setWindowTitle)
         self.tabs.addTab(self.convert_tab, "Convertir")
 
+        # El título lo controla la pestaña Convertir; al cambiar de pestaña,
+        # restaurar el título base para no arrastrar el "● proyecto.c3x4".
+        self.tabs.currentChanged.connect(self._on_tab_changed)
+
         self._restore_geometry()
+
+    def _on_tab_changed(self, index: int):
+        if self.tabs.widget(index) is not self.convert_tab:
+            self.setWindowTitle(APP_TITLE)
+        else:
+            self.convert_tab._update_title()
 
     def _restore_geometry(self):
         geom = self.settings.value("geometry")

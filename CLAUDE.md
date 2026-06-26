@@ -17,8 +17,8 @@ python -m venv venv && source venv/bin/activate && pip install -r requirements.t
 # Run — always use the venv python, `python` may not resolve correctly
 ./venv/bin/python Convertir3x4.py      # shim entry point (also: python -m convertir3x4)
 
-# Tests — use the venv python directly (shell activation doesn't work in non-interactive shells)
-./venv/bin/python -m pytest tests.py -v
+# Tests — pass both files explicitly (pytest's default discovery skips the tests.py name)
+./venv/bin/python -m pytest tests.py tests_catalog.py -v
 
 # Build executable
 pyinstaller Convertir3x4.spec
@@ -49,8 +49,32 @@ convertir3x4/
                            in the shim (tests call App._read_project_file).
 ```
 
-Future phases add `engine/` (inventory, probe, dedup, vision), `catalog/` (SQLite),
-and `search/` per the plan. **When extending, keep the shim's re-exports in sync** so
+**Media-manager layers (Fase 2, present):**
+
+```
+convertir3x4/
+  appdata.py             resolves per-user data dir (catalog.db + thumbs/) via QStandardPaths
+  workers.py             EngineWorker(QThread): runs fn(progress_cb) off the UI thread
+  catalog/               the truth — SQLite (Qt-free):
+    db.py                connect()/schema/migrations; FTS5 table media_fts (rowid = media.id)
+    models.py            Media, ProbeResult dataclasses
+    repo.py              Repo: all SQL lives here (upsert_media, dedup, tags, search). Keeps FTS in sync.
+    thumbs.py            PIL thumbnail generation (no Qt → safe in worker threads)
+  engine/                the engine — cheap→expensive cascade (Qt-free):
+    inventory.py         scan() folders for media; kind_for(); folder_origin()
+    probe.py             technical metadata: PIL for images, imageio (bundled ffmpeg, NO ffprobe) for video.
+                         Computes quality_flag (ok/low_res/corrupt) inline — no separate quality module.
+    dedup.py             sha256 (hashlib) + dHash (numpy, NO imagehash/scipy) + hamming()
+    pipeline.py          run_stage0(): inventory→probe→hash→thumb→upsert. Idempotent (skips unchanged).
+```
+
+Tabs wired in `app.py`: **Buscar** (search catalog), **Catalogar** (run Stage 0 via MotorTab),
+**Convertir**. SQLite rule: never share a connection across threads — each worker opens its own
+inside `fn`; WAL lets the worker write while the UI reads. No new runtime deps were added
+(ffprobe avoided via imageio; perceptual hash done in numpy).
+
+Future phases add AI vision (`engine/vision.py`), tagging UI, quarantine, and optional local
+embeddings (`search/`) per the plan. **When extending, keep the shim's re-exports in sync** so
 the tests and `.spec` entry point don't break.
 
 ### Image Processing Functions
