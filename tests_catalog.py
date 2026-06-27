@@ -95,6 +95,23 @@ class TestRepo:
         res = repo.search("pichanal")
         assert len(res) == 1 and res[0].id == mid
 
+    def test_remove_tag(self, repo):
+        mid = repo.upsert_media(Media(path="/x/foto.jpg", filename="foto.jpg", kind="image"))
+        repo.apply_tag(mid, "pichanal")
+        assert repo.tags_for(mid) == ["pichanal"]
+        repo.remove_tag(mid, "  Pichanal ")  # normaliza antes de borrar
+        assert repo.tags_for(mid) == []
+        assert repo.search("pichanal") == []  # FTS se actualizó
+
+    def test_tag_counts_partial_vs_full(self, repo):
+        a = repo.upsert_media(Media(path="/a.jpg", filename="a.jpg", kind="image"))
+        b = repo.upsert_media(Media(path="/b.jpg", filename="b.jpg", kind="image"))
+        repo.apply_tag(a, "obra")
+        repo.apply_tag(b, "obra")
+        repo.apply_tag(a, "pichanal")  # solo en a
+        counts = dict(repo.tag_counts([a, b]))
+        assert counts["obra"] == 2 and counts["pichanal"] == 1
+
     def test_search_ignores_diacritics(self, repo):
         repo.upsert_media(Media(path="/x/construcción.jpg", filename="construcción.jpg", kind="image"))
         assert len(repo.search("construccion")) == 1

@@ -81,6 +81,16 @@ QCheckBox::indicator {
 }
 QCheckBox::indicator:checked { background-color: #0078d4; border-color: #0078d4; }
 QCheckBox::indicator:hover { border-color: #4a5a78; }
+QPushButton#tag_chip {
+    background-color: #1a3050; border: 1px solid #2a5070; color: #70b8ff;
+    border-radius: 11px; padding: 5px 12px; font-size: 12px;
+}
+QPushButton#tag_chip:hover { background-color: #24406a; border-color: #3070a0; }
+QPushButton#tag_chip_partial {
+    background-color: #2a2a1a; border: 1px solid #50502a; color: #c0b060;
+    border-radius: 11px; padding: 5px 12px; font-size: 12px;
+}
+QPushButton#tag_chip_partial:hover { background-color: #3a3a24; border-color: #707030; }
 QTabWidget::pane { border: 1px solid #2a3040; border-radius: 6px; top: -1px; }
 QTabBar::tab {
     background-color: #1e2230; color: #8899aa; border: 1px solid #2a3040;

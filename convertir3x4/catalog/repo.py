@@ -124,6 +124,18 @@ class Repo:
         self._sync_fts(media_id)
         self.conn.commit()
 
+    def remove_tag(self, media_id: int, name: str):
+        norm = self.normalize_tag(name)
+        row = self.conn.execute("SELECT id FROM tag WHERE name = ?", (norm,)).fetchone()
+        if not row:
+            return
+        self.conn.execute(
+            "DELETE FROM media_tag WHERE media_id = ? AND tag_id = ?",
+            (media_id, row["id"]),
+        )
+        self._sync_fts(media_id)
+        self.conn.commit()
+
     def tags_for(self, media_id: int) -> list[str]:
         rows = self.conn.execute(
             "SELECT t.name FROM tag t JOIN media_tag mt ON mt.tag_id = t.id "
@@ -131,6 +143,24 @@ class Repo:
             (media_id,),
         ).fetchall()
         return [r["name"] for r in rows]
+
+    def tag_counts(self, media_ids: list[int]) -> list[tuple[str, int]]:
+        """Tags presentes en una selección, con cuántos de esos medios los tienen.
+
+        Útil para los chips del taggeo por lote: un tag con count == len(sel) está
+        en TODA la selección; con count < len(sel) está solo en algunos.
+        """
+        if not media_ids:
+            return []
+        placeholders = ",".join("?" for _ in media_ids)
+        rows = self.conn.execute(
+            f"SELECT t.name, COUNT(*) AS n FROM tag t "
+            f"JOIN media_tag mt ON mt.tag_id = t.id "
+            f"WHERE mt.media_id IN ({placeholders}) "
+            f"GROUP BY t.id ORDER BY n DESC, t.name",
+            media_ids,
+        ).fetchall()
+        return [(r["name"], r["n"]) for r in rows]
 
     # ------------------------------------------------------------- búsqueda
     def search(self, query: str, limit: int = 500) -> list[Media]:

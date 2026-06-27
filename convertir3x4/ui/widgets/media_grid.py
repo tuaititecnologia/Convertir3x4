@@ -4,13 +4,60 @@
 (validado en el spike de la Fase 0) se agrega aquí en la Fase 3.
 """
 
-from PyQt6.QtCore import Qt, QPoint, pyqtSignal
-from PyQt6.QtGui import QPainter, QPen, QColor
-from PyQt6.QtWidgets import QApplication, QListWidget, QListWidgetItem
+import os
 
-# Rol custom para guardar el path completo y la fecha de modificación
+from PyQt6.QtCore import Qt, QPoint, QSize, QUrl, QMimeData, pyqtSignal
+from PyQt6.QtGui import QPainter, QPen, QColor, QDrag
+from PyQt6.QtWidgets import (
+    QApplication, QListWidget, QListWidgetItem, QAbstractItemView,
+)
+
+# Roles custom para guardar metadata en cada QListWidgetItem
 PATH_ROLE = Qt.ItemDataRole.UserRole
 MTIME_ROLE = Qt.ItemDataRole.UserRole + 1
+MEDIA_ID_ROLE = Qt.ItemDataRole.UserRole + 2
+
+
+class DragOutListWidget(QListWidget):
+    """Grilla de miniaturas que arrastra el ARCHIVO REAL hacia afuera.
+
+    Mecánica validada en el spike de la Fase 0: ProPresenter (con "Manage Media
+    Automatically" en OFF) recibe el drop como LINK a la ruta original, no como
+    copia. Se ofrece Copy|Link y el destino decide; PP linkea.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setViewMode(QListWidget.ViewMode.IconMode)
+        self.setResizeMode(QListWidget.ResizeMode.Adjust)
+        self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.setSpacing(6)
+        self.setWordWrap(True)
+        self.setDragEnabled(True)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.DragOnly)
+
+    def startDrag(self, supported_actions):
+        items = self.selectedItems()
+        urls = []
+        for it in items:
+            path = it.data(PATH_ROLE)
+            if path and os.path.exists(path):
+                urls.append(QUrl.fromLocalFile(path))
+        if not urls:
+            return
+
+        mime = QMimeData()
+        mime.setUrls(urls)
+
+        drag = QDrag(self)
+        drag.setMimeData(mime)
+        icon = items[0].icon()
+        if not icon.isNull():
+            drag.setPixmap(icon.pixmap(128, 128))
+        drag.exec(
+            Qt.DropAction.CopyAction | Qt.DropAction.LinkAction,
+            Qt.DropAction.LinkAction,
+        )
 
 
 class ReorderListWidget(QListWidget):

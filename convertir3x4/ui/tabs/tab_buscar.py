@@ -1,7 +1,7 @@
-"""Pestaña 'Buscar': busca en el catálogo (FTS5) y muestra miniaturas.
+"""Pestaña 'Buscar': busca en el catálogo (FTS5 + substring), muestra miniaturas,
+permite taggear por lote y arrastrar a ProPresenter (drag-out como link).
 
-Lee el catálogo en el hilo de UI con su propia conexión. El drag-OUT hacia
-ProPresenter (spike ya validado) se suma en la Fase 3.
+Lee/escribe el catálogo en el hilo de UI con su propia conexión.
 """
 
 import os
@@ -10,13 +10,28 @@ from PyQt6.QtCore import Qt, QSize, QTimer
 from PyQt6.QtGui import QIcon, QPixmap
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QListWidget, QListWidgetItem, QAbstractItemView,
+    QListWidgetItem, QFrame,
 )
+
+
+class SearchLineEdit(QLineEdit):
+    """Campo de búsqueda: botón X para limpiar + ESC vacía el campo."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setClearButtonEnabled(True)
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Escape and self.text():
+            self.clear()
+            return
+        super().keyPressEvent(event)
 
 from ...appdata import db_path
 from ...catalog.db import connect
 from ...catalog.repo import Repo
-from ..widgets.media_grid import PATH_ROLE
+from ..widgets.media_grid import DragOutListWidget, PATH_ROLE, MEDIA_ID_ROLE
+from ..widgets.tag_bar import TagBar
 
 _GRID_THUMB = 150
 
@@ -38,7 +53,7 @@ class BuscarTab(QWidget):
         layout.setSpacing(8)
 
         row = QHBoxLayout()
-        self.txt_query = QLineEdit()
+        self.txt_query = SearchLineEdit()
         self.txt_query.setPlaceholderText("Buscar por nombre, carpeta o tag…")
         self.txt_query.textChanged.connect(lambda _: self._debounce.start())
         row.addWidget(self.txt_query, 1)
@@ -46,14 +61,21 @@ class BuscarTab(QWidget):
         row.addWidget(self.lbl_count)
         layout.addLayout(row)
 
-        self.grid = QListWidget()
-        self.grid.setViewMode(QListWidget.ViewMode.IconMode)
+        self.grid = DragOutListWidget()
         self.grid.setIconSize(QSize(_GRID_THUMB, _GRID_THUMB))
-        self.grid.setResizeMode(QListWidget.ResizeMode.Adjust)
-        self.grid.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        self.grid.setSpacing(6)
-        self.grid.setWordWrap(True)
-        layout.addWidget(self.grid)
+        self.grid.itemSelectionChanged.connect(self._on_selection_changed)
+        layout.addWidget(self.grid, 1)
+
+        sep = QFrame()
+        sep.setObjectName("separator")
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setFixedHeight(1)
+        layout.addWidget(sep)
+
+        self.tag_bar = TagBar()
+        self.tag_bar.tagApplied.connect(self._apply_tag_to_selection)
+        self.tag_bar.tagRemoved.connect(self._remove_tag_from_selection)
+        layout.addWidget(self.tag_bar)
 
     # ------------------------------------------------------------- datos
     def _repo(self) -> Repo | None:
@@ -70,12 +92,14 @@ class BuscarTab(QWidget):
             self._conn.close()
             self._conn = None
         self._do_search()
+        self._reload_known_tags()
 
     def _do_search(self):
         repo = self._repo()
         if repo is None:
             self.lbl_count.setText("Sin catálogo todavía")
             self.grid.clear()
+            self.tag_bar.set_enabled(False)
             return
         results = repo.search(self.txt_query.text())
         self._populate(results)
@@ -85,6 +109,7 @@ class BuscarTab(QWidget):
         for m in results:
             item = QListWidgetItem(m.filename)
             item.setData(PATH_ROLE, m.path)
+            item.setData(MEDIA_ID_ROLE, m.id)
             icon = self._icon_for(m)
             if icon:
                 item.setIcon(icon)
@@ -96,6 +121,7 @@ class BuscarTab(QWidget):
             item.setToolTip(tip.strip())
             self.grid.addItem(item)
         self.lbl_count.setText(f"{len(results)} resultados")
+        self._on_selection_changed()
 
     def _icon_for(self, media) -> QIcon | None:
         thumb = media.thumb_path
@@ -112,3 +138,45 @@ class BuscarTab(QWidget):
                     Qt.AspectRatioMode.KeepAspectRatio,
                     Qt.TransformationMode.SmoothTransformation))
         return None
+
+    # ------------------------------------------------------------- tags
+    def _selected_ids(self) -> list[int]:
+        ids = []
+        for it in self.grid.selectedItems():
+            mid = it.data(MEDIA_ID_ROLE)
+            if mid is not None:
+                ids.append(mid)
+        return ids
+
+    def _on_selection_changed(self):
+        ids = self._selected_ids()
+        repo = self._repo()
+        self.tag_bar.set_enabled(bool(ids))
+        if not ids or repo is None:
+            self.tag_bar.set_chips([], 0)
+            return
+        self.tag_bar.set_chips(repo.tag_counts(ids), len(ids))
+
+    def _apply_tag_to_selection(self, name: str):
+        repo = self._repo()
+        ids = self._selected_ids()
+        if repo is None or not ids:
+            return
+        for mid in ids:
+            repo.apply_tag(mid, name)
+        self._reload_known_tags()
+        self._on_selection_changed()
+
+    def _remove_tag_from_selection(self, name: str):
+        repo = self._repo()
+        ids = self._selected_ids()
+        if repo is None or not ids:
+            return
+        for mid in ids:
+            repo.remove_tag(mid, name)
+        self._on_selection_changed()
+
+    def _reload_known_tags(self):
+        repo = self._repo()
+        if repo is not None:
+            self.tag_bar.set_known_tags(repo.all_tag_names())
