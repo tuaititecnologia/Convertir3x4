@@ -104,6 +104,30 @@ class TestRepo:
         repo.upsert_media(Media(path="/b.jpg", filename="b.jpg", kind="image"))
         assert len(repo.search("")) == 2
 
+    def test_search_substring_in_middle_of_filename(self, repo):
+        """Pedazo en el MEDIO de un nombre opaco (caso WhatsApp/FB)."""
+        repo.upsert_media(Media(
+            path="/x/FB_IMG_1761480478237.jpg",
+            filename="FB_IMG_1761480478237.jpg", kind="image"))
+        repo.upsert_media(Media(path="/x/otra.jpg", filename="otra.jpg", kind="image"))
+        res = repo.search("4782")
+        assert len(res) == 1 and res[0].filename == "FB_IMG_1761480478237.jpg"
+
+    def test_search_substring_no_duplicate_with_fts(self, repo):
+        """Un nombre que matchea por FTS y por substring no se duplica."""
+        repo.upsert_media(Media(
+            path="/x/patio_4782.jpg", filename="patio_4782.jpg", kind="image"))
+        assert len(repo.search("patio")) == 1
+        assert len(repo.search("4782")) == 1
+
+    def test_search_underscore_is_literal(self, repo):
+        """El '_' del LIKE no debe actuar como comodín."""
+        repo.upsert_media(Media(path="/x/ab_cd.jpg", filename="ab_cd.jpg", kind="image"))
+        repo.upsert_media(Media(path="/x/abxcd.jpg", filename="abxcd.jpg", kind="image"))
+        res = repo.search("b_c")
+        names = {m.filename for m in res}
+        assert "ab_cd.jpg" in names and "abxcd.jpg" not in names
+
 
 # --------------------------------------------------------------- inventory
 class TestInventory:

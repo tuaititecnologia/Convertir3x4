@@ -134,16 +134,56 @@ class Repo:
 
     # ------------------------------------------------------------- búsqueda
     def search(self, query: str, limit: int = 500) -> list[Media]:
-        """Búsqueda FTS5. Vacío → todos los medios."""
+        """Búsqueda combinada. Vacío → todos los medios.
+
+        Capa 1: FTS5 (palabras/prefijo/tags/sin acentos) sobre nombre, carpeta,
+        descripción IA, OCR, sinónimos y tags — ranqueado por relevancia.
+        Capa 2: substring (LIKE) sobre nombre + carpeta, para cazar pedazos en
+        el MEDIO de nombres opacos (p.ej. '4782' dentro de FB_IMG_...4782...),
+        que FTS no encuentra porque solo matchea prefijos de token.
+        Los resultados de FTS van primero; los de substring se agregan sin duplicar.
+        """
         if not query or not query.strip():
             return self.all_media()[:limit]
+
+        results: list[Media] = []
+        seen: set[int] = set()
+
         match = _to_fts_query(query)
-        rows = self.conn.execute(
+        for r in self.conn.execute(
             "SELECT m.* FROM media_fts f JOIN media m ON m.id = f.rowid "
             "WHERE media_fts MATCH ? ORDER BY rank LIMIT ?",
             (match, limit),
+        ):
+            if r["id"] not in seen:
+                seen.add(r["id"])
+                results.append(_row_to_media(r))
+
+        for r in self._substring_rows(query, limit):
+            if r["id"] not in seen:
+                seen.add(r["id"])
+                results.append(_row_to_media(r))
+
+        return results[:limit]
+
+    def _substring_rows(self, query: str, limit: int):
+        """Filas cuyo nombre+carpeta contienen TODOS los términos (substring)."""
+        terms = [t for t in query.split() if t]
+        if not terms:
+            return []
+        # Cada término debe aparecer como substring en filename||folder_origin.
+        clauses = " AND ".join(
+            "(filename LIKE ? ESCAPE '\\' OR IFNULL(folder_origin,'') LIKE ? ESCAPE '\\')"
+            for _ in terms
+        )
+        params = []
+        for t in terms:
+            like = f"%{_escape_like(t)}%"
+            params.extend([like, like])
+        params.append(limit)
+        return self.conn.execute(
+            f"SELECT * FROM media WHERE {clauses} ORDER BY filename LIMIT ?", params
         ).fetchall()
-        return [_row_to_media(r) for r in rows]
 
     # ------------------------------------------------------------- FTS interno
     def _sync_fts(self, media_id: int):
@@ -206,3 +246,8 @@ def _to_fts_query(query: str) -> str:
         if clean:
             terms.append(f'"{clean}"*')
     return " ".join(terms) if terms else '""'
+
+
+def _escape_like(term: str) -> str:
+    """Escapa los comodines de LIKE (\\, %, _) para tratarlos como literales."""
+    return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
