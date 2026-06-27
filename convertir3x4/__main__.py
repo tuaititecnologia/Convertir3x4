@@ -10,6 +10,10 @@ from .ui.style import DARK_STYLE
 
 def main():
     app = QApplication(sys.argv)
+    # Define dónde caen los datos por usuario (catalog.db, thumbs/) y las QSettings:
+    # AppDataLocation usa estos nombres → .../Application Support/CDLM/Convertir3x4/
+    app.setOrganizationName("CDLM")
+    app.setApplicationName("Convertir3x4")
     app.setStyleSheet(DARK_STYLE)
     window = MainWindow()
     window.show()
