@@ -6,7 +6,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Convertir a 3:4 — CDLM** is a Python GUI desktop app for the Catedral de los Milagros church. It started as a photo aspect-ratio converter (default 8:9, matching the LED screen) and is evolving into an AI-powered media manager (catalog, search, tagging, drag-out to ProPresenter). The aspect-ratio converter remains as one tool ("Convertir" tab). Uses PyQt6 for the interface and Pillow for image processing. Distributed as a single `.exe` via GitHub Actions.
 
-The full evolution plan lives at `/Users/alejandro/.claude/plans/necesito-que-dise-es-un-tranquil-crystal.md`.
+The original evolution plan (`/Users/alejandro/.claude/plans/necesito-que-dise-es-un-tranquil-crystal.md`) no longer exists.
+The current design for the catalog lives in `docs/catalogo-compartido.md`: moving the local SQLite catalog to a
+PostgreSQL database on the church NAS, shared by the editing PC and the ProPresenter PC over SMB. Read it before
+touching `catalog/`, `engine/` or `appdata.py`.
 
 ## Commands
 
