@@ -11,7 +11,11 @@ Diseño en docs/convertir-fotos-y-videos.md (15/11/2026):
 
 La lógica sin Qt está en convert/batch.py (qué sale y cómo se llama),
 convert/clips.py (video) y convert/download.py (links). La ventana principal
-maneja geometría y cierre; esta pestaña le pasa el título por `titleChanged`.
+maneja geometría y cierre.
+
+Sin proyectos (se sacaron el 15/11/2026: nadie los usaba). La lista se guarda
+sola en cada cambio y vuelve al abrir la app; "Vaciar" la deja en blanco sin
+tocar ningún archivo.
 """
 
 import json
@@ -27,9 +31,8 @@ from PyQt6.QtWidgets import (
 )
 
 from ...appdata import clip_cache_dir, tools_dir
-from ...config import APP_TITLE, THUMB_SIZE
+from ...config import THUMB_SIZE
 from ...convert import batch, download
-from ...convert.project import read_project_file
 from ...utils import open_folder
 from .. import icons
 from ..style import T
@@ -55,7 +58,6 @@ MODES = [
 
 
 class ConvertTab(QWidget):
-    titleChanged = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -63,9 +65,6 @@ class ConvertTab(QWidget):
         self.sort_asc = True
         self._pixmap_cache: dict[str, QPixmap] = {}
         self._bg_path: str | None = None
-        self._project_path: str | None = None
-        self._project_dirty = False
-        self._clean_snapshot: tuple = ((), None)
         self._mode = batch.CENTRADA
         # Opciones avanzadas: SOLO en memoria, vuelven a lo estándar al abrir la app.
         self._opts = SessionOptions()
@@ -81,7 +80,6 @@ class ConvertTab(QWidget):
         self._build_ui()
         self._connect_signals()
         self.restore_state()
-        self._clean_snapshot = self._current_snapshot()
         self._refresh_panel()
 
     # ================================================================ UI
@@ -93,25 +91,9 @@ class ConvertTab(QWidget):
         left = QVBoxLayout()
         left.setSpacing(10)
 
-        # --- barra superior: proyecto · agregar · link · filtro · contador
+        # --- barra superior: agregar · link · quitar · vaciar · filtro · contador
         bar = QHBoxLayout()
         bar.setSpacing(6)
-        self.btn_new_project = self._icon_button("file-plus", "Nuevo proyecto")
-        self.btn_load_project = self._icon_button("folder-open", "Abrir proyecto")
-        self.btn_save_project = self._icon_button("save", "Guardar proyecto")
-        self.btn_close_project = self._icon_button("x", "Cerrar proyecto")
-        self.btn_save_project.setEnabled(False)
-        self.btn_close_project.setEnabled(False)
-        for b in (self.btn_new_project, self.btn_load_project,
-                  self.btn_save_project, self.btn_close_project):
-            bar.addWidget(b)
-        sep = QFrame()
-        sep.setObjectName("separator")
-        sep.setFixedSize(1, 22)
-        bar.addSpacing(4)
-        bar.addWidget(sep)
-        bar.addSpacing(4)
-
         self.btn_load = QPushButton("Agregar")
         self.btn_load.setIcon(icons.icon("plus", 16, T.text))
         self.btn_load.setToolTip("Agregar fotos o videos de la PC o del NAS")
@@ -120,9 +102,15 @@ class ConvertTab(QWidget):
         self.btn_link.setIcon(icons.icon("link", 15, T.text))
         self.btn_link.setToolTip("Bajar un video de YouTube, Facebook u otro sitio")
         bar.addWidget(self.btn_link)
-        self.btn_remove = self._icon_button("trash-2", "Quitar de la lista lo seleccionado (Supr)")
+        self.btn_remove = self._icon_button("trash-2", "Quitar de la lista lo seleccionado (Supr). "
+                                                       "Los archivos no se borran.")
         self.btn_remove.setEnabled(False)
         bar.addWidget(self.btn_remove)
+        self.btn_clear = QPushButton("Vaciar")
+        self.btn_clear.setToolTip("Sacar todo de la lista para empezar de nuevo. "
+                                  "Los archivos no se borran.")
+        self.btn_clear.setEnabled(False)
+        bar.addWidget(self.btn_clear)
         bar.addSpacing(8)
 
         seg = QFrame()
@@ -350,15 +338,12 @@ class ConvertTab(QWidget):
         self.txt_link.returnPressed.connect(self._start_download)
         self.btn_link_close.clicked.connect(lambda: self.link_row.setVisible(False))
         self.btn_remove.clicked.connect(self._remove_selected)
-        self.btn_new_project.clicked.connect(self._new_project)
-        self.btn_load_project.clicked.connect(self._load_project)
-        self.btn_save_project.clicked.connect(self._save_project)
-        self.btn_close_project.clicked.connect(self._close_project)
+        self.btn_clear.clicked.connect(self._clear_list)
         self.btn_load_bg.clicked.connect(self._load_background)
         self.btn_sort_nombre.clicked.connect(lambda: self._toggle_sort("nombre"))
         self.btn_sort_fecha.clicked.connect(lambda: self._toggle_sort("fecha"))
         self.list_widget.itemSelectionChanged.connect(self._refresh_panel)
-        self.list_widget.orderChanged.connect(self._mark_dirty)
+        self.list_widget.orderChanged.connect(self._save_list)
         self.thumb_slider.valueChanged.connect(self._on_thumb_resize)
         self._kind_group.buttonClicked.connect(lambda _: self._apply_filter())
         self._mode_group.buttonClicked.connect(self._on_mode)
@@ -482,7 +467,7 @@ class ConvertTab(QWidget):
             return
         self.settings.setValue("last_dir", os.path.dirname(paths[0]))
         if self._add_paths(paths):
-            self._mark_dirty()
+            self._save_list()
 
     def _remove_selected(self):
         if self._busy():
@@ -493,7 +478,7 @@ class ConvertTab(QWidget):
             self.list_widget.takeItem(r)
         if rows:
             self._update_count()
-            self._mark_dirty()
+            self._save_list()
             self._refresh_panel()
 
     # ================================================================ links
@@ -546,7 +531,7 @@ class ConvertTab(QWidget):
         if it is not None:
             self.list_widget.takeItem(self.list_widget.row(it))
         self._add_paths([path])
-        self._mark_dirty()
+        self._save_list()
 
     def _on_download_failed(self, url: str, reason: str):
         it = self._link_item(url)
@@ -591,7 +576,7 @@ class ConvertTab(QWidget):
             b.style().unpolish(b)
             b.style().polish(b)
         self._apply_filter()
-        self._mark_dirty()
+        self._save_list()
 
     def _on_thumb_resize(self, size: int):
         self.list_widget.set_thumb_size(size)
@@ -667,7 +652,7 @@ class ConvertTab(QWidget):
             return
         self.settings.setValue("last_dir", os.path.dirname(path))
         self._set_background(path)
-        self._mark_dirty()
+        self._save_list()
 
     def _set_background(self, path: str | None):
         self._bg_path = path if path and os.path.exists(path) else None
@@ -743,8 +728,8 @@ class ConvertTab(QWidget):
         w.start()
 
     def _set_busy(self, busy: bool):
-        for b in (self.btn_load, self.btn_link, self.btn_new_project, self.btn_load_project,
-                  self.btn_close_project, self.btn_advanced, self.btn_load_bg):
+        for b in (self.btn_load, self.btn_link, self.btn_clear, self.btn_advanced,
+                  self.btn_load_bg):
             b.setEnabled(not busy)
         for b in self._mode_buttons.values():
             b.setEnabled(not busy)
@@ -839,117 +824,39 @@ class ConvertTab(QWidget):
         if n_vid:
             parts.append("1 video" if n_vid == 1 else f"{n_vid} videos")
         self.lbl_count.setText(" · ".join(parts))
-        has = bool(items) or self._bg_path is not None or self._project_path is not None
-        self.btn_save_project.setEnabled(has and not self._busy())
-        self.btn_close_project.setEnabled(has and not self._busy())
+        self.btn_clear.setEnabled(bool(items) and not self._busy())
 
-    @staticmethod
-    def _read_project_file(path: str) -> dict | str:
-        """Lee y valida un archivo de proyecto. Retorna dict o mensaje de error."""
-        return read_project_file(path)
+    def _clear_list(self):
+        """Vaciar la lista para arrancar de nuevo. No borra ningún archivo."""
+        if not self.list_widget.count() or self._busy():
+            return
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Icon.Question)
+        msg.setWindowTitle("Vaciar la lista")
+        msg.setText("¿Sacar todo de la lista?")
+        msg.setInformativeText("Las fotos y los videos no se borran: siguen en su carpeta.")
+        vaciar = msg.addButton("Vaciar", QMessageBox.ButtonRole.DestructiveRole)
+        msg.addButton("Cancelar", QMessageBox.ButtonRole.RejectRole)
+        msg.exec()
+        if msg.clickedButton() is vaciar:
+            self.clear_list()
 
-    def _current_snapshot(self) -> tuple:
-        return (tuple(self._paths()), self._bg_path)
-
-    def _mark_clean(self):
-        self._clean_snapshot = self._current_snapshot()
-        self._project_dirty = False
-        self._update_title()
-
-    def _mark_dirty(self):
-        dirty = self._current_snapshot() != self._clean_snapshot
-        if dirty != self._project_dirty:
-            self._project_dirty = dirty
-            self._update_title()
-
-    def _update_title(self):
-        title = APP_TITLE
-        if self._project_path:
-            title = f"{os.path.splitext(os.path.basename(self._project_path))[0]} — {APP_TITLE}"
-        if self._project_dirty:
-            title = f"● {title}"
-        self.titleChanged.emit(title)
-
-    def _reset_project(self):
+    def clear_list(self):
         self.list_widget.clear()
         self._pixmap_cache.clear()
-        self._set_background(None)
-        self._project_path = None
         self._show_status("")
         self.btn_open_out.setVisible(False)
-        self._mark_clean()
         self._update_count()
         self._refresh_panel()
+        self._save_list()
 
-    def _confirm_discard(self) -> bool:
-        if not self._project_dirty:
-            return True
-        resp = self._ask_save_before_action()
-        if resp == QMessageBox.StandardButton.Cancel:
-            return False
-        if resp == QMessageBox.StandardButton.Yes:
-            self._save_project()
-        return True
-
-    def _new_project(self):
-        if self._confirm_discard():
-            self._reset_project()
-
-    def _close_project(self):
-        if self._confirm_discard():
-            self._reset_project()
-
-    def _write_project(self, path: str):
-        # "images" guarda fotos y videos: el nombre de la clave queda por compatibilidad.
-        project = {"version": 1, "images": self._paths(), "background": self._bg_path}
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(project, f, ensure_ascii=False, indent=2)
-        self._project_path = path
-        self._mark_clean()
-
-    def _save_project(self):
-        if self._project_path:
-            self._write_project(self._project_path)
-        else:
-            self._save_project_as()
-
-    def _save_project_as(self):
-        last_dir = self.settings.value("last_project_dir", "")
-        path, _ = QFileDialog.getSaveFileName(self, "Guardar proyecto", last_dir,
-                                              "Proyecto Convertir (*.c3x4)")
-        if not path:
-            return
-        self.settings.setValue("last_project_dir", os.path.dirname(path))
-        self._write_project(path)
-
-    def _load_project(self):
-        if not self._confirm_discard():
-            return
-        last_dir = self.settings.value("last_project_dir", "")
-        path, _ = QFileDialog.getOpenFileName(self, "Abrir proyecto", last_dir,
-                                              "Proyecto Convertir (*.c3x4)")
-        if not path:
-            return
-        self.settings.setValue("last_project_dir", os.path.dirname(path))
-        self.open_project(path)
-
-    def open_project(self, path: str):
-        result = self._read_project_file(path)
-        if isinstance(result, str):
-            QMessageBox.critical(self, "Error", result)
-            return
-        self.list_widget.clear()
-        self._pixmap_cache.clear()
-        # Los que faltan entran marcados "No disponible", en vez de un cartel.
-        self._add_paths(result["images"], missing_ok=True)
-        self._set_background(result.get("background"))
-        self._project_path = path
-        self._mark_clean()
-        self._update_count()
-        self._refresh_panel()
+    def _save_list(self):
+        """Se guarda en cada cambio: si la app se cierra de golpe, la lista sigue."""
+        self.settings.setValue("image_paths", json.dumps(self._paths()))
+        self.settings.setValue("bg_path", self._bg_path or "")
 
     def save_state(self):
-        self.settings.setValue("image_paths", json.dumps(self._paths()))
+        self._save_list()
         self.settings.setValue("thumb_size", self.thumb_slider.value())
 
     def restore_state(self):
@@ -964,20 +871,12 @@ class ConvertTab(QWidget):
             paths = []
         if paths:
             self._add_paths([p for p in paths if isinstance(p, str)], missing_ok=True)
-
-    def _ask_save_before_action(self) -> QMessageBox.StandardButton:
-        msg = QMessageBox(self)
-        msg.setIcon(QMessageBox.Icon.Question)
-        msg.setWindowTitle("Cambios sin guardar")
-        msg.setText("El proyecto tiene cambios sin guardar.")
-        msg.setInformativeText("¿Guardar antes de continuar?")
-        msg.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-                               | QMessageBox.StandardButton.Cancel)
-        msg.setDefaultButton(QMessageBox.StandardButton.Yes)
-        return msg.exec()
+        bg = self.settings.value("bg_path", "")
+        if bg:
+            self._set_background(bg)
 
     def confirm_close(self) -> bool:
-        """Pide guardar si hay cambios. Retorna False si el usuario cancela."""
+        """Solo pregunta si hay una conversión en curso. Retorna False si se cancela."""
         if self._busy():
             msg = QMessageBox(self)
             msg.setIcon(QMessageBox.Icon.Warning)
@@ -987,4 +886,4 @@ class ConvertTab(QWidget):
             msg.setDefaultButton(QMessageBox.StandardButton.Cancel)
             if msg.exec() != QMessageBox.StandardButton.Close:
                 return False
-        return self._confirm_discard()
+        return True

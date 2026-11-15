@@ -40,6 +40,8 @@ HELP = [
                     "YouTube o Facebook para bajarlo."),
         ("Convertir", "Seleccioná en la grilla, elegí cómo armarla y tocá Convertir. "
                       "Si hay un video en la selección, sale un video."),
+        ("Empezar de nuevo", "La lista se guarda sola y vuelve al abrir la app. Para "
+                             "arrancar otra, tocá Vaciar: los archivos no se borran."),
         ("Audio", "Los videos salen con el volumen nivelado: en la consola el fader "
                   "queda siempre en 0 dB."),
         ("Ver un video", "Pasá el mouse por arriba para ver de qué se trata, sin abrirlo."),

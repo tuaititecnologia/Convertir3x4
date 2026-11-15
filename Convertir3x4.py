@@ -21,14 +21,12 @@ from convertir3x4.convert.clips import (  # noqa: F401
     convert_centered_clip, convert_double_clip, convert_clip_on_background,
     clip_info, make_storyboard,
 )
-from convertir3x4.convert.project import read_project_file  # noqa: F401
 from convertir3x4.utils import open_folder  # noqa: F401
 from convertir3x4.ui.style import DARK_STYLE  # noqa: F401
 from convertir3x4.ui.widgets.media_grid import (  # noqa: F401
     ReorderListWidget, PATH_ROLE, MTIME_ROLE,
 )
-# `App` se mantiene como alias de la pestaña de conversión por compatibilidad
-# (los tests usan App._read_project_file).
+# `App` se mantiene como alias de la pestaña de conversión por compatibilidad.
 from convertir3x4.ui.tabs.tab_convertir import ConvertTab as App  # noqa: F401
 from convertir3x4.__main__ import main
 

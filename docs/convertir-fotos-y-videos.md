@@ -102,7 +102,7 @@ Es la misma que usa el agente, que ya probaste en siete videos (ver su registro)
 
 1. **`convert/clips.py` (sin Qt).** Lee los datos del video desde `ffmpeg -i`, corre ffmpeg con progreso y cancelación, nivela y verifica el audio, y arma Centrada, Doble y Sobre fondo cuando hay un video en la selección. Devuelve un informe de audio (antes, después y avisos). También arma la tira de cuadros para la vista previa.
 2. **`convert/download.py` (sin Qt).** Baja yt-dlp y deno si faltan, los actualiza y baja los links. Limpia los nombres de los reels de Facebook ("4.7K views · 138 reactions ｜").
-3. **Pestaña Convertir.** Grilla mixta, filtro, panel plegable y botón único. Los proyectos `.c3x4` guardan también los videos.
+3. **Pestaña Convertir.** Grilla mixta, filtro, panel plegable y botón único.
 4. **Pestaña Buscar.** Mismo estilo, en una etapa posterior.
 
 ## Preguntas abiertas
@@ -123,6 +123,8 @@ Lo implementado sigue el diseño, con estos cambios que surgieron al construirlo
 - **Prueba con un video real:** HISTORIA 37 sale igual que con el agente (−23,4 → −16,1 LUFS, pico −2,9 dBFS) y la app rehace el audio sola, sin el paso manual.
 
 Código: `convert/batch.py` (qué sale y cómo se llama), `convert/clips.py`, `convert/download.py`, `ui/tabs/tab_convertir.py`, `ui/tabs/convert_workers.py`, `ui/widgets/advanced_dialog.py`, `ui/widgets/help_panel.py`. Pruebas: `tests_clips.py`, `tests_convertir.py`, `tests_ui.py`.
+
+- **Sin proyectos** (decisión del 15/11/2026): los `.c3x4` no los usaba nadie. La lista se guarda sola en cada cambio, con el fondo elegido, y vuelve al abrir la app. «Vaciar» la deja en blanco sin borrar archivos.
 
 Pendiente:
 - Vista previa al pasar el mouse también en Buscar, para los videos del catálogo.

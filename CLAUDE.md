@@ -60,7 +60,6 @@ convertir3x4/
                          with progress/cancel, errors returned in operator words
     download.py          links via yt-dlp + deno downloaded on first use to appdata.tools_dir()
                          (yt-dlp verified vs SHA2-256SUMS + daily -U; deno pinned sha256)
-    project.py           read_project_file() — .c3x4 JSON load/validate
   ui/
     style.py             theme: DARK/LIGHT palettes -> `T` (contrast-checked in tests_ui.py; follows
                          the OS light/dark at startup), apply_theme() = Fusion
@@ -74,8 +73,10 @@ convertir3x4/
     tabs/tab_convertir.py  ConvertTab: mixed photo+video grid, filter, links, modes, single
                            "Convertir N", item states, ⚙ advanced options (SessionOptions:
                            session-only, NEVER persisted; audio level is not an option).
-                           Emits titleChanged(str); save_state/restore_state/confirm_close/
-                           shutdown for MainWindow. `App` aliases it in the shim.
+                           No projects (.c3x4 removed 15/11/2026, nobody used them): the grid is
+                           saved to QSettings on every change; "Vaciar" clears it (files untouched).
+                           save_state/restore_state/confirm_close/shutdown for MainWindow.
+                           `App` aliases it in the shim.
     tabs/tab_discos.py     DiscosTab, shown as "Grabadora" (operators call the HyperDeck recorder
                            "la grabadora"; never say HyperDeck/Discos in UI): its disks plugged into the NAS, copy progress, Copiar/Detener/
                            Verificar/Formatear, auto mode, history + log. Polls every 3 s while visible and every 20 s in the background (started by

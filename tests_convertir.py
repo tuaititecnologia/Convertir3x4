@@ -259,3 +259,38 @@ class TestAdvancedOptions:
         from convertir3x4.ui.widgets import advanced_dialog
         src = open(advanced_dialog.__file__, encoding="utf-8").read()
         assert "LUFS" not in src.split('"""', 2)[2]   # fuera del docstring no se menciona
+
+
+
+class TestListaSinProyectos:
+    def test_la_lista_y_el_fondo_vuelven_al_abrir(self, app, tab, media):
+        tab._add_paths([media["photo"], media["photo2"]])
+        tab._save_list()                       # lo que pasa en cada cambio
+        tab._set_background(media["photo2"])
+        tab._save_list()
+        from convertir3x4.ui.tabs.tab_convertir import ConvertTab
+        otra = ConvertTab()                    # "volver a abrir la app", sin save_state
+        try:
+            assert otra._paths() == [media["photo"], media["photo2"]]
+            assert otra._bg_path == media["photo2"]
+        finally:
+            otra.shutdown()
+            otra.deleteLater()
+
+    def test_vaciar_no_borra_archivos(self, app, tab, media):
+        tab._add_paths([media["photo"]])
+        assert tab.btn_clear.isEnabled()
+        tab.clear_list()
+        assert tab.list_widget.count() == 0 and not tab.btn_clear.isEnabled()
+        assert os.path.exists(media["photo"])
+        from convertir3x4.ui.tabs.tab_convertir import ConvertTab
+        otra = ConvertTab()
+        try:
+            assert otra._paths() == []         # también quedó vacía la guardada
+        finally:
+            otra.shutdown()
+            otra.deleteLater()
+
+    def test_sin_botones_de_proyecto(self, tab):
+        assert not hasattr(tab, "btn_new_project") and not hasattr(tab, "btn_save_project")
+        assert not hasattr(tab, "titleChanged")

@@ -73,7 +73,6 @@ class MainWindow(QMainWindow):
         self.motor_tab.catalogChanged.connect(self.buscar_tab.refresh)
         self.discos_tab = DiscosTab()
         self.convert_tab = ConvertTab()
-        self.convert_tab.titleChanged.connect(self.setWindowTitle)
 
         self.stack = QStackedWidget()
         self._nav = QButtonGroup(self)
@@ -100,8 +99,6 @@ class MainWindow(QMainWindow):
         self.set_help_visible(not self.settings.value("help_seen", False, type=bool))
         self.stack.currentChanged.connect(self.help_panel.set_module)
 
-        # El título lo controla Convertir; al cambiar de módulo se restaura el
-        # título base para no arrastrar el "● proyecto.c3x4".
         self.stack.currentChanged.connect(self._on_tab_changed)
         self.discos_tab.pendientes.connect(self._aviso_grabadora)
         self._restore_geometry()
@@ -218,10 +215,6 @@ class MainWindow(QMainWindow):
 
     def _on_tab_changed(self, index: int):
         self._focus_module(index)
-        if self.stack.widget(index) is not self.convert_tab:
-            self.setWindowTitle(APP_TITLE)
-        else:
-            self.convert_tab._update_title()
 
     def _restore_geometry(self):
         geom = self.settings.value("geometry")
