@@ -34,3 +34,17 @@ def models_dir() -> str:
     d = os.path.join(app_data_dir(), "models")
     os.makedirs(d, exist_ok=True)
     return d
+
+
+def tools_dir() -> str:
+    """yt-dlp y deno (se bajan la primera vez; ver convert/download.py)."""
+    d = os.path.join(app_data_dir(), "tools")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def clip_cache_dir() -> str:
+    """Miniaturas y tiras de cuadros de los videos de Convertir."""
+    d = os.path.join(thumb_dir(), "videos")
+    os.makedirs(d, exist_ok=True)
+    return d

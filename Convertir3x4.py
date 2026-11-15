@@ -17,6 +17,10 @@ from convertir3x4.convert.images import (  # noqa: F401
 from convertir3x4.convert.video import (  # noqa: F401
     convert_centered_video, convert_double_video, _write_video_frames,
 )
+from convertir3x4.convert.clips import (  # noqa: F401
+    convert_centered_clip, convert_double_clip, convert_clip_on_background,
+    clip_info, make_storyboard,
+)
 from convertir3x4.convert.project import read_project_file  # noqa: F401
 from convertir3x4.utils import open_folder  # noqa: F401
 from convertir3x4.ui.style import DARK_STYLE  # noqa: F401

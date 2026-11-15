@@ -13,7 +13,7 @@ import os
 from PyQt6.QtCore import Qt, QSettings, pyqtSignal
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
-    QLineEdit, QFileDialog, QProgressBar, QFrame, QListWidget,
+    QLineEdit, QFileDialog, QProgressBar, QListWidget,
     QListWidgetItem, QInputDialog, QMessageBox,
 )
 
@@ -23,9 +23,13 @@ from ...catalog.repo import Repo
 from ...engine import ai_models
 from ...engine.pipeline import run_stage0
 from ...workers import EngineWorker
+from .. import icons
+from ..style import T
 
 _PERSON_ID_ROLE = Qt.ItemDataRole.UserRole
 _IMAGE_FILTER = "Imágenes (*.jpg *.jpeg *.png *.webp *.bmp)"
+_CONTENT_MAX_W = 760
+_SECTION_GAP = 22
 
 
 class MotorTab(QWidget):
@@ -42,19 +46,29 @@ class MotorTab(QWidget):
 
     # ------------------------------------------------------------- UI
     def _build_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
+        # Columna de ancho legible, alineada a la izquierda (como una página de
+        # ajustes): a todo el ancho, los textos y botones quedaban sueltos.
+        outer = QHBoxLayout(self)
+        outer.setContentsMargins(32, 28, 32, 24)
+        content = QWidget()
+        content.setMaximumWidth(_CONTENT_MAX_W)
+        outer.addWidget(content, 1)
+        outer.addStretch(0)
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
 
         layout.addWidget(self._title("Catalogar medios"))
         layout.addWidget(self._text(
             "Recorre una carpeta y registra cada imagen y video en el catálogo "
-            "(dimensiones, duración, hashes, miniaturas y duplicados). Es local "
-            "y se puede repetir cuando quieras."))
+            "(dimensiones, duración, miniaturas y duplicados). Corre en esta PC "
+            "y se puede repetir cuando quieras: solo procesa lo nuevo."))
 
         row = QHBoxLayout()
+        row.setSpacing(8)
         self.txt_folder = QLineEdit()
         self.txt_folder.setPlaceholderText("Carpeta de medios a catalogar…")
+        self.txt_folder.setAccessibleName("Carpeta a catalogar")
         self.txt_folder.setText(self.settings.value("motor_last_dir", ""))
         row.addWidget(self.txt_folder, 1)
         self.btn_browse = QPushButton("Elegir…")
@@ -63,13 +77,24 @@ class MotorTab(QWidget):
         layout.addLayout(row)
 
         self.btn_run = QPushButton("Catalogar")
-        self.btn_run.setObjectName("btn_action")
+        self.btn_run.setObjectName("btn_primary")
         self.btn_run.clicked.connect(self._run_stage0)
-        layout.addWidget(self.btn_run)
+        layout.addLayout(self._left(self.btn_run))
 
-        layout.addWidget(self._separator())
+        # Estado del trabajo en curso, pegado a las acciones que lo disparan
+        self.progress = QProgressBar()
+        self.progress.setVisible(False)
+        layout.addWidget(self.progress)
+        self.lbl_status = QLabel("")
+        self.lbl_status.setWordWrap(True)
+        self.lbl_status.setVisible(False)   # sin mensaje no ocupa lugar
+        layout.addWidget(self.lbl_status)
+        self.lbl_count = QLabel("")
+        self.lbl_count.setObjectName("muted")
+        layout.addWidget(self.lbl_count)
 
         # --- IA
+        layout.addSpacing(_SECTION_GAP)
         layout.addWidget(self._title("Análisis con IA"))
         layout.addWidget(self._text(
             "Propone tags de escena (bautismo, alabanza, placa, flyer…) y reconoce "
@@ -77,23 +102,25 @@ class MotorTab(QWidget):
             "que alguien lo confirma en Buscar. Corre en esta PC, sin internet; "
             "solo la primera vez baja los modelos (unos 650 MB)."))
         self.btn_ai = QPushButton("Analizar con IA")
-        self.btn_ai.setObjectName("btn_action")
+        self.btn_ai.setIcon(icons.icon("sparkles", 15, T.text))
         self.btn_ai.clicked.connect(self._run_ai)
-        layout.addWidget(self.btn_ai)
-
-        layout.addWidget(self._separator())
+        layout.addLayout(self._left(self.btn_ai))
 
         # --- Personas
+        layout.addSpacing(_SECTION_GAP)
         layout.addWidget(self._title("Personas reconocibles"))
         layout.addWidget(self._text(
             "Solo se reconoce a quien esté en esta lista (pastores, invitados, "
             "gente importante). Las demás caras se ignoran y no se guardan. "
             "Cargá de 3 a 5 fotos por persona donde se le vea bien la cara."))
         self.lst_people = QListWidget()
-        self.lst_people.setMaximumHeight(130)
+        self.lst_people.setObjectName("people_list")
+        self.lst_people.setAccessibleName("Personas reconocibles")
+        self.lst_people.setMaximumHeight(150)
         self.lst_people.itemSelectionChanged.connect(self._update_buttons)
         layout.addWidget(self.lst_people)
         prow = QHBoxLayout()
+        prow.setSpacing(8)
         self.btn_add_person = QPushButton("Agregar persona…")
         self.btn_add_person.clicked.connect(self._add_person)
         self.btn_add_photos = QPushButton("Agregar fotos…")
@@ -104,20 +131,20 @@ class MotorTab(QWidget):
             prow.addWidget(b)
         prow.addStretch()
         layout.addLayout(prow)
-
-        layout.addWidget(self._separator())
-
-        # --- estado
-        self.progress = QProgressBar()
-        self.progress.setVisible(False)
-        layout.addWidget(self.progress)
-        self.lbl_status = QLabel("")
-        self.lbl_status.setWordWrap(True)
-        layout.addWidget(self.lbl_status)
-        self.lbl_count = QLabel("")
-        layout.addWidget(self.lbl_count)
         layout.addStretch()
         self._update_buttons()
+
+    def _set_status(self, text: str):
+        self.lbl_status.setText(text)
+        self.lbl_status.setVisible(bool(text))
+
+    @staticmethod
+    def _left(widget) -> QHBoxLayout:
+        """Un botón con su ancho natural, alineado a la izquierda."""
+        row = QHBoxLayout()
+        row.addWidget(widget)
+        row.addStretch()
+        return row
 
     @staticmethod
     def _title(text):
@@ -131,14 +158,6 @@ class MotorTab(QWidget):
         lbl.setWordWrap(True)
         return lbl
 
-    @staticmethod
-    def _separator():
-        sep = QFrame()
-        sep.setObjectName("separator")
-        sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setFixedHeight(1)
-        return sep
-
     # ------------------------------------------------------------- estado
     def _refresh_count(self):
         try:
@@ -146,9 +165,9 @@ class MotorTab(QWidget):
             repo = Repo(conn)
             n, pend = repo.count_media(), repo.count_pending_tags()
             conn.close()
-            txt = f"📚 {n} medios en el catálogo"
+            txt = f"{n} medios en el catálogo"
             if pend:
-                txt += f" · ✨ {pend} con sugerencias de la IA sin revisar"
+                txt += f" · {pend} con sugerencias de la IA sin revisar"
             self.lbl_count.setText(txt)
         except Exception as e:  # noqa: BLE001
             self.lbl_count.setText(f"No se pudo leer el catálogo: {e}")
@@ -164,6 +183,10 @@ class MotorTab(QWidget):
         for pid, name, n in people:
             it = QListWidgetItem(f"{name} — {n} foto{'s' if n != 1 else ''}")
             it.setData(_PERSON_ID_ROLE, pid)
+            self.lst_people.addItem(it)
+        if not people:
+            it = QListWidgetItem("Todavía no hay nadie en la lista.")
+            it.setFlags(Qt.ItemFlag.NoItemFlags)
             self.lst_people.addItem(it)
         self._update_buttons()
 
@@ -185,7 +208,7 @@ class MotorTab(QWidget):
 
     # ------------------------------------------------------------- jobs
     def _start(self, fn, on_done, status: str):
-        self.lbl_status.setText(status)
+        self._set_status(status)
         self.progress.setValue(0)
         self._worker = EngineWorker(fn)
         self._worker.progress.connect(self._on_progress)
@@ -205,15 +228,15 @@ class MotorTab(QWidget):
         self.progress.setMaximum(total or 1)
         self.progress.setValue(done)
         if msg.startswith("⬇"):
-            self.lbl_status.setText(msg)
+            self._set_status(msg)
         else:
-            self.lbl_status.setText(f"Procesando {done}/{total}…")
+            self._set_status(f"Procesando {done}/{total}…")
 
     def _on_failed(self, err):
         self._worker.wait()
         self._worker = None
         self._update_buttons()
-        self.lbl_status.setText(f"Error: {err}")
+        self._set_status(f"Error: {err}")
 
     @staticmethod
     def _ensure_models(mdir, progress_cb):
@@ -234,7 +257,7 @@ class MotorTab(QWidget):
     def _run_stage0(self):
         root = self.txt_folder.text().strip()
         if not root:
-            self.lbl_status.setText("Elegí una carpeta primero.")
+            self._set_status("Elegí una carpeta primero.")
             return
         self.settings.setValue("motor_last_dir", root)
         tdir = thumb_dir()
@@ -248,7 +271,7 @@ class MotorTab(QWidget):
                 conn.close()
 
         def done(stats):
-            self.lbl_status.setText(
+            self._set_status(
                 f"Listo: {stats.added} nuevos, {stats.updated} actualizados, "
                 f"{stats.skipped} sin cambios, {stats.duplicates} duplicados, "
                 f"{stats.corrupt} corruptos.")
@@ -280,7 +303,7 @@ class MotorTab(QWidget):
                 msg += f" {st.errors} no se pudieron leer."
             if not st.analyzed and not st.missing_files and not st.errors:
                 msg = "No había nada nuevo para analizar."
-            self.lbl_status.setText(msg)
+            self._set_status(msg)
             self._refresh_count()
             self.catalogChanged.emit()
 
@@ -342,7 +365,7 @@ class MotorTab(QWidget):
                         + ", ".join(os.path.basename(p) for p in no_face[:5]))
             if added:
                 msg += " Corré «Analizar con IA» para buscarla en el catálogo."
-            self.lbl_status.setText(msg)
+            self._set_status(msg)
             self._refresh_people()
 
         self._start(job, done, f"Leyendo fotos de {name}…")

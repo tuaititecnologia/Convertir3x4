@@ -1,13 +1,13 @@
 """Barra de tags estilo Filament/Netbird para taggeo por lote.
 
 Un campo de texto con autocompletado contra los tags existentes: si lo que
-escribís ya existe, lo elegís; si no, al confirmar lo crea. Arriba, chips con
+escribís ya existe, lo elegís; si no, al confirmar lo crea. Al lado, chips con
 los tags de la selección actual, cada uno removible. Normaliza
 (minúsculas/espacios) antes de emitir.
 
-El área de chips tiene ALTURA FIJA reservada y scroll horizontal si hay muchos:
-así el input nunca se solapa con los chips (un FlowLayout de altura dinámica
-daba overlap en macOS) y el layout es 100% predecible.
+Todo va en UNA fila de alto fijo (título · chips con scroll horizontal ·
+campo): el input nunca se solapa con los chips (un FlowLayout de altura
+dinámica daba overlap en macOS) y la grilla de arriba no salta al seleccionar.
 
 Los tags que propuso la IA y nadie confirmó se ven violeta y punteados, con
 dos botones: el tag (confirma) y ✕ (lo saca, y la IA no lo vuelve a poner).
@@ -25,7 +25,7 @@ from PyQt6.QtWidgets import (
 )
 
 _CHIP_HEIGHT = 28
-_CHIPS_AREA_HEIGHT = 44  # altura reservada (chip + aire arriba/abajo)
+_CHIPS_AREA_HEIGHT = 38  # chip + aire para la barra de scroll horizontal
 
 
 class TagBar(QWidget):
@@ -39,12 +39,16 @@ class TagBar(QWidget):
         self._build_ui()
 
     def _build_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 6, 0, 4)
-        layout.setSpacing(8)
+        # Una sola fila de alto fijo: título · chips (scroll horizontal) · campo.
+        # El alto no cambia nunca, así la grilla de arriba no salta al seleccionar.
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
 
-        # Área de chips: altura fija + scroll horizontal. La altura reservada
-        # garantiza que el input de abajo nunca se solape con los chips.
+        self.lbl = QLabel("Tags")
+        self.lbl.setObjectName("section_title")
+        layout.addWidget(self.lbl)
+
         self._chips_area = QScrollArea()
         self._chips_area.setFixedHeight(_CHIPS_AREA_HEIGHT)
         self._chips_area.setWidgetResizable(True)
@@ -54,6 +58,7 @@ class TagBar(QWidget):
         self._chips_area.setVerticalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._chips_area.viewport().setStyleSheet("background: transparent;")
+        self._chips_area.setFocusPolicy(Qt.FocusPolicy.NoFocus)  # los chips sí reciben foco
 
         self._chips_inner = QWidget()
         self._chips_row = QHBoxLayout(self._chips_inner)
@@ -61,14 +66,15 @@ class TagBar(QWidget):
         self._chips_row.setSpacing(6)
         self._chips_row.addStretch()
         self._chips_area.setWidget(self._chips_inner)
-        layout.addWidget(self._chips_area)
+        layout.addWidget(self._chips_area, 1)
 
-        # Input con autocompletado
-        row = QHBoxLayout()
-        self.lbl = QLabel("Tag:")
-        row.addWidget(self.lbl)
+        # Campo con autocompletado
         self.input = QLineEdit()
-        self.input.setPlaceholderText("Escribí un tag y Enter (lo crea si no existe)…")
+        self.input.setPlaceholderText("Agregar tag y Enter…")
+        self.input.setAccessibleName("Agregar tag a la selección")
+        self.input.setToolTip("Si el tag no existe, se crea")
+        self.input.setMinimumWidth(260)
+        self.input.setMaximumWidth(360)
         self._completer = QCompleter(self)
         self._completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         self._completer.setFilterMode(Qt.MatchFlag.MatchContains)
@@ -76,15 +82,14 @@ class TagBar(QWidget):
         self._completer.setModel(self._completer_model)
         self.input.setCompleter(self._completer)
         self.input.returnPressed.connect(self._on_return)
-        row.addWidget(self.input, 1)
-        layout.addLayout(row)
+        layout.addWidget(self.input)
 
         self.set_enabled(False)
 
     # ------------------------------------------------------------- API
     def set_enabled(self, on: bool):
         self.input.setEnabled(on)
-        self.lbl.setText("Tag:" if on else "Seleccioná fotos para taggear")
+        self.lbl.setText("Tags de la selección" if on else "Seleccioná fotos o videos para ver y poner tags")
 
     def set_known_tags(self, names: list[str]):
         self._completer_model.setStringList(names)
@@ -133,7 +138,7 @@ class TagBar(QWidget):
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(0)
         suffix = f" ({count}/{total})" if total > 1 and count < total else ""
-        ok = QPushButton(f"✨ {name}{suffix} ✓")
+        ok = QPushButton(f"{name}{suffix}  ✓")
         ok.setObjectName("tag_chip_ia")
         ok.setFixedHeight(_CHIP_HEIGHT)
         ok.setCursor(Qt.CursorShape.PointingHandCursor)

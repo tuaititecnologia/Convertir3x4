@@ -15,9 +15,10 @@ a = Analysis(
     ['Convertir3x4.py'],
     pathex=[],
     binaries=[(_ffmpeg_exe, 'imageio_ffmpeg/binaries')],
-    datas=_metadata,
+    # Tipografía Inter e iconos Lucide del tema (ui/style.py, ui/icons.py)
+    datas=_metadata + [('convertir3x4/ui/assets', 'convertir3x4/ui/assets')],
     hiddenimports=['imageio', 'imageio_ffmpeg', 'imageio.plugins.ffmpeg', 'numpy',
-                   'onnxruntime', 'cv2', 'tokenizers'],
+                   'onnxruntime', 'cv2', 'tokenizers', 'PyQt6.QtSvg'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

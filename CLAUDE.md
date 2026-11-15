@@ -21,7 +21,7 @@ python -m venv venv && source venv/bin/activate && pip install -r requirements.t
 ./venv/bin/python Convertir3x4.py      # shim entry point (also: python -m convertir3x4)
 
 # Tests — pass both files explicitly (pytest's default discovery skips the tests.py name)
-./venv/bin/python -m pytest tests.py tests_catalog.py tests_ai.py -v
+./venv/bin/python -m pytest tests.py tests_catalog.py tests_ai.py tests_clips.py tests_ui.py tests_convertir.py -v
 # tests_ai.py also runs real-model tests when CDLM_MODELS points to a folder with the downloaded models
 
 # Build executable
@@ -35,22 +35,42 @@ Modular package `convertir3x4/`. The root `Convertir3x4.py` is a thin **shim**: 
 ```
 convertir3x4/
   __main__.py            entry point (QApplication + DARK_STYLE + MainWindow)
-  app.py                 MainWindow: QMainWindow with a QTabWidget; owns window
-                         geometry + closeEvent. Currently one tab ("Convertir").
+  app.py                 MainWindow: left nav rail (Buscar/Catalogar/Convertir, Ctrl+1..3 via
+                         QShortcut) + QStackedWidget; owns window geometry + closeEvent.
   config.py              constants (APP_VERSION, ASPECT_RATIOS, VIDEO_*, etc.)
   utils.py               open_folder()
   convert/               the aspect-ratio converter tool (pure, no Qt):
     images.py            convert_centered / convert_double / convert_on_background
                          + bg helpers (_dominant_colors, _make_textured_bg, _make_zoned_bg)
     video.py             convert_centered_video / convert_double_video / _write_video_frames
+    clips.py             video sources (the ProPresenter agent's 8:9 recipe): centered with blurred
+                         self-background, double (photo+video or 2 videos -> always video), on
+                         background; audio to -16 LUFS / -1 dBTP with automatic limiter redo;
+                         hover storyboard. All via imageio-ffmpeg subprocess (NO ffprobe).
+                         See docs/convertir-fotos-y-videos.md
+    batch.py             Convertir jobs (Qt-free): plan() picks function + numbered output name
+                         (0001_…) per mode centrada/doble/fondo; any video in a group -> MP4; run()
+                         with progress/cancel, errors returned in operator words
+    download.py          links via yt-dlp + deno downloaded on first use to appdata.tools_dir()
+                         (yt-dlp verified vs SHA2-256SUMS + daily -U; deno pinned sha256)
     project.py           read_project_file() — .c3x4 JSON load/validate
   ui/
-    style.py             DARK_STYLE stylesheet (+ QTabWidget styling)
-    widgets/media_grid.py  ReorderListWidget + PATH_ROLE / MTIME_ROLE
-    tabs/tab_convertir.py  ConvertTab (QWidget): the former `App`, now a tab.
-                           Emits titleChanged(str); exposes save_state/restore_state/
-                           confirm_close for MainWindow. `App` is aliased to ConvertTab
-                           in the shim (tests call App._read_project_file).
+    style.py             theme: DARK/LIGHT palettes -> `T` (contrast-checked in tests_ui.py; follows
+                         the OS light/dark at startup), apply_theme() = Fusion
+                         + bundled Inter + palette + DARK_STYLE. Same look on every OS. Never put a
+                         background on every QWidget (it paints boxes behind labels)
+    icons.py             Lucide SVG icons recolored at load (they use currentColor)
+    assets/              Inter TTFs (OFL) + Lucide SVGs (ISC); packaged by the .spec `datas`
+    widgets/media_grid.py  ThumbDelegate (uniform Lightroom-like cells, video duration badge,
+                         focus ring) + DragOutListWidget / ReorderListWidget; _fit_columns shares
+                         leftover width (Qt reserves the hidden scrollbar's width: keep that margin)
+    tabs/tab_convertir.py  ConvertTab: mixed photo+video grid, filter, links, modes, single
+                           "Convertir N", item states, ⚙ advanced options (SessionOptions:
+                           session-only, NEVER persisted; audio level is not an option).
+                           Emits titleChanged(str); save_state/restore_state/confirm_close/
+                           shutdown for MainWindow. `App` aliases it in the shim.
+    tabs/convert_workers.py  ThumbWorker / ConvertWorker / DownloadWorker (QThread, cancellable)
+    widgets/advanced_dialog.py, widgets/help_panel.py (overlay help, first run + F1)
 ```
 
 **Media-manager layers (Fase 2, present):**
@@ -114,7 +134,7 @@ the tests and `.spec` entry point don't break.
 
 The "Convertir" tab (`ui/tabs/tab_convertir.py`) holds all of the converter UI:
 
-- **PyQt6** with dark theme stylesheet (`ui/style.py`) and custom `ReorderListWidget` (manual drag & drop since Qt's `InternalMove` is broken in `IconMode`)
+- **PyQt6** with the app theme (`ui/style.py`) and custom `ReorderListWidget` (manual drag & drop since Qt's `InternalMove` is broken in `IconMode`; movement must stay `Static`)
 - **Left panel**: toolbar (load/clear), image grid (`QListWidget` in `IconMode`), bottom bar (sort buttons + zoom slider)
 - **Right sidebar**: action sections separated by lines (Foto centrada, Doble foto, Foto y fondo with background preview)
 - State persistence via `QSettings` (image paths, thumb size, last directories) on the tab; window geometry on `MainWindow`
