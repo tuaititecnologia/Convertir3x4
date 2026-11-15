@@ -9,7 +9,11 @@ El área de chips tiene ALTURA FIJA reservada y scroll horizontal si hay muchos:
 así el input nunca se solapa con los chips (un FlowLayout de altura dinámica
 daba overlap en macOS) y el layout es 100% predecible.
 
-El widget NO toca la base: emite `tagApplied(str)` / `tagRemoved(str)` y la
+Los tags que propuso la IA y nadie confirmó se ven violeta y punteados, con
+dos botones: el tag (confirma) y ✕ (lo saca, y la IA no lo vuelve a poner).
+
+El widget NO toca la base: emite `tagApplied(str)` / `tagRemoved(str)` /
+`tagConfirmed(str)` y la
 pestaña los aplica vía el repo. La pestaña le alimenta el vocabulario con
 `set_known_tags()` y los chips con `set_chips()`.
 """
@@ -27,6 +31,7 @@ _CHIPS_AREA_HEIGHT = 44  # altura reservada (chip + aire arriba/abajo)
 class TagBar(QWidget):
     tagApplied = pyqtSignal(str)
     tagRemoved = pyqtSignal(str)
+    tagConfirmed = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -84,8 +89,13 @@ class TagBar(QWidget):
     def set_known_tags(self, names: list[str]):
         self._completer_model.setStringList(names)
 
-    def set_chips(self, tag_counts: list[tuple[str, int]], total: int):
-        """Pinta los chips de la selección. `total` = cuántas fotos seleccionadas."""
+    def set_chips(self, tag_counts: list[tuple[str, int]], total: int,
+                  pending: dict[str, int] | None = None):
+        """Pinta los chips de la selección. `total` = cuántas fotos seleccionadas.
+
+        `pending`: tag -> en cuántas de la selección está sin confirmar (IA).
+        """
+        pending = pending or {}
         self._selection_total = total
         # Limpiar chips previos (todos menos el stretch final). setParent(None)
         # los saca de la vista YA (deleteLater es asíncrono y dejaría fantasmas).
@@ -97,7 +107,11 @@ class TagBar(QWidget):
                 w.deleteLater()
         # Insertar chips antes del stretch final
         for i, (name, count) in enumerate(tag_counts):
-            self._chips_row.insertWidget(i, self._make_chip(name, count, total))
+            if pending.get(name):
+                chip = self._make_ia_chip(name, count, total)
+            else:
+                chip = self._make_chip(name, count, total)
+            self._chips_row.insertWidget(i, chip)
 
     def _make_chip(self, name: str, count: int, total: int) -> QPushButton:
         partial = total > 1 and count < total
@@ -112,6 +126,28 @@ class TagBar(QWidget):
         )
         chip.clicked.connect(lambda _=False, n=name: self.tagRemoved.emit(n))
         return chip
+
+    def _make_ia_chip(self, name: str, count: int, total: int) -> QWidget:
+        box = QWidget()
+        row = QHBoxLayout(box)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(0)
+        suffix = f" ({count}/{total})" if total > 1 and count < total else ""
+        ok = QPushButton(f"✨ {name}{suffix} ✓")
+        ok.setObjectName("tag_chip_ia")
+        ok.setFixedHeight(_CHIP_HEIGHT)
+        ok.setCursor(Qt.CursorShape.PointingHandCursor)
+        ok.setToolTip("Sugerido por la IA — clic para confirmarlo")
+        ok.clicked.connect(lambda _=False, n=name: self.tagConfirmed.emit(n))
+        x = QPushButton("✕")
+        x.setObjectName("tag_chip_ia_x")
+        x.setFixedHeight(_CHIP_HEIGHT)
+        x.setCursor(Qt.CursorShape.PointingHandCursor)
+        x.setToolTip("No corresponde — quitarlo (la IA no lo vuelve a sugerir)")
+        x.clicked.connect(lambda _=False, n=name: self.tagRemoved.emit(n))
+        row.addWidget(ok)
+        row.addWidget(x)
+        return box
 
     def _on_return(self):
         raw = self.input.text()

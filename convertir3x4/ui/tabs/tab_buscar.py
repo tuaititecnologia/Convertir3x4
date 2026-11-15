@@ -10,7 +10,7 @@ from PyQt6.QtCore import Qt, QSize, QTimer
 from PyQt6.QtGui import QIcon, QPixmap
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QListWidgetItem, QFrame,
+    QListWidgetItem, QFrame, QCheckBox,
 )
 
 
@@ -57,6 +57,9 @@ class BuscarTab(QWidget):
         self.txt_query.setPlaceholderText("Buscar por nombre, carpeta o tag…")
         self.txt_query.textChanged.connect(lambda _: self._debounce.start())
         row.addWidget(self.txt_query, 1)
+        self.chk_pending = QCheckBox("Solo sugerencias de la IA sin revisar")
+        self.chk_pending.toggled.connect(lambda _: self._do_search())
+        row.addWidget(self.chk_pending)
         self.lbl_count = QLabel("")
         row.addWidget(self.lbl_count)
         layout.addLayout(row)
@@ -75,6 +78,7 @@ class BuscarTab(QWidget):
         self.tag_bar = TagBar()
         self.tag_bar.tagApplied.connect(self._apply_tag_to_selection)
         self.tag_bar.tagRemoved.connect(self._remove_tag_from_selection)
+        self.tag_bar.tagConfirmed.connect(self._confirm_tag_on_selection)
         layout.addWidget(self.tag_bar)
 
     # ------------------------------------------------------------- datos
@@ -101,7 +105,8 @@ class BuscarTab(QWidget):
             self.grid.clear()
             self.tag_bar.set_enabled(False)
             return
-        results = repo.search(self.txt_query.text())
+        results = repo.search(self.txt_query.text(),
+                              pending_only=self.chk_pending.isChecked())
         self._populate(results)
 
     def _populate(self, results):
@@ -155,7 +160,8 @@ class BuscarTab(QWidget):
         if not ids or repo is None:
             self.tag_bar.set_chips([], 0)
             return
-        self.tag_bar.set_chips(repo.tag_counts(ids), len(ids))
+        self.tag_bar.set_chips(repo.tag_counts(ids), len(ids),
+                               repo.pending_tag_counts(ids))
 
     def _apply_tag_to_selection(self, name: str):
         repo = self._repo()
@@ -174,6 +180,15 @@ class BuscarTab(QWidget):
             return
         for mid in ids:
             repo.remove_tag(mid, name)
+        self._on_selection_changed()
+
+    def _confirm_tag_on_selection(self, name: str):
+        repo = self._repo()
+        ids = self._selected_ids()
+        if repo is None or not ids:
+            return
+        for mid in ids:
+            repo.confirm_tag(mid, name)
         self._on_selection_changed()
 
     def _reload_known_tags(self):

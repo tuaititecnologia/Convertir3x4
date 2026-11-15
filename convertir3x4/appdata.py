@@ -27,3 +27,10 @@ def thumb_dir() -> str:
     d = os.path.join(app_data_dir(), "thumbs")
     os.makedirs(d, exist_ok=True)
     return d
+
+
+def models_dir() -> str:
+    """Modelos de IA (se bajan una vez; ver engine/ai_models.py)."""
+    d = os.path.join(app_data_dir(), "models")
+    os.makedirs(d, exist_ok=True)
+    return d

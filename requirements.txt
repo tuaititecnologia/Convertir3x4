@@ -5,3 +5,6 @@ pytest
 numpy
 imageio
 imageio-ffmpeg
+onnxruntime
+opencv-python-headless
+tokenizers

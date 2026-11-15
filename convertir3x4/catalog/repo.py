@@ -4,6 +4,7 @@ Toda la UI y el motor pasan por acá; nadie toca SQL directo afuera de este mód
 El índice FTS (`media_fts`) se mantiene sincronizado en cada upsert de medio/tags.
 """
 
+import hashlib
 import sqlite3
 import time
 
@@ -115,16 +116,46 @@ class Repo:
 
     def apply_tag(self, media_id: int, name: str, source: str = "humano",
                   confirmed: bool = True):
+        """Pone (o confirma) un tag. Aplicarlo a mano sobre uno sugerido por la
+        IA lo pasa a humano/confirmado y borra un rechazo previo."""
         tag_id = self.get_or_create_tag(name)
         self.conn.execute(
             "INSERT OR REPLACE INTO media_tag (media_id, tag_id, source, confirmed) "
             "VALUES (?, ?, ?, ?)",
             (media_id, tag_id, source, 1 if confirmed else 0),
         )
+        self.conn.execute(
+            "DELETE FROM tag_rejection WHERE media_id = ? AND tag_id = ?",
+            (media_id, tag_id),
+        )
         self._sync_fts(media_id)
         self.conn.commit()
 
+    def suggest_tag(self, media_id: int, name: str, kind: str = "ia-sugerido") -> bool:
+        """Tag propuesto por la IA (source='ia', sin confirmar).
+
+        No pisa un tag que ya exista (humano o no) ni vuelve a proponer uno que
+        alguien sacó. Devuelve True si lo agregó.
+        """
+        tag_id = self.get_or_create_tag(name, kind=kind)
+        rejected = self.conn.execute(
+            "SELECT 1 FROM tag_rejection WHERE media_id = ? AND tag_id = ?",
+            (media_id, tag_id),
+        ).fetchone()
+        if rejected:
+            return False
+        cur = self.conn.execute(
+            "INSERT OR IGNORE INTO media_tag (media_id, tag_id, source, confirmed) "
+            "VALUES (?, ?, 'ia', 0)",
+            (media_id, tag_id),
+        )
+        if cur.rowcount:
+            self._sync_fts(media_id)
+        self.conn.commit()
+        return bool(cur.rowcount)
+
     def remove_tag(self, media_id: int, name: str):
+        """Saca un tag y lo anota como rechazado, para que la IA no lo reponga."""
         norm = self.normalize_tag(name)
         row = self.conn.execute("SELECT id FROM tag WHERE name = ?", (norm,)).fetchone()
         if not row:
@@ -133,7 +164,130 @@ class Repo:
             "DELETE FROM media_tag WHERE media_id = ? AND tag_id = ?",
             (media_id, row["id"]),
         )
+        self.conn.execute(
+            "INSERT OR IGNORE INTO tag_rejection (media_id, tag_id) VALUES (?, ?)",
+            (media_id, row["id"]),
+        )
         self._sync_fts(media_id)
+        self.conn.commit()
+
+    def confirm_tag(self, media_id: int, name: str):
+        """Confirma un tag sugerido (si el medio lo tiene). Queda source='ia'."""
+        norm = self.normalize_tag(name)
+        self.conn.execute(
+            "UPDATE media_tag SET confirmed = 1 WHERE media_id = ? "
+            "AND tag_id = (SELECT id FROM tag WHERE name = ?)",
+            (media_id, norm),
+        )
+        self.conn.commit()
+
+    def pending_tag_counts(self, media_ids: list[int]) -> dict[str, int]:
+        """De los tags de la selección, cuántos medios los tienen sin confirmar."""
+        if not media_ids:
+            return {}
+        placeholders = ",".join("?" for _ in media_ids)
+        rows = self.conn.execute(
+            f"SELECT t.name, COUNT(*) AS n FROM tag t "
+            f"JOIN media_tag mt ON mt.tag_id = t.id "
+            f"WHERE mt.media_id IN ({placeholders}) AND mt.confirmed = 0 "
+            f"GROUP BY t.id",
+            media_ids,
+        ).fetchall()
+        return {r["name"]: r["n"] for r in rows}
+
+    def count_pending_tags(self) -> int:
+        """Medios con al menos un tag de la IA sin confirmar."""
+        return self.conn.execute(
+            "SELECT COUNT(DISTINCT media_id) AS n FROM media_tag WHERE confirmed = 0"
+        ).fetchone()["n"]
+
+    # ------------------------------------------------------------- personas
+    def add_person(self, name: str) -> int:
+        name = " ".join(name.split())
+        row = self.conn.execute("SELECT id FROM person WHERE name = ?", (name,)).fetchone()
+        if row:
+            return row["id"]
+        cur = self.conn.execute(
+            "INSERT INTO person (name, created_at) VALUES (?, ?)", (name, _now()))
+        self.conn.commit()
+        return cur.lastrowid
+
+    def list_persons(self) -> list[tuple[int, str, int]]:
+        """(id, nombre, cantidad de fotos de referencia)."""
+        rows = self.conn.execute(
+            "SELECT p.id, p.name, COUNT(r.id) AS n FROM person p "
+            "LEFT JOIN person_reference r ON r.person_id = p.id "
+            "GROUP BY p.id ORDER BY p.name"
+        ).fetchall()
+        return [(r["id"], r["name"], r["n"]) for r in rows]
+
+    def delete_person(self, person_id: int):
+        """Borra la persona y sus firmas. Los tags ya puestos quedan."""
+        self.conn.execute("DELETE FROM person WHERE id = ?", (person_id,))
+        self.conn.commit()
+
+    def add_person_reference(self, person_id: int, source_path: str, embedding: bytes):
+        self.conn.execute(
+            "INSERT INTO person_reference (person_id, source_path, embedding, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (person_id, source_path, embedding, _now()),
+        )
+        self.conn.commit()
+
+    def person_reference_blobs(self) -> dict[str, list[bytes]]:
+        out: dict[str, list[bytes]] = {}
+        for r in self.conn.execute(
+            "SELECT p.name, r.embedding FROM person_reference r "
+            "JOIN person p ON p.id = r.person_id ORDER BY r.id"
+        ):
+            out.setdefault(r["name"], []).append(r["embedding"])
+        return out
+
+    def people_signature(self) -> str:
+        """Cambia cada vez que se agrega o quita una referencia o una persona."""
+        rows = self.conn.execute(
+            "SELECT r.id, p.name FROM person_reference r "
+            "JOIN person p ON p.id = r.person_id ORDER BY r.id"
+        ).fetchall()
+        if not rows:
+            return ""
+        raw = ";".join(f"{r['id']}:{r['name']}" for r in rows)
+        return hashlib.sha1(raw.encode()).hexdigest()[:16]
+
+    # ------------------------------------------------------------- IA
+    def media_for_ai(self, model: str, people_sig: str) -> list[tuple[Media, bool]]:
+        """Medios que hay que analizar: (medio, hace_falta_escena).
+
+        Falta escena si nunca se analizó o cambió el modelo/vocabulario. Si solo
+        cambió la lista de personas, se repasan las caras y no la escena.
+        """
+        rows = self.conn.execute(
+            "SELECT m.*, a.model AS ai_model, a.people_sig AS ai_sig, "
+            "a.id AS ai_id FROM media m LEFT JOIN ai_result a ON a.media_id = m.id "
+            "WHERE IFNULL(m.quality_flag, 'ok') != 'corrupt' "
+            "AND (a.id IS NULL OR a.model IS NOT ? OR IFNULL(a.people_sig, '') != ?) "
+            "ORDER BY m.id",
+            (model, people_sig),
+        ).fetchall()
+        return [(_row_to_media(r), r["ai_id"] is None or r["ai_model"] != model)
+                for r in rows]
+
+    def get_ai_raw(self, media_id: int) -> str | None:
+        row = self.conn.execute(
+            "SELECT raw_json FROM ai_result WHERE media_id = ?", (media_id,)).fetchone()
+        return row["raw_json"] if row else None
+
+    def save_ai_result(self, media_id: int, model: str, people_sig: str,
+                       media_type: str | None, people: list[str], raw_json: str):
+        self.conn.execute(
+            "INSERT INTO ai_result (media_id, model, people_sig, media_type, people, "
+            "raw_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(media_id) DO UPDATE SET model = excluded.model, "
+            "people_sig = excluded.people_sig, media_type = excluded.media_type, "
+            "people = excluded.people, raw_json = excluded.raw_json, "
+            "created_at = excluded.created_at",
+            (media_id, model, people_sig, media_type, ", ".join(people), raw_json, _now()),
+        )
         self.conn.commit()
 
     def tags_for(self, media_id: int) -> list[str]:
@@ -163,7 +317,22 @@ class Repo:
         return [(r["name"], r["n"]) for r in rows]
 
     # ------------------------------------------------------------- búsqueda
-    def search(self, query: str, limit: int = 500) -> list[Media]:
+    def search(self, query: str, limit: int = 500,
+               pending_only: bool = False) -> list[Media]:
+        """Ver `_search`. Con `pending_only`, solo medios con tags de la IA sin confirmar."""
+        if not pending_only:
+            return self._search(query, limit)
+        pending = {r["media_id"] for r in self.conn.execute(
+            "SELECT DISTINCT media_id FROM media_tag WHERE confirmed = 0")}
+        if not query or not query.strip():
+            rows = self.conn.execute(
+                "SELECT * FROM media WHERE id IN "
+                "(SELECT media_id FROM media_tag WHERE confirmed = 0) "
+                "ORDER BY filename LIMIT ?", (limit,)).fetchall()
+            return [_row_to_media(r) for r in rows]
+        return [m for m in self._search(query, 100000) if m.id in pending][:limit]
+
+    def _search(self, query: str, limit: int = 500) -> list[Media]:
         """Búsqueda combinada. Vacío → todos los medios.
 
         Capa 1: FTS5 (palabras/prefijo/tags/sin acentos) sobre nombre, carpeta,

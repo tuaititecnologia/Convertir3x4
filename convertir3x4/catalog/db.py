@@ -9,7 +9,7 @@ Fase 5 sin re-armar el índice.
 
 import sqlite3
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # Extensiones de medios reconocidas por el inventario.
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".gif", ".tiff", ".tif"}
@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS ai_result (
     is_ephemeral_score REAL,
     raw_json          TEXT,
     created_at        INTEGER,
+    people_sig        TEXT,                 -- lista de personas con la que se analizó (v2)
     UNIQUE(media_id)
 );
 
@@ -80,6 +81,29 @@ CREATE TABLE IF NOT EXISTS media_tag (
     source    TEXT DEFAULT 'humano',        -- humano|ia
     confirmed INTEGER DEFAULT 1,            -- bool
     PRIMARY KEY (media_id, tag_id)
+);
+
+-- Tags que una persona sacó: la IA no los vuelve a proponer para ese medio.
+CREATE TABLE IF NOT EXISTS tag_rejection (
+    media_id INTEGER NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+    tag_id   INTEGER NOT NULL REFERENCES tag(id) ON DELETE CASCADE,
+    PRIMARY KEY (media_id, tag_id)
+);
+
+-- Personas reconocibles: SOLO las cargadas a mano (pastores, gente importante).
+-- Se guardan las firmas de sus fotos de referencia; de nadie más.
+CREATE TABLE IF NOT EXISTS person (
+    id         INTEGER PRIMARY KEY,
+    name       TEXT UNIQUE NOT NULL,        -- como se muestra ("Juan Carlos Bazán")
+    created_at INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS person_reference (
+    id          INTEGER PRIMARY KEY,
+    person_id   INTEGER NOT NULL REFERENCES person(id) ON DELETE CASCADE,
+    source_path TEXT,
+    embedding   BLOB NOT NULL,               -- float32 normalizado (SFace)
+    created_at  INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS reference_set (
@@ -150,9 +174,16 @@ def _init_schema(conn: sqlite3.Connection):
 
 
 def _migrate(conn: sqlite3.Connection, from_version: int):
-    """Aplica migraciones incrementales. Hoy solo existe la v1."""
+    """Aplica migraciones incrementales.
+
+    Las tablas nuevas las crea `_SCHEMA` (CREATE IF NOT EXISTS); acá van solo
+    los cambios a tablas existentes.
+    """
     if from_version == SCHEMA_VERSION:
         return
-    # Migraciones futuras: if from_version < 2: ...; bump schema_version.
+    if from_version < 2:
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(ai_result)")}
+        if "people_sig" not in cols:
+            conn.execute("ALTER TABLE ai_result ADD COLUMN people_sig TEXT")
     conn.execute("UPDATE schema_version SET version = ?", (SCHEMA_VERSION,))
     conn.commit()

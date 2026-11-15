@@ -127,15 +127,16 @@ Como cualquier PC puede catalogar, dos pasadas pueden coincidir. Por ejemplo, al
 - **Monitoreo:** la PC que corre el catalogado nocturno manda un "sigo vivo" a Zabbix al terminar. Si pasan tres días sin señal, llega una alerta.
 - **Memoria del NAS:** PostgreSQL necesita del orden de 100 a 200 MB para un catálogo de este tamaño. Si Nextcloud usa la misma instancia, hay un solo servicio de base en los 8 GB.
 
-## Más adelante: análisis con IA
+## Análisis con IA
 
-Queda fuera del alcance inmediato, pero el diseño lo contempla:
+Implementado el 31/10/2026 sobre la SQLite local (`engine/vision.py`, `engine/faces.py`, `engine/ai_pipeline.py`). Al migrar, las tablas `person`, `person_reference` y `tag_rejection` pasan a PostgreSQL como el resto. Lo que se decidió:
 
 - **Dónde corre:** en cualquier PC con la app. El catalogado nocturno de la PC de edición lo incluye, y en otra PC funciona igual, con la velocidad que dé su procesador. El 8600G no tiene CUDA, y ROCm en Windows no soporta oficialmente la Radeon 760M, así que el camino es ONNX Runtime en CPU, con DirectML como extra. La NPU del 8600G queda para más adelante.
 - **Qué hace:** CLIP compara cada imagen contra un vocabulario propio de la iglesia (bautismo, alabanza, fondo, logo…). Reemplaza los tags genéricos en inglés que dan herramientas como Recognize. Pone un tag solo cuando está muy seguro, porque un tag equivocado hace perder confianza en el buscador.
 - **Dónde guarda:** en `ai_result` y en los tags con `source = 'ia'`, que ya están en el esquema.
 - **Qué aporta:** poco en el archivo histórico, que ya está ordenado en carpetas por evento y fecha. Mucho en el material nuevo con nombres opacos (`FB_IMG_…`, `WhatsApp Image…`).
-- **Caras:** el reconocimiento facial queda pendiente de una decisión de la iglesia, porque implica identificar a la congregación, chicos incluidos.
+- **Caras:** decidido el 31/10/2026. Se reconocen **solo personas cargadas a mano en una lista** (pastores, predicadores invitados, gente importante para la iglesia). La congregación no se identifica. Cuando una cara no coincide con nadie de la lista, se descarta: no se guarda su firma (embedding) ni se agrupa con otras caras desconocidas. Así no se arma, ni por accidente, una base de caras de la congregación.
+- **Orden de trabajo:** decidido el 31/10/2026. El análisis con IA se desarrolla primero sobre la SQLite local, sin esperar al NAS. Sus resultados viven en tablas del catálogo (`ai_result`, `media_tag` y las de personas), así que se migran a PostgreSQL junto con el resto.
 
 ## Pruebas antes de implementar
 

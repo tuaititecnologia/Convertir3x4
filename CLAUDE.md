@@ -21,7 +21,8 @@ python -m venv venv && source venv/bin/activate && pip install -r requirements.t
 ./venv/bin/python Convertir3x4.py      # shim entry point (also: python -m convertir3x4)
 
 # Tests — pass both files explicitly (pytest's default discovery skips the tests.py name)
-./venv/bin/python -m pytest tests.py tests_catalog.py -v
+./venv/bin/python -m pytest tests.py tests_catalog.py tests_ai.py -v
+# tests_ai.py also runs real-model tests when CDLM_MODELS points to a folder with the downloaded models
 
 # Build executable
 pyinstaller Convertir3x4.spec
@@ -69,15 +70,26 @@ convertir3x4/
                          Computes quality_flag (ok/low_res/corrupt) inline — no separate quality module.
     dedup.py             sha256 (hashlib) + dHash (numpy, NO imagehash/scipy) + hamming()
     pipeline.py          run_stage0(): inventory→probe→hash→thumb→upsert. Idempotent (skips unchanged).
+    ai_models.py         model files (pinned HF revision + sha256), downloaded once to appdata.models_dir()
+    vocab.py             church scene vocabulary: Spanish tag -> English CLIP prompts. Bump VOCAB_VERSION on change
+    vision.py            SceneClassifier: CLIP ViT-B/32 on ONNX Runtime (CPU). Proposes a tag only if prob >= 0.60
+    faces.py             FaceEngine: YuNet + SFace (OpenCV). Recognizes ONLY people in the `person` list
+                         (cosine >= 0.42); other faces are discarded, never stored or clustered
+    ai_pipeline.py       run_ai(): scene + faces over the catalog. Idempotent via ai_result.model / people_sig
 ```
+
+**AI tags (Fase 5, present):** everything the AI proposes is `media_tag.source='ia', confirmed=0`
+(purple chips in Buscar: ✓ confirms, ✕ removes). `suggest_tag()` never overrides an existing tag and
+never re-adds one a person removed (`tag_rejection`). Face recognition is whitelist-only by church
+decision (pastors, guests) — do not add clustering of unknown faces or store their embeddings.
+Validated on real photos with `spikes/spike_vision.py`.
 
 Tabs wired in `app.py`: **Buscar** (search catalog), **Catalogar** (run Stage 0 via MotorTab),
 **Convertir**. SQLite rule: never share a connection across threads — each worker opens its own
 inside `fn`; WAL lets the worker write while the UI reads. No new runtime deps were added
 (ffprobe avoided via imageio; perceptual hash done in numpy).
 
-Future phases add AI vision (`engine/vision.py`), tagging UI, quarantine, and optional local
-embeddings (`search/`) per the plan. **When extending, keep the shim's re-exports in sync** so
+Future phases add quarantine and optional local embeddings (`search/`). **When extending, keep the shim's re-exports in sync** so
 the tests and `.spec` entry point don't break.
 
 ### Image Processing Functions

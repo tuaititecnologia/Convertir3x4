@@ -91,6 +91,20 @@ QPushButton#tag_chip_partial {
     border-radius: 11px; padding: 5px 12px; font-size: 12px;
 }
 QPushButton#tag_chip_partial:hover { background-color: #3a3a24; border-color: #707030; }
+QPushButton#tag_chip_ia {
+    background-color: #2e2246; border: 1px dashed #6a4fa0; color: #c4a8f0;
+    border-top-left-radius: 11px; border-bottom-left-radius: 11px;
+    border-top-right-radius: 0; border-bottom-right-radius: 0;
+    padding: 5px 10px; font-size: 12px;
+}
+QPushButton#tag_chip_ia:hover { background-color: #3a2c5a; border-color: #8a6fc0; }
+QPushButton#tag_chip_ia_x {
+    background-color: #2e2246; border: 1px dashed #6a4fa0; border-left: none; color: #c4a8f0;
+    border-top-right-radius: 11px; border-bottom-right-radius: 11px;
+    border-top-left-radius: 0; border-bottom-left-radius: 0;
+    padding: 5px 8px; font-size: 12px;
+}
+QPushButton#tag_chip_ia_x:hover { background-color: #4a2030; color: #ff9090; }
 QTabWidget::pane { border: 1px solid #2a3040; border-radius: 6px; top: -1px; }
 QTabBar::tab {
     background-color: #1e2230; color: #8899aa; border: 1px solid #2a3040;
