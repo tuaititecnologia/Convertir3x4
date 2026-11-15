@@ -68,6 +68,11 @@ class PanelClient:
     def estado(self) -> dict:
         return self._pedir("GET", "/v1/estado")
 
+    def contenido(self, uuid: str) -> dict:
+        """Qué hay en la raíz del disco. La primera vez el NAS lo monta y lo lee
+        (puede tardar); después responde de memoria mientras siga enchufado."""
+        return self._pedir("GET", f"/v1/contenido?uuid={uuid}", timeout=200)
+
     def log(self, uuid: str, lineas: int = 300) -> str:
         return self._pedir("GET", f"/v1/log?uuid={uuid}&lineas={lineas}").get("texto", "")
 
@@ -206,6 +211,58 @@ def resumir(copia: dict | None, tarea: dict | None = None, disco: dict | None = 
         return Resumen(titulo, "Tocá Copiar para seguir desde donde quedó.", None, "aviso")
     return Resumen(titulo, copia.get("error") or "", None, "error" if fase in
                    ("ERROR", "VERIFICACION_FALLIDA") else "neutro")
+
+
+# ------------------------------------------------------------------ contenido del disco
+def _dia(ts) -> str:
+    import time as _t
+    lt = _t.localtime(ts)
+    return f"{lt.tm_mday}/{lt.tm_mon}"
+
+
+def resumir_contenido(c: dict | None) -> str:
+    """Lo que tiene el disco, en una frase. '' si no hay nada que decir todavía."""
+    if not c or c.get("ocupado") or c.get("admitido") is False:
+        return ""
+    total = int(c.get("total_archivos") or 0)
+    if not total:
+        return "Está vacío."
+    tam = _gb(float(c.get("total_bytes") or 0) / 1e9)
+    if c.get("solo_grabadora"):
+        n = int(c.get("grabaciones") or 0)
+        que = "1 grabación" if n == 1 else f"{n} grabaciones"
+        desde, hasta = c.get("desde"), c.get("hasta")
+        cuando = ""
+        if desde and hasta:
+            d1, d2 = _dia(desde), _dia(hasta)
+            cuando = f", del {d1}" if d1 == d2 else f", del {d1} al {d2}"
+        return f"Tiene {que} ({tam}){cuando}."
+    sueltos = [a["nombre"] for a in c.get("archivos") or []]
+    carpetas = [x["nombre"] for x in c.get("carpetas") or []]
+    que = "1 archivo" if total == 1 else f"{total} archivos"
+    carp = (f"la carpeta {carpetas[0]}" if len(carpetas) == 1 else f"{len(carpetas)} carpetas")
+    if sueltos:
+        ejemplo = " y ".join(sueltos[:2])
+        texto = f"Tiene {que} ({tam}), por ejemplo {ejemplo}"
+        return texto + (f", y {carp}." if carpetas else ".")
+    return f"Tiene {que} ({tam}) en {carp}."
+
+
+def lineas_contenido(c: dict | None) -> list[str]:
+    """Cada archivo y carpeta de la raíz en una línea, para la lista desplegable."""
+    if not c:
+        return []
+    out = []
+    for car in c.get("carpetas") or []:
+        n = int(car.get("archivos") or 0)
+        out.append(f"{car['nombre']}  ·  carpeta con {'1 archivo' if n == 1 else f'{n} archivos'}"
+                   f" ({_gb(float(car.get('bytes') or 0) / 1e9)})")
+    import time as _t
+    for a in c.get("archivos") or []:
+        cuando = _t.strftime("%d/%m/%Y %H:%M", _t.localtime(a["fecha"])) if a.get("fecha") else ""
+        out.append(f"{a['nombre']}  ·  {_gb(float(a.get('bytes') or 0) / 1e9)}"
+                   + (f"  ·  {cuando}" if cuando else ""))
+    return out
 
 
 # ------------------------------------------------------------------ ¿es de la grabadora?

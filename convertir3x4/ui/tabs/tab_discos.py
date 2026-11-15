@@ -11,22 +11,24 @@ Toda llamada de red corre en un EngineWorker para no trabar la UI.
 
 import os
 
-from PyQt6.QtCore import QSettings, Qt, QTimer
+from PyQt6.QtCore import QSettings, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QFontDatabase
 from PyQt6.QtWidgets import (
     QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QFrame, QHBoxLayout,
-    QInputDialog, QLabel, QLineEdit, QMessageBox, QPlainTextEdit, QProgressBar,
+    QInputDialog, QLabel, QLineEdit, QListWidget, QMessageBox, QPlainTextEdit, QProgressBar,
     QPushButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from ...nas.copias import (
-    URLS_POR_DEFECTO, PanelClient, acciones_para, fecha, nota_operador, resumir, tipo_disco,
+    URLS_POR_DEFECTO, PanelClient, acciones_para, fecha, lineas_contenido, nota_operador,
+    resumir, resumir_contenido, tipo_disco,
 )
 from ...workers import EngineWorker
 from .. import icons
 from ..style import T
 
-_POLL_MS = 3000
+_POLL_MS = 3000          # mientras se ve el módulo
+_POLL_FONDO_MS = 20000   # escondido: solo para avisar en la barra lateral
 _CONTENT_MAX_W = 860
 # Tono de cada estado -> color de la paleta activa (claro u oscuro), no fijo.
 _TONOS = {"activo": "accent_text", "ok": "ok", "aviso": "warn", "error": "danger",
@@ -46,6 +48,9 @@ def _cliente_desde(settings: QSettings) -> PanelClient:
 
 
 class DiscosTab(QWidget):
+    # Discos enchufados al NAS que el operador todavía no vio (para la barra lateral)
+    pendientes = pyqtSignal(int)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         # Sin argumentos: el nombre lo fija __main__; los tests usan otro.
@@ -56,6 +61,10 @@ class DiscosTab(QWidget):
         self._workers: set[EngineWorker] = set()
         self._polling = False
         self._log_uuid: str | None = None
+        self._vistos: set[str] = set()        # discos que ya se vieron en pantalla
+        self._contenido: dict[str, dict] = {}  # uuid -> qué tiene en la raíz
+        self._leyendo: set[str] = set()
+        self._fondo = False
 
         self._timer = QTimer(self)
         self._timer.setInterval(_POLL_MS)
@@ -146,14 +155,25 @@ class DiscosTab(QWidget):
         lay.addWidget(self.txt_log, 1)
 
     # ------------------------------------------------------------- ciclo
+    def start_background(self):
+        """Sigue mirando el NAS aunque el módulo no se vea, para avisar en la barra
+        lateral cuando se enchufa un disco. Lo llama __main__ (no los tests)."""
+        self._fondo = True
+        if not self.isVisible():
+            self._timer.start(_POLL_FONDO_MS)
+            self.refresh()
+
     def showEvent(self, event):
         super().showEvent(event)
         self.refresh()
-        self._timer.start()
+        self._timer.start(_POLL_MS)
 
     def hideEvent(self, event):
         super().hideEvent(event)
-        self._timer.stop()
+        if self._fondo:
+            self._timer.start(_POLL_FONDO_MS)
+        else:
+            self._timer.stop()
 
     def _run(self, fn, on_ok=None, on_fail=None):
         w = EngineWorker(lambda _cb: fn())
@@ -219,6 +239,47 @@ class DiscosTab(QWidget):
                 self._cards.pop(u).deleteLater()
         self.lbl_sin_discos.setVisible(not discos)
         self._llenar_historial(est.get("copias", []))
+
+        # Aviso para la barra lateral: discos enchufados que todavía no se vieron
+        if self.isVisible():
+            self._vistos |= vistos
+        self.pendientes.emit(len(vistos - self._vistos))
+
+        # Qué tiene cada disco: se pide una vez (el NAS lo guarda mientras siga
+        # enchufado). No mientras se copia: el NAS no lo monta dos veces.
+        for u in list(self._contenido):
+            if u not in vistos:
+                del self._contenido[u]
+        if self.isVisible():
+            for d in discos:
+                u = d["uuid"]
+                copia = copias.get(u) or {}
+                if d.get("admitido") and not copia.get("corriendo") and \
+                        u not in self._contenido and u not in self._leyendo:
+                    self._leer_contenido(u)
+        for u, card in self._cards.items():
+            card.set_contenido(self._contenido.get(u), u in self._leyendo)
+
+    def _leer_contenido(self, uuid: str):
+        self._leyendo.add(uuid)
+        client = self.client
+
+        def ok(datos):
+            self._leyendo.discard(uuid)
+            if not datos.get("ocupado"):
+                self._contenido[uuid] = datos
+            card = self._cards.get(uuid)
+            if card:
+                card.set_contenido(self._contenido.get(uuid), False)
+
+        def fail(_msg):
+            self._leyendo.discard(uuid)
+            self._contenido[uuid] = {"error": True}
+            card = self._cards.get(uuid)
+            if card:
+                card.set_contenido(self._contenido[uuid], False)
+
+        self._run(lambda: client.contenido(uuid), ok, fail)
 
     def _llenar_historial(self, copias):
         sel = self._log_uuid
@@ -396,6 +457,30 @@ class _DiscoCard(QFrame):
         self.lbl_actual.setObjectName("muted")
         lay.addWidget(self.lbl_actual)
 
+        # Qué tiene el disco: una frase siempre y la lista entera a pedido
+        fila = QHBoxLayout()
+        fila.setSpacing(10)
+        self.lbl_contenido = QLabel()
+        self.lbl_contenido.setWordWrap(True)
+        fila.addWidget(self.lbl_contenido, 1)
+        self.btn_archivos = QPushButton()
+        self.btn_archivos.setObjectName("btn_link")
+        self.btn_archivos.setCheckable(True)
+        self.btn_archivos.toggled.connect(self._toggle_archivos)
+        fila.addWidget(self.btn_archivos, 0, Qt.AlignmentFlag.AlignTop)
+        lay.addLayout(fila)
+        self.lst_archivos = QListWidget()
+        self.lst_archivos.setObjectName("people_list")
+        self.lst_archivos.setAccessibleName("Archivos del disco")
+        self.lst_archivos.setMaximumHeight(180)
+        self.lst_archivos.setSelectionMode(QListWidget.SelectionMode.NoSelection)
+        self.lst_archivos.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.lst_archivos.setVisible(False)
+        lay.addWidget(self.lst_archivos)
+        self._n_archivos = 0
+        self.lbl_contenido.setVisible(False)
+        self.btn_archivos.setVisible(False)
+
         row = QHBoxLayout()
         row.setSpacing(8)
         self.botones = {}
@@ -460,6 +545,36 @@ class _DiscoCard(QFrame):
         else:
             self.botones["copiar"].setText("Copiar…")
             self.botones["copiar"].setToolTip("")
+
+
+    def set_contenido(self, datos: dict | None, leyendo: bool):
+        if leyendo and not datos:
+            self.lbl_contenido.setText("Revisando qué tiene el disco…")
+            self.lbl_contenido.setObjectName("muted")
+        elif datos and datos.get("error"):
+            self.lbl_contenido.setText("No se pudo ver qué tiene el disco.")
+            self.lbl_contenido.setObjectName("muted")
+        else:
+            self.lbl_contenido.setText(resumir_contenido(datos))
+            self.lbl_contenido.setObjectName("")
+        self.lbl_contenido.style().unpolish(self.lbl_contenido)
+        self.lbl_contenido.style().polish(self.lbl_contenido)
+        self.lbl_contenido.setVisible(bool(self.lbl_contenido.text()))
+
+        lineas = lineas_contenido(datos) if datos and not datos.get("error") else []
+        if len(lineas) != self._n_archivos or self.lst_archivos.count() != len(lineas):
+            self.lst_archivos.clear()
+            self.lst_archivos.addItems(lineas)
+            self._n_archivos = len(lineas)
+        self.btn_archivos.setVisible(bool(lineas))
+        self._toggle_archivos(self.btn_archivos.isChecked())
+
+    def _toggle_archivos(self, visible: bool):
+        n = self._n_archivos
+        self.lst_archivos.setVisible(visible and n > 0)
+        # Sin número: la lista es la raíz (archivos sueltos y carpetas), y un número
+        # distinto del total de la frase de arriba confundía.
+        self.btn_archivos.setText("Ocultar archivos" if visible else "Mostrar archivos")
 
 
 # ------------------------------------------------------------------ diálogos
@@ -531,7 +646,12 @@ def _amigable(msg: str) -> str:
 def _nombre(disco: dict) -> str:
     modelo = disco.get("modelo") or "Disco"
     etiqueta = f' · «{disco["etiqueta"]}»' if disco.get("etiqueta") else ""
-    return f"{modelo} · {str(disco.get('disco_gb', '?')).replace('.', ',')} GB{etiqueta}"
+    try:
+        gb = float(disco.get("disco_gb"))
+        tam = f"{gb:.0f} GB" if gb >= 10 else f"{gb:.1f} GB".replace(".", ",")
+    except (TypeError, ValueError):
+        tam = "? GB"
+    return f"{modelo} · {tam}{etiqueta}"
 
 
 def _color(tono):

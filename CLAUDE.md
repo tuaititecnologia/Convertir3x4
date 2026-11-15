@@ -40,6 +40,8 @@ convertir3x4/
                          token) that drives external-disk copies; resumir()/acciones_para() are pure
                          tipo_disco()/nota_operador(): recorder disk or not, read from what the NAS
                          already decided (USB + exFAT + only HyperDeck_NNNN files), never re-checked here
+                         contenido()/resumir_contenido(): root of a plugged disk via the NAS
+                         /v1/contenido (needs panel-copias.py + copiar-disco.py `contenido`, CDLM-Freenas)
   app.py                 MainWindow: left nav rail (Buscar/Catalogar/Convertir/Grabadora, Ctrl+1..4 via
                          QShortcut) + QStackedWidget; owns window geometry + closeEvent.
   config.py              constants (APP_VERSION, ASPECT_RATIOS, VIDEO_*, etc.)
@@ -76,7 +78,8 @@ convertir3x4/
                            shutdown for MainWindow. `App` aliases it in the shim.
     tabs/tab_discos.py     DiscosTab, shown as "Grabadora" (operators call the HyperDeck recorder
                            "la grabadora"; never say HyperDeck/Discos in UI): its disks plugged into the NAS, copy progress, Copiar/Detener/
-                           Verificar/Formatear, auto mode, history + log. Polls every 3 s while visible.
+                           Verificar/Formatear, auto mode, history + log. Polls every 3 s while visible and every 20 s in the background (started by
+                           __main__, not tests) to show a badge on the rail for unseen disks.
                            Dev without NAS: CDLM_PANEL_URLS / CDLM_PANEL_TOKEN (see tests_discos.py)
     tabs/convert_workers.py  ThumbWorker / ConvertWorker / DownloadWorker (QThread, cancellable)
     widgets/advanced_dialog.py, widgets/help_panel.py (overlay help, first run + F1)

@@ -21,6 +21,43 @@ from .ui.tabs.tab_discos import DiscosTab
 _RAIL_WIDTH = 76
 
 
+class NavButton(QToolButton):
+    """Botón de módulo de la barra lateral, con un aviso numérico opcional
+    (p. ej. discos de la grabadora enchufados que todavía no se miraron)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._badge = 0
+
+    def set_badge(self, n: int):
+        if n != self._badge:
+            self._badge = n
+            self.update()
+
+    def badge(self) -> int:
+        return self._badge
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if not self._badge:
+            return
+        from PyQt6.QtGui import QColor, QFont, QPainter
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        d = 18
+        x, y = self.width() - d - 8, 4
+        p.setPen(QColor(T.panel))
+        p.setBrush(QColor(T.accent))
+        p.drawEllipse(x, y, d, d)
+        f = QFont(self.font())
+        f.setPixelSize(11)
+        f.setWeight(QFont.Weight.Bold)
+        p.setFont(f)
+        p.setPen(QColor(T.on_image))
+        p.drawText(x, y, d, d, int(Qt.AlignmentFlag.AlignCenter), str(min(self._badge, 9)))
+        p.end()
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -66,6 +103,7 @@ class MainWindow(QMainWindow):
         # El título lo controla Convertir; al cambiar de módulo se restaura el
         # título base para no arrastrar el "● proyecto.c3x4".
         self.stack.currentChanged.connect(self._on_tab_changed)
+        self.discos_tab.pendientes.connect(self._aviso_grabadora)
         self._restore_geometry()
 
     def _build_rail(self, modules) -> QFrame:
@@ -77,7 +115,7 @@ class MainWindow(QMainWindow):
         col.setSpacing(6)
         for i, (widget, label, icon_name) in enumerate(modules):
             self.stack.addWidget(widget)
-            b = QToolButton()
+            b = NavButton()
             b.setObjectName("nav_button")
             b.setText(label)
             b.setIcon(icons.icon(icon_name, 22, T.text_3, active_color=T.text))
@@ -154,6 +192,13 @@ class MainWindow(QMainWindow):
         if not getattr(self, "_focused_once", False):
             self._focused_once = True
             self.buscar_tab.txt_query.setFocus()
+
+    def _aviso_grabadora(self, n: int):
+        b = self._nav.button(self.stack.indexOf(self.discos_tab))
+        b.set_badge(n)
+        b.setToolTip("Grabadora" + ("" if not n else
+                     "  ·  hay un disco nuevo enchufado al NAS" if n == 1 else
+                     f"  ·  hay {n} discos nuevos enchufados al NAS"))
 
     def _focus_module(self, index: int):
         """Al cambiar de módulo, el foco va a su lugar natural (o a ningún lado).

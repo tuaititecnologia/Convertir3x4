@@ -17,6 +17,8 @@ def main():
     apply_theme(app)
     window = MainWindow()
     window.show()
+    # Avisar en la barra lateral cuando se enchufa un disco de la grabadora
+    window.discos_tab.start_background()
     sys.exit(app.exec())
 
 
