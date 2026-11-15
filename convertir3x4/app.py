@@ -11,6 +11,7 @@ from .config import APP_TITLE
 from .ui.tabs.tab_convertir import ConvertTab
 from .ui.tabs.tab_buscar import BuscarTab
 from .ui.tabs.tab_motor import MotorTab
+from .ui.tabs.tab_discos import DiscosTab
 
 
 class MainWindow(QMainWindow):
@@ -31,6 +32,9 @@ class MainWindow(QMainWindow):
         self.motor_tab = MotorTab()
         self.motor_tab.catalogChanged.connect(self.buscar_tab.refresh)
         self.tabs.addTab(self.motor_tab, "Catalogar")
+
+        self.discos_tab = DiscosTab()
+        self.tabs.addTab(self.discos_tab, "Discos")
 
         self.convert_tab = ConvertTab()
         self.convert_tab.titleChanged.connect(self.setWindowTitle)
