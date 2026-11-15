@@ -48,8 +48,19 @@ HELP = [
         ("Opciones avanzadas", "El ⚙ tiene opciones que casi nunca hacen falta. "
                                "Lo que cambies ahí vuelve a lo estándar al cerrar la app."),
     ]),
+    ("Discos", [
+        ("Copiar un disco", "Enchufá el disco por USB al NAS. Aparece en la lista: "
+                            "tocá Copiar y elegí la carpeta de destino."),
+        ("Seguro", "El disco se lee una sola vez y en solo lectura. Nunca se pisa un "
+                   "archivo que ya está en el NAS."),
+        ("Formatear", "Solo cuando la copia terminó y se verificó. Si hubo errores, "
+                      "primero reintentá los errores."),
+        ("Modo automático", "Si está activado, los discos de la HyperDeck se copian, "
+                            "verifican y formatean solos al enchufarlos."),
+    ]),
 ]
-SHORTCUTS = [(f"{_MOD}+1 · 2 · 3", "Cambiar de módulo"), ("Supr", "Quitar de Convertir")]
+SHORTCUTS = [(f"{_MOD}+1 a 4", "Cambiar de módulo"), ("F1", "Abrir o cerrar la ayuda"),
+             ("Supr", "Quitar de Convertir")]
 
 
 class HelpPanel(QFrame):

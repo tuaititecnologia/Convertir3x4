@@ -55,7 +55,8 @@ SURFACE_KEYS = ("bg", "panel", "raised")
 
 @pytest.mark.parametrize("pal_name", list(PALETTES))
 class TestContrast:
-    @pytest.mark.parametrize("name", ["text", "text_2", "text_3", "accent_text"])
+    @pytest.mark.parametrize("name", ["text", "text_2", "text_3", "accent_text",
+                                      "ok", "warn", "danger"])
     @pytest.mark.parametrize("surface", SURFACE_KEYS)
     def test_readable_text_is_aa(self, pal_name, name, surface):
         pal = PALETTES[pal_name]

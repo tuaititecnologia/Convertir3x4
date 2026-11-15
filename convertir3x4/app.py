@@ -16,6 +16,7 @@ from .ui.widgets.help_panel import HelpPanel
 from .ui.tabs.tab_convertir import ConvertTab
 from .ui.tabs.tab_buscar import BuscarTab
 from .ui.tabs.tab_motor import MotorTab
+from .ui.tabs.tab_discos import DiscosTab
 
 _RAIL_WIDTH = 76
 
@@ -33,6 +34,7 @@ class MainWindow(QMainWindow):
         self.buscar_tab = BuscarTab()
         self.motor_tab = MotorTab()
         self.motor_tab.catalogChanged.connect(self.buscar_tab.refresh)
+        self.discos_tab = DiscosTab()
         self.convert_tab = ConvertTab()
         self.convert_tab.titleChanged.connect(self.setWindowTitle)
 
@@ -43,6 +45,7 @@ class MainWindow(QMainWindow):
             (self.buscar_tab, "Buscar", "search"),
             (self.motor_tab, "Catalogar", "scan-search"),
             (self.convert_tab, "Convertir", "wand-sparkles"),
+            (self.discos_tab, "Discos", "hard-drive"),
         ])
 
         central = QWidget()
@@ -152,7 +155,22 @@ class MainWindow(QMainWindow):
             self._focused_once = True
             self.buscar_tab.txt_query.setFocus()
 
+    def _focus_module(self, index: int):
+        """Al cambiar de módulo, el foco va a su lugar natural (o a ningún lado).
+
+        Si no, Qt lo pasa al primer botón de la página y su borde de foco
+        parece una selección (pasaba con "Conexión…" en Discos).
+        """
+        page = self.stack.widget(index)
+        target = {self.buscar_tab: self.buscar_tab.txt_query,
+                  self.convert_tab: self.convert_tab.list_widget}.get(page)
+        if target is not None:
+            target.setFocus()
+        elif self.focusWidget() is not None:
+            self.focusWidget().clearFocus()
+
     def _on_tab_changed(self, index: int):
+        self._focus_module(index)
         if self.stack.widget(index) is not self.convert_tab:
             self.setWindowTitle(APP_TITLE)
         else:

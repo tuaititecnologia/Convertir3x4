@@ -21,7 +21,8 @@ python -m venv venv && source venv/bin/activate && pip install -r requirements.t
 ./venv/bin/python Convertir3x4.py      # shim entry point (also: python -m convertir3x4)
 
 # Tests — pass both files explicitly (pytest's default discovery skips the tests.py name)
-./venv/bin/python -m pytest tests.py tests_catalog.py tests_ai.py tests_clips.py tests_ui.py tests_convertir.py -v
+./venv/bin/python -m pytest tests.py tests_catalog.py tests_ai.py tests_clips.py tests_ui.py tests_convertir.py tests_discos.py -v
+# tests_discos.py also runs the real panel-copias.py (fake lsblk/systemctl) when ~/Documents/Agents/CDLM-Freenas is present
 # tests_ai.py also runs real-model tests when CDLM_MODELS points to a folder with the downloaded models
 
 # Build executable
@@ -35,7 +36,9 @@ Modular package `convertir3x4/`. The root `Convertir3x4.py` is a thin **shim**: 
 ```
 convertir3x4/
   __main__.py            entry point (QApplication + DARK_STYLE + MainWindow)
-  app.py                 MainWindow: left nav rail (Buscar/Catalogar/Convertir, Ctrl+1..3 via
+  nas/copias.py          Qt-free urllib client for panel-copias (HTTP service on the NAS, port 8790,
+                         token) that drives external-disk copies; resumir()/acciones_para() are pure
+  app.py                 MainWindow: left nav rail (Buscar/Catalogar/Convertir/Discos, Ctrl+1..4 via
                          QShortcut) + QStackedWidget; owns window geometry + closeEvent.
   config.py              constants (APP_VERSION, ASPECT_RATIOS, VIDEO_*, etc.)
   utils.py               open_folder()
@@ -69,6 +72,9 @@ convertir3x4/
                            session-only, NEVER persisted; audio level is not an option).
                            Emits titleChanged(str); save_state/restore_state/confirm_close/
                            shutdown for MainWindow. `App` aliases it in the shim.
+    tabs/tab_discos.py     DiscosTab: USB disks plugged into the NAS, copy progress, Copiar/Detener/
+                           Verificar/Formatear, auto mode, history + log. Polls every 3 s while visible.
+                           Dev without NAS: CDLM_PANEL_URLS / CDLM_PANEL_TOKEN (see tests_discos.py)
     tabs/convert_workers.py  ThumbWorker / ConvertWorker / DownloadWorker (QThread, cancellable)
     widgets/advanced_dialog.py, widgets/help_panel.py (overlay help, first run + F1)
 ```

@@ -45,6 +45,7 @@ DARK = {
     "ia_soft": "rgba(150, 110, 240, 0.16)",
     "ia_hover": "rgba(150, 110, 240, 0.28)",
     "danger": "#f87171",
+    "ok": "#4ade80",            # terminado bien (Discos: "Copiado completo")
     "on_image": "#ffffff",      # texto de insignias sobre la miniatura (fondo negro translúcido)
 }
 
@@ -73,6 +74,7 @@ LIGHT = {
     "ia_soft": "rgba(109, 40, 217, 0.10)",
     "ia_hover": "rgba(109, 40, 217, 0.20)",
     "danger": "#c81e1e",
+    "ok": "#166534",
     "on_image": "#ffffff",
 }
 
@@ -150,6 +152,31 @@ def _palette() -> QPalette:
     return p
 
 
+_CHECK_IMG = ""   # PNG de la tilde de las casillas (lo arma apply_theme)
+
+
+def _make_check_image() -> str:
+    """Tilde blanca para las casillas marcadas: el estado no puede ser solo color.
+
+    La hoja de estilos de Qt solo acepta imágenes por ruta, así que se escribe
+    una vez en una carpeta temporal.
+    """
+    import tempfile
+    from PyQt6.QtCore import QByteArray, QRectF, Qt
+    from PyQt6.QtGui import QPainter, QPixmap
+    from PyQt6.QtSvg import QSvgRenderer
+    with open(os.path.join(ASSETS_DIR, "icons", "check.svg"), encoding="utf-8") as f:
+        svg = f.read().replace("currentColor", T.on_image).replace('stroke-width="2"', 'stroke-width="3"')
+    px = QPixmap(32, 32)
+    px.fill(Qt.GlobalColor.transparent)
+    p = QPainter(px)
+    QSvgRenderer(QByteArray(svg.encode())).render(p, QRectF(4, 4, 24, 24))
+    p.end()
+    path = os.path.join(tempfile.gettempdir(), "cdlm-convertir-check.png")
+    px.save(path)
+    return path.replace("\\", "/")
+
+
 def apply_theme(app, scheme: str | None = None) -> None:
     """Deja la app con el mismo aspecto en cualquier sistema operativo.
 
@@ -165,6 +192,11 @@ def apply_theme(app, scheme: str | None = None) -> None:
     font.setHintingPreference(QFont.HintingPreference.PreferNoHinting)
     app.setFont(font)
     app.setPalette(_palette())
+    global _CHECK_IMG
+    try:
+        _CHECK_IMG = _make_check_image()
+    except Exception:  # noqa: BLE001 — sin tilde, la casilla igual funciona
+        _CHECK_IMG = ""
     app.setStyleSheet(build_stylesheet())
 
 
@@ -312,7 +344,10 @@ QCheckBox::indicator {{
 }}
 QCheckBox::indicator:hover {{ border-color: {T.text_2}; }}
 QCheckBox:focus {{ color: {T.text}; }}
-QCheckBox::indicator:checked {{ background-color: {T.accent}; border-color: {T.accent}; }}
+QCheckBox::indicator:checked {{
+    background-color: {T.accent}; border-color: {T.accent};
+    {f"image: url({_CHECK_IMG});" if _CHECK_IMG else ""}
+}}
 
 /* ---------- paneles y textos de sección ---------- */
 QFrame#sidebar, QFrame#panel {{
@@ -345,6 +380,21 @@ QListWidget#people_list::item {{ background: transparent; border: none; margin: 
 QListWidget#people_list::item:selected {{ background-color: {T.accent_soft}; color: {T.text}; }}
 QListWidget#people_list::item:disabled {{ color: {T.text_3}; }}
 QListWidget#media_grid::item {{ background: transparent; border: none; padding: 0; margin: 0; }}
+
+/* ---------- tablas y texto largo (historial y registro de Discos) ---------- */
+QTreeView, QPlainTextEdit {{
+    background-color: {T.raised}; color: {T.text}; border: 1px solid {T.border_strong};
+    border-radius: {T.radius_sm}px; selection-background-color: {T.accent_soft};
+    selection-color: {T.text}; outline: none;
+}}
+QTreeView::item {{ padding: 4px 6px; }}
+QTreeView::item:hover {{ background-color: {T.hover}; }}
+QTreeView::item:selected {{ background-color: {T.accent_soft}; color: {T.text}; }}
+QTreeView:focus, QPlainTextEdit:focus {{ border-color: {T.accent_text}; }}
+QHeaderView::section {{
+    background-color: {T.panel}; color: {T.text_2}; border: none;
+    border-bottom: 1px solid {T.border_strong}; padding: 6px; font-weight: 600;
+}}
 
 /* ---------- progreso y slider ---------- */
 QProgressBar {{

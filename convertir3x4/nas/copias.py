@@ -1,0 +1,214 @@
+"""Cliente de panel-copias, la API del NAS que maneja la copia de discos externos.
+
+Del lado del NAS corre `panel-copias.py` (repo CDLM-Freenas, scripts/), que envuelve
+a `copiar-disco.py`. Este módulo no usa Qt: la pestaña Discos lo llama desde un
+worker. Solo biblioteca estándar (urllib), sin dependencias nuevas.
+
+Se prueban las direcciones en orden (LAN primero, Netbird después) y se recuerda
+la última que respondió.
+"""
+
+from __future__ import annotations
+
+import json
+import socket
+import urllib.error
+import urllib.request
+from dataclasses import dataclass
+
+# LAN de la iglesia y, desde afuera, Netbird (catedral-truenas).
+URLS_POR_DEFECTO = ("http://192.168.1.224:8790", "http://100.118.161.236:8790")
+
+
+class PanelError(Exception):
+    """Error para mostrar tal cual en la UI (en castellano)."""
+
+
+class PanelSinConexion(PanelError):
+    pass
+
+
+class PanelClient:
+    def __init__(self, urls, token: str, timeout: float = 5.0):
+        self.urls = [u.rstrip("/") for u in urls if u and u.strip()]
+        self.token = (token or "").strip()
+        self.timeout = timeout
+        self.url_activa: str | None = None
+
+    # ------------------------------------------------------------ transporte
+    def _pedir(self, metodo, ruta, datos=None, timeout=None):
+        if not self.urls:
+            raise PanelSinConexion("No hay dirección del NAS configurada.")
+        orden = self.urls if self.url_activa not in self.urls else \
+            [self.url_activa] + [u for u in self.urls if u != self.url_activa]
+        cuerpo = json.dumps(datos).encode() if datos is not None else None
+        ultimo = ""
+        for base in orden:
+            req = urllib.request.Request(base + ruta, data=cuerpo, method=metodo)
+            req.add_header("Authorization", f"Bearer {self.token}")
+            if cuerpo is not None:
+                req.add_header("Content-Type", "application/json")
+            try:
+                with urllib.request.urlopen(req, timeout=timeout or self.timeout) as r:
+                    self.url_activa = base
+                    return json.loads(r.read() or b"{}")
+            except urllib.error.HTTPError as e:
+                # El NAS respondió: no tiene sentido probar la otra dirección.
+                self.url_activa = base
+                raise PanelError(_mensaje_http(e)) from None
+            except (urllib.error.URLError, socket.timeout, TimeoutError, ConnectionError) as e:
+                ultimo = str(getattr(e, "reason", e))
+                continue
+        self.url_activa = None
+        raise PanelSinConexion(f"El NAS no responde ({ultimo}).")
+
+    # ------------------------------------------------------------ consultas
+    def estado(self) -> dict:
+        return self._pedir("GET", "/v1/estado")
+
+    def log(self, uuid: str, lineas: int = 300) -> str:
+        return self._pedir("GET", f"/v1/log?uuid={uuid}&lineas={lineas}").get("texto", "")
+
+    # ------------------------------------------------------------ acciones
+    def copiar(self, uuid: str, destino: str, reintentar: bool = False) -> str:
+        r = self._pedir("POST", "/v1/copiar",
+                        {"uuid": uuid, "destino": destino, "reintentar": reintentar}, timeout=60)
+        return r.get("mensaje", "")
+
+    def detener(self, uuid: str) -> str:
+        return self._pedir("POST", "/v1/detener", {"uuid": uuid}, timeout=120).get("mensaje", "")
+
+    def verificar(self, uuid: str) -> str:
+        return self._pedir("POST", "/v1/verificar", {"uuid": uuid}).get("mensaje", "")
+
+    def formatear(self, uuid: str, serie: str) -> str:
+        return self._pedir("POST", "/v1/formatear",
+                           {"uuid": uuid, "serie": serie, "confirmacion": "FORMATEAR"}).get("mensaje", "")
+
+    def set_auto(self, activo: bool) -> bool:
+        return bool(self._pedir("POST", "/v1/auto", {"activo": activo}).get("auto"))
+
+
+def _mensaje_http(e: urllib.error.HTTPError) -> str:
+    try:
+        detalle = json.loads(e.read() or b"{}").get("error", "")
+    except ValueError:
+        detalle = ""
+    if e.code == 401:
+        return "El NAS rechazó la clave de acceso. Revisá la configuración."
+    if e.code == 403:
+        return "El NAS no acepta pedidos desde esta red."
+    return detalle[:1].upper() + detalle[1:] if detalle else f"El NAS respondió con error {e.code}."
+
+
+# ------------------------------------------------------------------ textos para la UI
+FASES = {
+    "MONTANDO": "Preparando",
+    "COPIANDO": "Copiando",
+    "TERMINADO": "Copiado completo",
+    "CON_ERRORES": "Copiado con errores",
+    "DETENIDA": "Detenida",
+    "ERROR": "Error",
+    "VERIFICACION_FALLIDA": "Verificación fallida",
+    "FORMATEADO": "Formateado",
+}
+
+
+@dataclass
+class Resumen:
+    titulo: str             # "Copiando", "Copiado completo"…
+    detalle: str            # "120,3 GB de 936,9 GB · 175 MB/s · faltan ~78 min"
+    porcentaje: int | None  # 0-100 mientras copia; None si no aplica
+    tono: str               # "activo" | "ok" | "aviso" | "error" | "neutro"
+
+
+_FS = {"exfat": "exFAT", "vfat": "FAT", "ntfs": "NTFS", "hfsplus": "HFS+", "ext4": "ext4",
+       "xfs": "XFS", "apfs": "APFS"}
+
+
+def nombre_fs(fs) -> str:
+    return _FS.get(fs or "", fs or "")
+
+
+def _gb(x) -> str:
+    return f"{float(x or 0):.1f}".replace(".", ",") + " GB"
+
+
+def _minutos(m) -> str:
+    m = int(m or 0)
+    return f"{m // 60} h {m % 60:02d} min" if m >= 60 else f"{m} min"
+
+
+def resumir(copia: dict | None, tarea: dict | None = None, disco: dict | None = None) -> Resumen:
+    """Una línea de estado legible para una copia (estado.json + si corre).
+
+    `tarea` es la verificación o el formateo pedidos desde la app; `disco`, la
+    partición enchufada (para reconocer un disco recién formateado, que tiene UUID
+    nuevo y por eso no tiene copia propia)."""
+    if tarea and tarea.get("estado") == "corriendo":
+        accion = "Verificando y formateando" if tarea.get("accion") == "formatear" else "Verificando"
+        return Resumen(accion, "Compara muestras del disco contra el NAS.", None, "activo")
+    if tarea and tarea.get("estado") == "error" and not (copia or {}).get("corriendo"):
+        que = "No se formateó" if tarea.get("accion") == "formatear" else "La verificación falló"
+        return Resumen(que, tarea.get("mensaje") or "", None, "error")
+    if disco and disco.get("admitido") is False:
+        return Resumen("No se puede leer en el NAS", f"Es {nombre_fs(disco.get('fs'))}. El NAS no lee NTFS; "
+                       "hay que copiarlo desde una PC.", None, "aviso")
+    if not copia:
+        f = (disco or {}).get("formateado")
+        if f:
+            return Resumen("Vacío", f"Formateado el {f.get('fecha', '')} después de copiar "
+                           f"{f.get('archivos', '?')} archivos. Listo para grabar.", None, "ok")
+        return Resumen("Sin copiar", "Este disco nunca se copió al NAS.", None, "neutro")
+    fase = copia.get("fase") or ""
+    titulo = FASES.get(fase, fase.title() or "Desconocido")
+    errores = int(copia.get("errores") or 0)
+    if copia.get("corriendo"):
+        if fase == "TERMINADO":   # modo auto: verifica y formatea dentro de la misma unidad
+            return Resumen("Verificando y formateando", "Copia completa; dejando el disco listo "
+                           "para la HyperDeck.", None, "activo")
+        hecho, falta = float(copia.get("copiado_gb") or 0), float(copia.get("falta_gb") or 0)
+        total = hecho + falta
+        pct = int(round(100 * hecho / total)) if total > 0 else 0
+        partes = [f"{_gb(hecho)} de {_gb(total)}"]
+        if copia.get("mb_s"):
+            partes.append(f"{copia['mb_s']} MB/s")
+        if copia.get("eta_min") not in (None, "") and hecho > 0:
+            partes.append(f"faltan ~{_minutos(copia['eta_min'])}")
+        if errores:
+            partes.append(f"{errores} con error")
+        return Resumen("Copiando" if fase == "COPIANDO" else titulo, " · ".join(partes), pct, "activo")
+    if fase == "TERMINADO":
+        v = copia.get("verificado")
+        det = f"{copia.get('archivos', '?')} archivos en el NAS."
+        if v and not v.get("fallos"):
+            det += f" Verificado el {v.get('fecha', '')}."
+        if copia.get("error"):
+            det += f" {copia['error']}"
+        return Resumen(titulo, det, None, "ok")
+    if fase == "FORMATEADO":
+        return Resumen(titulo, "Vacío y listo para volver a grabar.", None, "ok")
+    if fase == "CON_ERRORES":
+        return Resumen(titulo, f"{errores} archivos no se pudieron leer. El disco queda "
+                       "anotado para rescatarlo con ddrescue; no se formatea.", None, "aviso")
+    if fase == "DETENIDA":
+        return Resumen(titulo, "Se retoma donde quedó con Copiar.", None, "aviso")
+    return Resumen(titulo, copia.get("error") or "", None, "error" if fase in
+                   ("ERROR", "VERIFICACION_FALLIDA") else "neutro")
+
+
+def acciones_para(disco: dict, copia: dict | None, tarea: dict | None) -> set[str]:
+    """Qué botones tiene sentido mostrar para un disco enchufado."""
+    if tarea and tarea.get("estado") == "corriendo":
+        return set()
+    if not disco.get("admitido"):
+        return set()
+    if copia and copia.get("corriendo"):
+        return {"detener"}
+    fase = (copia or {}).get("fase")
+    if fase == "TERMINADO":
+        # "copiar" también: si se volvió a grabar, baja solo lo nuevo.
+        return {"copiar", "verificar", "formatear"}
+    if fase == "CON_ERRORES":
+        return {"copiar", "reintentar"}
+    return {"copiar"}
