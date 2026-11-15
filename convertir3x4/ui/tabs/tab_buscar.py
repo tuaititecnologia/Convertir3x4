@@ -13,7 +13,7 @@ from PyQt6.QtGui import QIcon, QPixmap
 from PyQt6.QtWidgets import (
     QSizePolicy,
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QListWidgetItem, QFrame, QPushButton, QButtonGroup,
+    QListWidgetItem, QFrame, QPushButton, QButtonGroup, QMessageBox,
 )
 
 from ...appdata import db_path
@@ -23,6 +23,7 @@ from ..widgets.media_grid import (
     DragOutListWidget, PATH_ROLE, MEDIA_ID_ROLE, KIND_ROLE, DURATION_ROLE, STATE_ROLE,
 )
 from ..widgets.tag_bar import TagBar
+from ...utils import open_file
 from .. import icons
 from ..style import T
 
@@ -177,6 +178,7 @@ class BuscarTab(QWidget):
         self.grid = DragOutListWidget(thumb=_GRID_THUMB)
         self.grid.setAccessibleName("Resultados")
         self.grid.itemSelectionChanged.connect(self._on_selection_changed)
+        self.grid.itemDoubleClicked.connect(self._open_item)
         layout.addWidget(self.grid, 1)
 
         # Tags de la selección, en un panel abajo
@@ -264,6 +266,15 @@ class BuscarTab(QWidget):
         else:
             self.grid.set_empty_text("No hay nada de este tipo en el catálogo.")
         self._on_selection_changed()
+
+    def _open_item(self, item):
+        """Doble clic: el video se ve en el reproductor de la PC (la foto, en su visor)."""
+        path = item.data(PATH_ROLE)
+        if path and not open_file(path):
+            QMessageBox.information(
+                self, "No se puede abrir",
+                f"No se encuentra {os.path.basename(path)}.\n"
+                "¿Se desconectó el NAS o el disco donde está?")
 
     def _show_offline(self, missing: list[str]):
         if not missing:

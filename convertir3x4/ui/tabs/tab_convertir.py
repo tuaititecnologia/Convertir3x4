@@ -33,7 +33,7 @@ from PyQt6.QtWidgets import (
 from ...appdata import clip_cache_dir, tools_dir
 from ...config import THUMB_SIZE
 from ...convert import batch, download
-from ...utils import open_folder
+from ...utils import open_file, open_folder
 from .. import icons
 from ..style import T
 from ..widgets.advanced_dialog import AdvancedDialog, SessionOptions
@@ -344,6 +344,7 @@ class ConvertTab(QWidget):
         self.btn_sort_fecha.clicked.connect(lambda: self._toggle_sort("fecha"))
         self.list_widget.itemSelectionChanged.connect(self._refresh_panel)
         self.list_widget.orderChanged.connect(self._save_list)
+        self.list_widget.itemDoubleClicked.connect(self._open_item)
         self.thumb_slider.valueChanged.connect(self._on_thumb_resize)
         self._kind_group.buttonClicked.connect(lambda _: self._apply_filter())
         self._mode_group.buttonClicked.connect(self._on_mode)
@@ -468,6 +469,15 @@ class ConvertTab(QWidget):
         self.settings.setValue("last_dir", os.path.dirname(paths[0]))
         if self._add_paths(paths):
             self._save_list()
+
+    def _open_item(self, item):
+        """Doble clic: el video se ve en el reproductor de la PC (la foto, en su visor)."""
+        path = item.data(PATH_ROLE)
+        if not path:           # un link que todavía se está bajando
+            return
+        if not open_file(path):
+            self._show_status(f"No se puede abrir {os.path.basename(path)}: no se encuentra "
+                              "(¿se desconectó el disco o el NAS?).")
 
     def _remove_selected(self):
         if self._busy():

@@ -22,6 +22,8 @@ HELP = [
                       "Videos ves solo uno de los dos."),
         ("Llevar a ProPresenter", "Arrastrá la foto o el video directo a ProPresenter. "
                                   "ProPresenter usa el archivo original, no hace una copia."),
+        ("Verlo entero", "Con doble clic, el video se abre en el reproductor de la PC y la "
+                         "foto en el visor de fotos."),
         ("Poner tags", "Seleccioná una o varias (con Shift o " + _MOD + ") y escribí el tag "
                        "abajo. Si no existe, se crea."),
         ("Sugerencias de la IA", "Los tags violeta los propuso la IA. Tocá el tag para "
@@ -44,7 +46,8 @@ HELP = [
                              "arrancar otra, tocá Vaciar: los archivos no se borran."),
         ("Audio", "Los videos salen con el volumen nivelado: en la consola el fader "
                   "queda siempre en 0 dB."),
-        ("Ver un video", "Pasá el mouse por arriba para ver de qué se trata, sin abrirlo."),
+        ("Ver un video", "Pasá el mouse por arriba para ver de qué se trata. Con doble "
+                         "clic se abre en el reproductor de la PC."),
         ("Si algo falla", "Pasá el mouse por arriba del que está marcado: dice qué pasó. "
                           "«No disponible» casi siempre es el NAS o un disco desconectado."),
         ("Opciones avanzadas", "El ⚙ tiene opciones que casi nunca hacen falta. "

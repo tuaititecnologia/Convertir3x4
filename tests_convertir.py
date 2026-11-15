@@ -294,3 +294,63 @@ class TestListaSinProyectos:
     def test_sin_botones_de_proyecto(self, tab):
         assert not hasattr(tab, "btn_new_project") and not hasattr(tab, "btn_save_project")
         assert not hasattr(tab, "titleChanged")
+
+
+class TestDobleClic:
+    def test_open_file_no_abre_lo_que_no_esta(self):
+        from convertir3x4.utils import open_file
+        assert open_file("/no/existe/video.mp4") is False
+        assert open_file("") is False
+
+    def test_doble_clic_abre_el_video_en_convertir(self, app, tab, media, monkeypatch):
+        from PyQt6.QtCore import Qt
+        from PyQt6.QtTest import QTest
+        from convertir3x4.ui.tabs import tab_convertir
+        abiertos = []
+        monkeypatch.setattr(tab_convertir, "open_file", lambda p: abiertos.append(p) or True)
+        tab._add_paths([media["video"]])
+        app.processEvents()
+        rect = tab.list_widget.visualItemRect(tab.list_widget.item(0))
+        # La grilla de Convertir maneja el mouse a mano (reordenar): el doble clic
+        # igual tiene que llegar.
+        vp = tab.list_widget.viewport()
+        QTest.mouseClick(vp, Qt.MouseButton.LeftButton, pos=rect.center())   # un doble clic real
+        QTest.mouseDClick(vp, Qt.MouseButton.LeftButton, pos=rect.center())  # = clic + doble clic
+        assert abiertos == [media["video"]]
+
+    def test_avisa_si_no_esta(self, app, tab, monkeypatch):
+        from convertir3x4.ui.tabs import tab_convertir
+        monkeypatch.setattr(tab_convertir, "open_file", lambda p: False)
+        tab._add_paths(["/NAS/no_esta.mp4"], missing_ok=True)
+        tab._open_item(tab.list_widget.item(0))
+        assert "no se encuentra" in tab.lbl_status.text()
+
+    def test_link_bajando_no_hace_nada(self, app, tab, monkeypatch):
+        from PyQt6.QtWidgets import QListWidgetItem
+        from convertir3x4.ui.tabs import tab_convertir
+        abiertos = []
+        monkeypatch.setattr(tab_convertir, "open_file", lambda p: abiertos.append(p) or True)
+        tab.list_widget.addItem(QListWidgetItem("https://youtu.be/x"))
+        tab._open_item(tab.list_widget.item(0))
+        assert abiertos == []
+
+    def test_doble_clic_en_buscar(self, app, monkeypatch, tmp_path):
+        from PyQt6.QtCore import Qt
+        from PyQt6.QtTest import QTest
+        from convertir3x4.catalog.models import Media
+        from convertir3x4.ui.tabs import tab_buscar
+        abiertos = []
+        monkeypatch.setattr(tab_buscar, "open_file", lambda p: abiertos.append(p) or True)
+        f = tmp_path / "culto.mp4"
+        f.write_bytes(b"x")
+        t = tab_buscar.BuscarTab()
+        t.resize(900, 600)
+        t.show()
+        t._populate([Media(path=str(f), filename="culto.mp4", kind="video", id=1)])
+        app.processEvents()
+        rect = t.grid.visualItemRect(t.grid.item(0))
+        QTest.mouseClick(t.grid.viewport(), Qt.MouseButton.LeftButton, pos=rect.center())
+        QTest.mouseDClick(t.grid.viewport(), Qt.MouseButton.LeftButton, pos=rect.center())
+        assert abiertos == [str(f)]
+        t.close()
+        t.deleteLater()
