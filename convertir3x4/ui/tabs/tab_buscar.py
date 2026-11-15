@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
 from ...appdata import db_path
 from ...catalog.db import connect
 from ...catalog.repo import Repo
+from ...catalog.ubicacion import availability, friendly_root, storage_root  # noqa: F401
 from ..widgets.media_grid import (
     DragOutListWidget, PATH_ROLE, MEDIA_ID_ROLE, KIND_ROLE, DURATION_ROLE, STATE_ROLE,
 )
@@ -30,53 +31,8 @@ from ..style import T
 _GRID_THUMB = 150
 
 
-def storage_root(path: str) -> str:
-    """Raíz de la ubicación de un archivo: el recurso del NAS, el disco o el volumen.
-
-    \\\\NAS\\fotos\\a\\b.jpg -> \\\\NAS\\fotos   ·   D:\\x\\y.jpg -> D:\\
-    /Volumes/SSD/x/y.jpg -> /Volumes/SSD   ·   /home/u/x.jpg -> /
-    """
-    # Rutas de Windows (unidad o recurso de red), con \\ o con /: ntpath las
-    # entiende en cualquier sistema.
-    if re.match(r"^[A-Za-z]:[\\/]", path) or path.startswith(("\\\\", "//")):
-        drive, _ = ntpath.splitdrive(path)
-        return drive + ("\\" if len(drive) == 2 else "")
-    parts = path.split("/")
-    if len(parts) > 2 and parts[1] in ("Volumes", "media", "mnt"):
-        return "/".join(parts[:3])
-    return "/"
-
-
 _QUALITY = {"low_res": "Baja resolución: puede verse borrosa en la pantalla.",
             "corrupt": "El archivo parece dañado."}
-
-
-def friendly_root(root: str) -> str:
-    """Cómo nombra el operador una ubicación: "el NAS", "el disco D:", "el disco «SSD»"."""
-    if root.startswith(("\\\\", "//")):
-        return "el NAS"
-    if re.match(r"^[A-Za-z]:", root):
-        return f"el disco {root[:2].upper()}"
-    if root.startswith(("/Volumes/", "/media/", "/mnt/")):
-        return f"el disco «{root.rstrip('/').rsplit('/', 1)[-1]}»"
-    return "esta PC"
-
-
-def availability(paths: list[str]) -> dict[str, bool]:
-    """Qué archivos están, sin congelar la app si el NAS está desconectado.
-
-    En Windows, preguntar por un archivo de una carpeta de red caída puede
-    tardar segundos POR ARCHIVO. Se pregunta una vez por cada raíz; solo si la
-    raíz responde se pregunta archivo por archivo.
-    """
-    roots: dict[str, bool] = {}
-    out = {}
-    for p in paths:
-        r = storage_root(p)
-        if r not in roots:
-            roots[r] = os.path.exists(r)
-        out[p] = roots[r] and os.path.exists(p)
-    return out
 
 
 class SearchLineEdit(QLineEdit):
@@ -86,8 +42,8 @@ class SearchLineEdit(QLineEdit):
         super().__init__(parent)
         self.setObjectName("search_field")
         self.setClearButtonEnabled(True)
-        self.addAction(icons.icon("search", 16, T.text_3),
-                       QLineEdit.ActionPosition.LeadingPosition)
+        lupa = self.addAction(QIcon(), QLineEdit.ActionPosition.LeadingPosition)
+        icons.set_icon(lupa, "search", 16, "text_3")
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Escape and self.text():
@@ -147,7 +103,7 @@ class BuscarTab(QWidget):
         self.chk_pending.setObjectName("toggle_chip")
         self.chk_pending.setCheckable(True)
         self.chk_pending.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.chk_pending.setIcon(icons.icon("sparkles", 15, T.text_2, active_color=T.ia))
+        icons.set_icon(self.chk_pending, "sparkles", 15, "text_2", active="ia")
         self.chk_pending.setToolTip("Mostrar solo lo que tiene tags propuestos por la IA sin revisar")
         self.chk_pending.toggled.connect(lambda _: self._do_search())
         row.addWidget(self.chk_pending)
@@ -262,9 +218,16 @@ class BuscarTab(QWidget):
         n = len(results)
         self.lbl_count.setText("1 resultado" if n == 1 else f"{n} resultados")
         if self.txt_query.text().strip() or self.chk_pending.isChecked():
-            self.grid.set_empty_text("No hay nada que coincida con la búsqueda.")
+            filtro = self._kind_group.checkedButton()
+            if filtro is not None and filtro.property("kind"):
+                self.grid.set_empty_text("No hay nada que coincida con la búsqueda.\n"
+                                         "Probá con otra palabra o elegí «Todo» arriba.")
+            else:
+                self.grid.set_empty_text("No hay nada que coincida con la búsqueda.\n"
+                                         "Probá con otra palabra o con parte del nombre.")
         else:
-            self.grid.set_empty_text("No hay nada de este tipo en el catálogo.")
+            self.grid.set_empty_text("No hay nada de este tipo en el catálogo.\n"
+                                     "Elegí «Todo» arriba para ver el resto.")
         self._on_selection_changed()
 
     def _open_item(self, item):

@@ -421,3 +421,22 @@ def test_tarjeta_muestra_que_tiene_y_la_lista_a_pedido(tab_discos):
     card.btn_archivos.setChecked(True)
     assert card.lst_archivos.isVisibleTo(card) and card.lst_archivos.count() == 2
     assert card.btn_archivos.text() == "Ocultar archivos"
+
+
+def test_mientras_conecta_todo_en_gris_y_sin_datos_falsos(tab_discos):
+    app, t = tab_discos
+    assert t._estado_conexion == "conectando"
+    assert not t.body.isEnabled()
+    assert not t.lbl_sin_discos.isVisibleTo(t)       # no se sabe todavía
+    assert "Conectando con el NAS" in t.lbl_conexion.text()
+
+
+def test_sin_conexion_se_ve_y_se_puede_reintentar(tab_discos):
+    app, t = tab_discos
+    t._sin_conexion("PanelSinConexion: No se pudo conectar con el NAS.")
+    assert t._estado_conexion == "error" and not t.body.isEnabled()
+    assert t.btn_retry.isVisibleTo(t)
+    t._aplicar(_est(), None)
+    assert t._estado_conexion == "ok" and t.body.isEnabled()
+    assert not t.btn_retry.isVisibleTo(t)
+    assert t.lbl_sin_discos.isVisibleTo(t)

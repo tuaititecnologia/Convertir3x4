@@ -165,7 +165,8 @@ def resumir(copia: dict | None, tarea: dict | None = None, disco: dict | None = 
     nuevo y por eso no tiene copia propia)."""
     if tarea and tarea.get("estado") == "corriendo":
         accion = "Verificando y formateando" if tarea.get("accion") == "formatear" else "Verificando"
-        return Resumen(accion, "Revisando que la copia en el NAS esté completa.", None, "activo")
+        return Resumen(accion, "Compara lo que hay en el disco con lo copiado en el NAS.",
+                       None, "activo")
     if tarea and tarea.get("estado") == "error" and not (copia or {}).get("corriendo"):
         que = "No se formateó" if tarea.get("accion") == "formatear" else "La verificación falló"
         return Resumen(que, tarea.get("mensaje") or "", None, "error")

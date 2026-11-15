@@ -177,6 +177,28 @@ def _make_check_image() -> str:
     return path.replace("\\", "/")
 
 
+_AL_CAMBIAR = []   # funciones a llamar cuando cambia el tema (p. ej. icons.refresh_all)
+
+
+def al_cambiar_tema(fn):
+    if fn not in _AL_CAMBIAR:
+        _AL_CAMBIAR.append(fn)
+
+
+def _reaplicar(app, scheme: str):
+    """Cambia de tema con la app abierta (el sistema pasó a claro u oscuro)."""
+    if scheme == T.scheme:
+        return
+    use_palette(scheme)
+    app.setPalette(_palette())
+    app.setStyleSheet(build_stylesheet())
+    for fn in list(_AL_CAMBIAR):
+        fn()
+    # Lo que se dibuja a mano (grilla, avisos) lee T al pintar: alcanza con repintar
+    for w in app.allWidgets():
+        w.update()
+
+
 def apply_theme(app, scheme: str | None = None) -> None:
     """Deja la app con el mismo aspecto en cualquier sistema operativo.
 
@@ -198,6 +220,14 @@ def apply_theme(app, scheme: str | None = None) -> None:
     except Exception:  # noqa: BLE001 — sin tilde, la casilla igual funciona
         _CHECK_IMG = ""
     app.setStyleSheet(build_stylesheet())
+    # Sin modo fijo, se sigue al sistema también con la app abierta (decisión del
+    # 15/11/2026: la Mac pasó a modo noche y la app había quedado clara).
+    if scheme is None:
+        try:
+            hints = app.styleHints()
+            hints.colorSchemeChanged.connect(lambda _s: _reaplicar(app, system_scheme(app)))
+        except Exception:  # noqa: BLE001 — Qt viejo o app de prueba: queda fijo
+            pass
 
 
 def build_stylesheet() -> str:
@@ -223,6 +253,27 @@ QToolButton#nav_button {{
 QToolButton#nav_button:hover {{ background-color: {T.hover}; color: {T.text_2}; }}
 QToolButton#nav_button:checked {{ background-color: {T.accent_soft}; color: {T.text}; }}
 QToolButton#nav_button:focus {{ border: 1px solid {T.accent_text}; }}
+
+/* ---------- conexión con el NAS (Grabadora) ---------- */
+QFrame#conn_conectando {{
+    background-color: {T.accent_soft}; border: 1px solid {T.accent_line}; border-radius: {T.radius_sm}px;
+}}
+QFrame#conn_conectando QLabel {{ color: {T.accent_text}; font-weight: 600; }}
+QFrame#conn_error {{
+    background-color: {T.warn_soft}; border: 1px solid {T.warn_line}; border-radius: {T.radius_sm}px;
+}}
+QFrame#conn_error QLabel {{ color: {T.warn}; font-weight: 600; }}
+QFrame#conn_ok {{ background: transparent; border: none; }}
+QFrame#conn_ok QLabel {{ color: {T.text_3}; }}
+
+/* Lo deshabilitado se ve gris en todos lados (no solo los botones) */
+QLabel:disabled, QLabel#section_title:disabled, QLabel#muted:disabled {{ color: {T.text_disabled}; }}
+QCheckBox:disabled {{ color: {T.text_disabled}; }}
+QTreeView:disabled, QListWidget:disabled {{
+    color: {T.text_disabled}; background-color: {T.panel}; border-color: {T.border};
+}}
+QHeaderView::section:disabled {{ color: {T.text_disabled}; }}
+QPushButton#btn_link:disabled {{ color: {T.text_disabled}; }}
 
 /* ---------- tipo de disco (Grabadora) ---------- */
 /* Radio = mitad del alto (11 px de letra + 2 x 3 de relleno = 17): si es mayor, Qt lo ignora */

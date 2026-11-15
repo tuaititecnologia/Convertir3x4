@@ -299,15 +299,15 @@ class TestAvailability:
     def test_offline_nas_is_checked_once_not_per_file(self, monkeypatch):
         # Con el NAS caído, cada consulta en Windows puede tardar segundos:
         # 500 resultados no pueden ser 500 consultas.
-        from convertir3x4.ui.tabs import tab_buscar
+        from convertir3x4.catalog import ubicacion
         calls = []
 
         def fake_exists(p):
             calls.append(p)
             return False
-        monkeypatch.setattr(tab_buscar.os.path, "exists", fake_exists)
+        monkeypatch.setattr(ubicacion.os.path, "exists", fake_exists)
         paths = [f"\\\\NAS\\fotos\\evento\\{i}.jpg" for i in range(500)]
-        result = tab_buscar.availability(paths)
+        result = ubicacion.availability(paths)
         assert not any(result.values())
         assert calls == ["\\\\NAS\\fotos"]
 
@@ -367,3 +367,91 @@ class TestHelp:
         assert w.stack.width() == before
         w.hide()
         w.deleteLater()
+
+
+class TestLimpiarCatalogo:
+    def test_buscar_y_quitar_de_punta_a_punta(self, app, tmp_path):
+        import time
+        from convertir3x4.catalog.db import connect
+        from convertir3x4.catalog.models import Media
+        from convertir3x4.catalog.repo import Repo
+        from convertir3x4.ui.widgets.catalogo_avanzado import CatalogoAvanzado
+        db = str(tmp_path / "catalogo.db")
+        esta = tmp_path / "esta.jpg"
+        esta.write_bytes(b"x")
+        conn = connect(db)
+        r = Repo(conn)
+        for p in (str(esta), str(tmp_path / "se_borro.jpg"), "/Volumes/NO_ESTA/x.jpg"):
+            r.upsert_media(Media(path=p, filename=os.path.basename(p), kind="image"))
+        conn.close()
+
+        dlg = CatalogoAvanzado(ruta_db=db)
+        cambios = []
+        dlg.catalogChanged.connect(lambda: cambios.append(1))
+
+        def esperar():
+            t = time.time()
+            while dlg._worker is not None and time.time() - t < 20:
+                app.processEvents()
+                time.sleep(0.02)
+            app.processEvents()
+
+        dlg.buscar()
+        esperar()
+        texto = dlg.lbl_resultado.text()
+        assert "Hay 1 foto o video cuyo archivo ya no existe" in texto
+        assert "el disco «NO_ESTA» no está conectado" in texto
+        assert dlg.btn_quitar.isVisibleTo(dlg) and dlg.btn_quitar.text() == "Quitar 1 del catálogo…"
+        dlg.quitar()                        # (la confirmación se prueba a mano)
+        esperar()
+        assert cambios == [1]
+        conn = connect(db)
+        quedan = sorted(m.filename for m in Repo(conn).all_media())
+        conn.close()
+        assert quedan == ["esta.jpg", "x.jpg"]      # el del disco desconectado se conserva
+        dlg.deleteLater()
+
+
+def test_confirmaciones_nombran_la_accion():
+    # Criterio de textos (impeccable/clarify): nada de Sí/No/Cerrar genéricos en
+    # confirmaciones; se usa ui/widgets/dialogos.confirmar() con la acción en el botón.
+    import glob
+    malos = []
+    for f in glob.glob(os.path.join(os.path.dirname(__file__), "convertir3x4", "ui", "**", "*.py"),
+                       recursive=True):
+        texto = open(f, encoding="utf-8").read()
+        for patron in ("StandardButton.Yes", "StandardButton.No)", "QMessageBox.question("):
+            if patron in texto:
+                malos.append(f"{os.path.basename(f)}: {patron}")
+    assert not malos, malos
+
+
+class TestCambioDeTemaEnVivo:
+    def test_al_cambiar_el_sistema_cambian_colores_e_iconos(self, app):
+        from PyQt6.QtWidgets import QPushButton
+        from convertir3x4.ui import icons, style
+
+        def color_del_icono(b):
+            img = b.icon().pixmap(32, 32).toImage()
+            for y in range(img.height()):
+                for x in range(img.width()):
+                    c = img.pixelColor(x, y)
+                    if c.alpha() > 200:
+                        return c.name()
+            return None
+
+        style._reaplicar(app, "dark")
+        b = QPushButton()
+        icons.set_icon(b, "x", 24, "text")
+        oscuro = color_del_icono(b)
+        try:
+            style._reaplicar(app, "light")             # la Mac pasa a modo claro
+            assert style.T.scheme == "light"
+            assert style.LIGHT["bg"] in app.styleSheet()
+            assert app.palette().window().color().name() == style.LIGHT["bg"]
+            claro = color_del_icono(b)
+            assert claro != oscuro                     # el icono se repintó solo
+            assert QColor(claro).lightness() < QColor(oscuro).lightness()
+        finally:
+            style._reaplicar(app, "dark")
+        assert color_del_icono(b) == oscuro

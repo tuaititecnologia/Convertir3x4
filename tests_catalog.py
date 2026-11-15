@@ -300,3 +300,36 @@ class TestPipeline:
         stats = run_stage0(repo, media_dir, thumb_dir)
         assert stats.added == 2 and stats.duplicates == 1
         assert len(repo.duplicate_groups()) == 1
+
+
+# ---------------------------------------------------------------- limpiar el catálogo
+def _media(path, **kw):
+    from convertir3x4.catalog.models import Media
+    return Media(path=path, filename=os.path.basename(path), kind="image", **kw)
+
+
+def test_revisar_faltantes_no_toca_discos_desconectados(repo, temp_dir):
+    from convertir3x4.catalog.ubicacion import revisar_faltantes
+    esta = os.path.join(temp_dir, "esta.jpg")
+    open(esta, "wb").write(b"x")
+    repo.upsert_media(_media(esta))
+    repo.upsert_media(_media(os.path.join(temp_dir, "se_borro.jpg")))   # disco conectado
+    repo.upsert_media(_media("/Volumes/NAS_APAGADO/culto/a.jpg"))       # disco desconectado
+    rev = revisar_faltantes(repo.all_media())
+    assert [m.filename for m in rev.faltan] == ["se_borro.jpg"]
+    assert rev.sin_revisar == 1
+    assert rev.raices_desconectadas == ["/Volumes/NAS_APAGADO"]
+
+
+def test_delete_media_borra_tags_busqueda_y_miniaturas_sin_uso(repo, temp_dir):
+    a = repo.upsert_media(_media(os.path.join(temp_dir, "a.jpg"), thumb_path="/t/compartida.jpg"))
+    b = repo.upsert_media(_media(os.path.join(temp_dir, "b.jpg"), thumb_path="/t/compartida.jpg"))
+    c = repo.upsert_media(_media(os.path.join(temp_dir, "c.jpg"), thumb_path="/t/sola.jpg"))
+    repo.apply_tag(a, "bautismo")
+    repo.apply_tag(c, "bautismo")
+    huerfanas = repo.delete_media([a, c])
+    assert huerfanas == ["/t/sola.jpg"]           # la compartida la sigue usando b
+    assert [m.id for m in repo.all_media()] == [b]
+    assert repo.search("bautismo") == []
+    assert repo.conn.execute("SELECT COUNT(*) FROM media_tag").fetchone()[0] == 0
+    assert repo.conn.execute("SELECT COUNT(*) FROM media_fts").fetchone()[0] == 1

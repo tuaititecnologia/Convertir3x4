@@ -87,7 +87,7 @@ class AdvancedDialog(QDialog):
         self.txt_dir = QLineEdit(self._opts.download_dir)
         self.txt_dir.setAccessibleName("Carpeta de descargas")
         row.addWidget(self.txt_dir, 1)
-        b = QPushButton("Elegir…")
+        b = QPushButton("Elegir carpeta…")
         b.clicked.connect(self._browse)
         row.addWidget(b)
         lay.addLayout(row)

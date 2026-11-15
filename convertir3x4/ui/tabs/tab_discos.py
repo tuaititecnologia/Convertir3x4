@@ -26,6 +26,7 @@ from ...nas.copias import (
 from ...workers import EngineWorker
 from .. import icons
 from ..style import T
+from ..widgets.dialogos import confirmar
 
 _POLL_MS = 3000          # mientras se ve el módulo
 _POLL_FONDO_MS = 20000   # escondido: solo para avisar en la barra lateral
@@ -93,15 +94,24 @@ class DiscosTab(QWidget):
             "grabar. Otros discos aparecen en la lista, pero no se tocan solos."))
 
         row = QHBoxLayout()
-        self.lbl_conexion = QLabel("Conectando con el NAS…")
-        self.lbl_conexion.setObjectName("muted")
+        # Estado de la conexión, bien visible mientras se conecta o si falla
+        # (ver _set_conexion). Mientras tanto, todo lo de abajo queda en gris.
+        self.conn_box = QFrame()
+        cb = QHBoxLayout(self.conn_box)
+        cb.setContentsMargins(12, 8, 12, 8)
+        cb.setSpacing(10)
+        self.lbl_conexion = QLabel()
         self.lbl_conexion.setWordWrap(True)
-        row.addWidget(self.lbl_conexion, 1)
+        cb.addWidget(self.lbl_conexion, 1)
+        self.btn_retry = QPushButton("Reintentar")
+        self.btn_retry.clicked.connect(self._reintentar)
+        cb.addWidget(self.btn_retry, 0, Qt.AlignmentFlag.AlignVCenter)
+        row.addWidget(self.conn_box, 1)
         # La conexión la configura quien administra el NAS: queda en un ⚙ chico,
         # no como un botón más para el operador.
         self.btn_config = QPushButton()
         self.btn_config.setObjectName("btn_icon")
-        self.btn_config.setIcon(icons.icon("settings", 16, T.text_2))
+        icons.set_icon(self.btn_config, "settings", 16, "text_2")
         self.btn_config.setFixedSize(30, 30)
         self.btn_config.setToolTip("Conexión con el NAS (la configura quien administra el NAS)")
         self.btn_config.setAccessibleName("Conexión con el NAS")
@@ -109,31 +119,41 @@ class DiscosTab(QWidget):
         row.addWidget(self.btn_config)
         lay.addLayout(row)
 
+        # Todo lo que depende del NAS: deshabilitado (gris) hasta que conecta
+        self.body = QWidget()
+        blay = QVBoxLayout(self.body)
+        blay.setContentsMargins(0, 0, 0, 0)
+        blay.setSpacing(10)
+        lay.addWidget(self.body, 1)
+
         self.chk_auto = QCheckBox("Copia automática")
         self.chk_auto.setToolTip(
             "Apenas se enchufa un disco de la grabadora, se copia, se revisa que la copia "
             "esté completa y se borra para volver a grabar. Si algo falla, no se borra.")
         self.chk_auto.setEnabled(False)
         self.chk_auto.clicked.connect(self._toggle_auto)
-        lay.addWidget(self.chk_auto)
+        blay.addWidget(self.chk_auto)
 
-        lay.addSpacing(14)
-        lay.addWidget(_title("Discos enchufados al NAS"))
+        blay.addSpacing(14)
+        blay.addWidget(_title("Discos enchufados al NAS"))
         self.cards_box = QVBoxLayout()
         self.cards_box.setSpacing(8)
         self.lbl_sin_discos = QLabel("No hay ningún disco enchufado al NAS. Enchufá el de la grabadora para copiarlo.")
         self.lbl_sin_discos.setObjectName("muted")
         self.cards_box.addWidget(self.lbl_sin_discos)
-        lay.addLayout(self.cards_box)
+        blay.addLayout(self.cards_box)
 
-        lay.addSpacing(14)
-        lay.addWidget(_title("Historial de copias"))
+        blay.addSpacing(14)
+        blay.addWidget(_title("Historial de copias"))
         self.tree = QTreeWidget()
         self.tree.setHeaderLabels(["Disco", "Estado", "Carpeta en el NAS", "Actualizado"])
         self.tree.setRootIsDecorated(False)
         self.tree.setAccessibleName("Historial de copias")
+        # Ancho inicial: vacía (mientras conecta) los títulos no quedan cortados
+        for col, ancho in enumerate((170, 170, 290)):
+            self.tree.setColumnWidth(col, ancho)
         self.tree.itemSelectionChanged.connect(self._on_historial_sel)
-        lay.addWidget(self.tree, 2)
+        blay.addWidget(self.tree, 2)
 
         # El registro del NAS es técnico: le sirve a quien administra el NAS, no al
         # operador. Queda escondido detrás de un botón.
@@ -142,7 +162,7 @@ class DiscosTab(QWidget):
         self.btn_log.setCheckable(True)
         self.btn_log.setToolTip("El registro de la copia, para quien administra el NAS")
         self.btn_log.toggled.connect(self._toggle_log)
-        lay.addWidget(self.btn_log, 0, Qt.AlignmentFlag.AlignLeft)
+        blay.addWidget(self.btn_log, 0, Qt.AlignmentFlag.AlignLeft)
         self.txt_log = QPlainTextEdit()
         self.txt_log.setReadOnly(True)
         self.txt_log.setPlaceholderText("Elegí una copia de la lista para ver el detalle.")
@@ -152,7 +172,44 @@ class DiscosTab(QWidget):
         mono = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
         mono.setPixelSize(12)
         self.txt_log.setFont(mono)
-        lay.addWidget(self.txt_log, 1)
+        blay.addWidget(self.txt_log, 1)
+
+        self.lbl_sin_discos.setVisible(False)   # no se sabe hasta que el NAS responde
+        self._puntos = 0
+        self._anim = QTimer(self)
+        self._anim.setInterval(450)
+        self._anim.timeout.connect(self._animar_conectando)
+        self._set_conexion("conectando")
+
+    # ------------------------------------------------------------- conexión
+    def _set_conexion(self, estado: str, texto: str = ""):
+        """'conectando' (azul, animado), 'ok' (línea discreta) o 'error' (naranja,
+        con Reintentar). Fuera de 'ok', lo que depende del NAS queda en gris."""
+        self._estado_conexion = estado
+        self.conn_box.setObjectName(f"conn_{estado}")
+        self.conn_box.style().unpolish(self.conn_box)
+        self.conn_box.style().polish(self.conn_box)
+        self.lbl_conexion.style().unpolish(self.lbl_conexion)
+        self.lbl_conexion.style().polish(self.lbl_conexion)
+        self.btn_retry.setVisible(estado == "error")
+        # Conectado no hay recuadro: sin relleno, el texto se alinea con el resto
+        self.conn_box.layout().setContentsMargins(*((0, 6, 0, 6) if estado == "ok" else (12, 8, 12, 8)))
+        self.body.setEnabled(estado == "ok")
+        if estado == "conectando":
+            self._puntos = 0
+            self._animar_conectando()
+            self._anim.start()
+        else:
+            self._anim.stop()
+            self.lbl_conexion.setText(texto)
+
+    def _animar_conectando(self):
+        self._puntos = (self._puntos % 3) + 1
+        self.lbl_conexion.setText("Conectando con el NAS" + "." * self._puntos)
+
+    def _reintentar(self):
+        self._set_conexion("conectando")
+        self.refresh()
 
     # ------------------------------------------------------------- ciclo
     def start_background(self):
@@ -217,7 +274,7 @@ class DiscosTab(QWidget):
     def _aplicar(self, est: dict, url: str | None):
         self._estado = est
         hora = (est.get("hora") or "")[11:16]
-        self.lbl_conexion.setText(f"Conectado al NAS · actualizado a las {hora}")
+        self._set_conexion("ok", f"Conectado al NAS · actualizado a las {hora}")
         self.chk_auto.setEnabled(True)
         self.chk_auto.setChecked(bool(est.get("auto")))
 
@@ -296,13 +353,14 @@ class DiscosTab(QWidget):
             self.tree.addTopLevelItem(it)
             if c["uuid"] == sel:
                 it.setSelected(True)
-        for i in range(3):
-            self.tree.resizeColumnToContents(i)
+        if copias:   # vacía, se quedan los anchos iniciales (si no, los títulos se cortan)
+            for i in range(3):
+                self.tree.resizeColumnToContents(i)
         self.tree.blockSignals(False)
 
     def _sin_conexion(self, msg):
         self.chk_auto.setEnabled(False)
-        self.lbl_conexion.setText(_amigable(msg))
+        self._set_conexion("error", _amigable(msg))
 
     def _on_historial_sel(self):
         items = self.tree.selectedItems()
@@ -349,14 +407,11 @@ class DiscosTab(QWidget):
 
     def copiar(self, disco: dict, reintentar=False):
         if reintentar:
-            r = QMessageBox.warning(
-                self, "Volver a intentar",
-                "El disco tiene partes dañadas y cada intento puede empeorarlo. Lo más "
-                "seguro es pedirle a quien administra el NAS que rescate esos archivos.\n\n"
-                "¿Intentar copiarlos de nuevo igual?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
-                QMessageBox.StandardButton.Cancel)
-            if r != QMessageBox.StandardButton.Yes:
+            if not confirmar(
+                    self, "Volver a intentar", "¿Intentar copiar de nuevo lo que falló?",
+                    "El disco tiene partes dañadas y cada intento puede empeorarlo. Lo más "
+                    "seguro es pedirle a quien administra el NAS que rescate esos archivos.",
+                    "Intentar de nuevo", peligro=True):
                 return
         # El operador ve y escribe la carpeta dentro de Multimedia
         # ("Historial/Reuniones/2026-11-15"), no la ruta del sistema del NAS.
@@ -379,11 +434,9 @@ class DiscosTab(QWidget):
         self._accion(lambda: client.copiar(uuid, destino, reintentar))
 
     def detener(self, disco: dict):
-        r = QMessageBox.question(
-            self, "Detener copia",
-            f"¿Detener la copia de {_nombre(disco)}?\n\nLo ya copiado queda en el NAS. "
-            "El archivo que estaba a medias se copia entero al retomar.")
-        if r == QMessageBox.StandardButton.Yes:
+        if confirmar(self, "Detener copia", f"¿Detener la copia de {_nombre(disco)}?",
+                     "Lo que ya se copió queda en el NAS. Con Copiar sigue desde donde quedó.",
+                     "Detener copia", cancelar="Seguir copiando", peligro=True):
             client, uuid = self.client, disco["uuid"]
             self._accion(lambda: client.detener(uuid))
 
@@ -399,13 +452,12 @@ class DiscosTab(QWidget):
 
     def _toggle_auto(self, activo: bool):
         if not activo:
-            r = QMessageBox.question(
-                self, "Copia automática",
-                "Sin la copia automática, cada disco de la grabadora hay que copiarlo y "
-                "borrarlo desde acá.\n\n"
-                "Ojo: si un disco vuelve a la grabadora sin borrar, se llena y la grabación "
-                "se corta.\n\n¿Apagar la copia automática?")
-            if r != QMessageBox.StandardButton.Yes:
+            if not confirmar(
+                    self, "Copia automática", "¿Apagar la copia automática?",
+                    "Sin ella, cada disco de la grabadora hay que copiarlo y formatearlo desde "
+                    "acá. Si un disco vuelve a la grabadora sin formatear, se llena y la "
+                    "grabación se corta.",
+                    "Apagar", cancelar="Dejarla encendida", peligro=True):
                 self.chk_auto.setChecked(True)
                 return
         client = self.client
@@ -416,7 +468,7 @@ class DiscosTab(QWidget):
         dlg = _ConexionDialog(self, self.settings)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self.client = _cliente_desde(self.settings)
-            self.lbl_conexion.setText("Conectando con el NAS…")
+            self._set_conexion("conectando")
             self.refresh()
 
 
@@ -486,7 +538,8 @@ class _DiscoCard(QFrame):
         self.botones = {}
         for clave, texto, fn in (
                 ("copiar", "Copiar…", lambda: tab.copiar(self.disco)),
-                ("reintentar", "Reintentar errores…", lambda: tab.copiar(self.disco, True)),
+                ("reintentar", "Volver a intentar lo que falló…",
+                 lambda: tab.copiar(self.disco, True)),
                 ("detener", "Detener", lambda: tab.detener(self.disco)),
                 ("verificar", "Verificar", lambda: tab.verificar(self.disco)),
                 ("formatear", "Formatear…", lambda: tab.formatear(self.disco, self.copia))):

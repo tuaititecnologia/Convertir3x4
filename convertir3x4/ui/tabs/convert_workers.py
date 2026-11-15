@@ -91,6 +91,6 @@ class DownloadWorker(_Cancellable):
         except download.DownloadError as e:
             self.failed.emit(self.url, str(e))
         except Exception as e:  # noqa: BLE001
-            self.failed.emit(self.url, "No se pudo bajar el video.")
+            self.failed.emit(self.url, "No se pudo bajar el video. Probá de nuevo en un rato.")
         else:
             self.done.emit(self.url, path)

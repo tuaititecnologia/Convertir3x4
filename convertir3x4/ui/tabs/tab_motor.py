@@ -23,6 +23,7 @@ from ...catalog.repo import Repo
 from ...engine import ai_models
 from ...engine.pipeline import run_stage0
 from ...workers import EngineWorker
+from ..widgets.dialogos import confirmar
 from .. import icons
 from ..style import T
 
@@ -78,7 +79,19 @@ class MotorTab(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
 
-        layout.addWidget(self._title("Sumar fotos y videos al catálogo"))
+        cab = QHBoxLayout()
+        cab.addWidget(self._title("Sumar fotos y videos al catálogo"))
+        cab.addStretch()
+        # Lo que casi nunca se usa (limpiar el catálogo) va escondido en el ⚙
+        self.btn_avanzado = QPushButton()
+        self.btn_avanzado.setObjectName("btn_icon")
+        icons.set_icon(self.btn_avanzado, "settings", 16, "text_2")
+        self.btn_avanzado.setFixedSize(30, 30)
+        self.btn_avanzado.setToolTip("Opciones avanzadas del catálogo")
+        self.btn_avanzado.setAccessibleName("Opciones avanzadas del catálogo")
+        self.btn_avanzado.clicked.connect(self._abrir_avanzado)
+        cab.addWidget(self.btn_avanzado)
+        layout.addLayout(cab)
         layout.addWidget(self._text(
             "Elegí una carpeta y la app suma al catálogo todas sus fotos y videos, para "
             "encontrarlos después en Buscar. Se puede repetir cuando quieras: solo agrega "
@@ -91,7 +104,7 @@ class MotorTab(QWidget):
         self.txt_folder.setAccessibleName("Carpeta a catalogar")
         self.txt_folder.setText(self.settings.value("motor_last_dir", ""))
         row.addWidget(self.txt_folder, 1)
-        self.btn_browse = QPushButton("Elegir…")
+        self.btn_browse = QPushButton("Elegir carpeta…")
         self.btn_browse.clicked.connect(self._browse)
         row.addWidget(self.btn_browse)
         layout.addLayout(row)
@@ -122,7 +135,7 @@ class MotorTab(QWidget):
             "confirma en Buscar. Funciona sin internet; solo la primera vez necesita "
             "bajar unos 650 MB."))
         self.btn_ai = QPushButton("Analizar con IA")
-        self.btn_ai.setIcon(icons.icon("sparkles", 15, T.text))
+        icons.set_icon(self.btn_ai, "sparkles", 15, "text")
         self.btn_ai.clicked.connect(self._run_ai)
         layout.addLayout(self._left(self.btn_ai))
 
@@ -143,7 +156,7 @@ class MotorTab(QWidget):
         prow.setSpacing(8)
         self.btn_add_person = QPushButton("Agregar persona…")
         self.btn_add_person.clicked.connect(self._add_person)
-        self.btn_add_photos = QPushButton("Agregar fotos…")
+        self.btn_add_photos = QPushButton("Agregar fotos de la persona…")
         self.btn_add_photos.clicked.connect(self._add_photos)
         self.btn_del_person = QPushButton("Quitar de la lista")
         self.btn_del_person.clicked.connect(self._delete_person)
@@ -153,6 +166,13 @@ class MotorTab(QWidget):
         layout.addLayout(prow)
         layout.addStretch()
         self._update_buttons()
+
+    def _abrir_avanzado(self):
+        from ..widgets.catalogo_avanzado import CatalogoAvanzado
+        dlg = CatalogoAvanzado(self)
+        dlg.catalogChanged.connect(self._refresh_count)
+        dlg.catalogChanged.connect(self.catalogChanged.emit)
+        dlg.exec()
 
     def _set_status(self, text: str):
         self.lbl_status.setText(text)
@@ -398,11 +418,10 @@ class MotorTab(QWidget):
         if not sel:
             return
         pid, name = sel
-        ans = QMessageBox.question(
-            self, "Quitar de la lista",
-            f"¿Quitar a {name} de la lista? Se borran sus fotos de referencia y "
-            f"deja de reconocerse. Los tags ya puestos en fotos se mantienen.")
-        if ans != QMessageBox.StandardButton.Yes:
+        if not confirmar(self, "Quitar persona", f"¿Quitar a {name} de la lista?",
+                         "Deja de reconocerse en fotos nuevas y se borran sus fotos de "
+                         "referencia. Los tags que ya tiene en fotos se mantienen.",
+                         f"Quitar a {name}", peligro=True):
             return
         conn = connect(db_path())
         try:

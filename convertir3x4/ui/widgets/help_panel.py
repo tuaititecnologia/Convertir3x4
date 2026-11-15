@@ -27,7 +27,7 @@ HELP = [
         ("Poner tags", "Seleccioná una o varias (con Shift o " + _MOD + ") y escribí el tag "
                        "abajo. Si no existe, se crea."),
         ("Sugerencias de la IA", "Los tags violeta los propuso la IA. Tocá el tag para "
-                                 "confirmarlo o la ✕ para sacarlo: no lo vuelve a proponer."),
+                                 "confirmarlo o la ✕ para quitarlo: no lo vuelve a proponer."),
     ]),
     ("Catalogar", [
         ("Sumar al catálogo", "Elegí la carpeta y tocá Catalogar. Se puede repetir "
@@ -92,7 +92,7 @@ class HelpPanel(QFrame):
         head.addWidget(self.lbl_title, 1)
         close = QPushButton()
         close.setObjectName("btn_icon")
-        close.setIcon(icons.icon("x", 16, T.text_2))
+        icons.set_icon(close, "x", 16, "text_2")
         close.setFixedSize(28, 28)
         close.setToolTip("Cerrar la ayuda")
         close.setAccessibleName("Cerrar la ayuda")

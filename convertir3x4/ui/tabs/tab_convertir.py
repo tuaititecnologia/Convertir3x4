@@ -37,6 +37,7 @@ from ...utils import open_file, open_folder
 from .. import icons
 from ..style import T
 from ..widgets.advanced_dialog import AdvancedDialog, SessionOptions
+from ..widgets.dialogos import confirmar
 from ..widgets.media_grid import (
     DURATION_ROLE, KIND_ROLE, MTIME_ROLE, PATH_ROLE, PROGRESS_ROLE, STATE_ROLE,
     STORYBOARD_ROLE, ReorderListWidget,
@@ -95,11 +96,11 @@ class ConvertTab(QWidget):
         bar = QHBoxLayout()
         bar.setSpacing(6)
         self.btn_load = QPushButton("Agregar")
-        self.btn_load.setIcon(icons.icon("plus", 16, T.text))
+        icons.set_icon(self.btn_load, "plus", 16, "text")
         self.btn_load.setToolTip("Agregar fotos o videos de la PC o del NAS")
         bar.addWidget(self.btn_load)
         self.btn_link = QPushButton("Pegar link")
-        self.btn_link.setIcon(icons.icon("link", 15, T.text))
+        icons.set_icon(self.btn_link, "link", 15, "text")
         self.btn_link.setToolTip("Bajar un video de YouTube, Facebook u otro sitio")
         bar.addWidget(self.btn_link)
         self.btn_remove = self._icon_button("trash-2", "Quitar de la lista lo seleccionado (Supr). "
@@ -107,7 +108,7 @@ class ConvertTab(QWidget):
         self.btn_remove.setEnabled(False)
         bar.addWidget(self.btn_remove)
         self.btn_clear = QPushButton("Vaciar")
-        self.btn_clear.setToolTip("Sacar todo de la lista para empezar de nuevo. "
+        self.btn_clear.setToolTip("Quitar todo de la lista para empezar de nuevo. "
                                   "Los archivos no se borran.")
         self.btn_clear.setEnabled(False)
         bar.addWidget(self.btn_clear)
@@ -186,7 +187,7 @@ class ConvertTab(QWidget):
         bottom.addWidget(self.btn_sort_fecha)
         bottom.addStretch()
         zoom = QLabel()
-        zoom.setPixmap(icons.pixmap("image", 16, T.text_3))
+        icons.set_pixmap(zoom, "image", 16, "text_3")
         zoom.setToolTip("Tamaño de las miniaturas")
         bottom.addWidget(zoom)
         self.thumb_slider = QSlider(Qt.Orientation.Horizontal)
@@ -267,7 +268,7 @@ class ConvertTab(QWidget):
         nl.addWidget(self.lbl_nonstd)
         self.btn_reset_opts = QPushButton("Volver a lo estándar")
         self.btn_reset_opts.setObjectName("btn_link")
-        self.btn_reset_opts.setIcon(icons.icon("rotate-ccw", 14, T.warn))
+        icons.set_icon(self.btn_reset_opts, "rotate-ccw", 14, "warn")
         nl.addWidget(self.btn_reset_opts, 0, Qt.AlignmentFlag.AlignLeft)
         lay.addWidget(self.nonstd_box)
 
@@ -324,7 +325,7 @@ class ConvertTab(QWidget):
     def _icon_button(name: str, tip: str) -> QPushButton:
         b = QPushButton()
         b.setObjectName("btn_icon")
-        b.setIcon(icons.icon(name, 17, T.text_2))
+        icons.set_icon(b, name, 17, "text_2")
         b.setIconSize(QSize(17, 17))
         b.setFixedSize(32, 32)
         b.setToolTip(tip)
@@ -693,16 +694,12 @@ class ConvertTab(QWidget):
         detail = "\n".join(f"  • {n}" for n in existing[:5])
         if len(existing) > 5:
             detail += f"\n  … y {len(existing) - 5} más"
-        msg = QMessageBox(self)
-        msg.setIcon(QMessageBox.Icon.Warning)
-        msg.setWindowTitle("Archivos repetidos")
         n = len(existing)
-        msg.setText("Ya hay un archivo con el mismo nombre en esa carpeta:" if n == 1 else
-                    f"Ya hay {n} archivos con el mismo nombre en esa carpeta:")
-        msg.setInformativeText(f"{detail}\n\n¿Reemplazarlos?")
-        msg.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-        msg.setDefaultButton(QMessageBox.StandardButton.No)
-        return msg.exec() == QMessageBox.StandardButton.Yes
+        return confirmar(
+            self, "Archivos repetidos",
+            "Ya hay un archivo con ese nombre en la carpeta. ¿Reemplazarlo?" if n == 1 else
+            f"Ya hay {n} archivos con esos nombres en la carpeta. ¿Reemplazarlos?",
+            detail, "Reemplazar", peligro=True)
 
     def _convert(self):
         paths = self._selected_paths()
@@ -840,15 +837,9 @@ class ConvertTab(QWidget):
         """Vaciar la lista para arrancar de nuevo. No borra ningún archivo."""
         if not self.list_widget.count() or self._busy():
             return
-        msg = QMessageBox(self)
-        msg.setIcon(QMessageBox.Icon.Question)
-        msg.setWindowTitle("Vaciar la lista")
-        msg.setText("¿Sacar todo de la lista?")
-        msg.setInformativeText("Las fotos y los videos no se borran: siguen en su carpeta.")
-        vaciar = msg.addButton("Vaciar", QMessageBox.ButtonRole.DestructiveRole)
-        msg.addButton("Cancelar", QMessageBox.ButtonRole.RejectRole)
-        msg.exec()
-        if msg.clickedButton() is vaciar:
+        if confirmar(self, "Vaciar la lista", "¿Quitar todo de la lista?",
+                     "Las fotos y los videos no se borran: siguen en su carpeta.",
+                     "Vaciar la lista"):
             self.clear_list()
 
     def clear_list(self):
@@ -888,12 +879,8 @@ class ConvertTab(QWidget):
     def confirm_close(self) -> bool:
         """Solo pregunta si hay una conversión en curso. Retorna False si se cancela."""
         if self._busy():
-            msg = QMessageBox(self)
-            msg.setIcon(QMessageBox.Icon.Warning)
-            msg.setWindowTitle("Hay una conversión en curso")
-            msg.setText("Si cerrás ahora, se cancela la conversión.")
-            msg.setStandardButtons(QMessageBox.StandardButton.Close | QMessageBox.StandardButton.Cancel)
-            msg.setDefaultButton(QMessageBox.StandardButton.Cancel)
-            if msg.exec() != QMessageBox.StandardButton.Close:
+            if not confirmar(self, "Conversión en curso", "¿Cerrar y cancelar la conversión?",
+                             "Lo que ya terminó queda guardado; lo que está a medias se pierde.",
+                             "Cerrar y cancelar", cancelar="Seguir convirtiendo", peligro=True):
                 return False
         return True

@@ -170,4 +170,5 @@ def _friendly(e: Exception) -> str:
         return "No se encontró el archivo (¿se desconectó el disco o el NAS?)."
     if isinstance(e, PermissionError):
         return "No se puede guardar en esa carpeta: no hay permiso. Elegí otra."
-    return "Algo falló al convertir este archivo."
+    return ("Algo falló al convertir este archivo. Probá de nuevo; si vuelve a pasar, "
+            "avisale a quien mantiene la app.")

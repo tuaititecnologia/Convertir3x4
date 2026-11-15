@@ -54,3 +54,56 @@ def icon(name: str, size: int = 18, color: str | None = None,
 
 def size(n: int) -> QSize:
     return QSize(n, n)
+
+
+# ---------------------------------------------------------------- iconos que siguen el tema
+# El color se guarda como NOMBRE de la paleta ("text_2"), no como valor: cuando
+# el sistema pasa de claro a oscuro, refresh_all() los vuelve a pintar.
+import weakref
+
+_VIVOS: list = []   # (weakref al widget/acción, tipo, args)
+
+
+def _color(token: str) -> str:
+    return token if token.startswith("#") else getattr(T, token)
+
+
+def _aplicar(obj, tipo, args):
+    name, size, color, active = args
+    if tipo == "pixmap":
+        obj.setPixmap(pixmap(name, size, _color(color)))
+    else:
+        obj.setIcon(icon(name, size, _color(color), _color(active) if active else None))
+
+
+def set_icon(obj, name: str, size: int = 18, color: str = "text_2", active: str | None = None):
+    """Pone un icono que se vuelve a pintar solo al cambiar el tema.
+    `color` y `active` son nombres de la paleta (T), p. ej. "text_2" o "ia"."""
+    args = (name, size, color, active)
+    _VIVOS.append((weakref.ref(obj), "icon", args))
+    _aplicar(obj, "icon", args)
+
+
+def set_pixmap(label, name: str, size: int = 18, color: str = "text_3"):
+    args = (name, size, color, None)
+    _VIVOS.append((weakref.ref(label), "pixmap", args))
+    _aplicar(label, "pixmap", args)
+
+
+def refresh_all():
+    """Vuelve a pintar todos los iconos con los colores del tema actual."""
+    vivos = []
+    for ref, tipo, args in _VIVOS:
+        obj = ref()
+        if obj is None:
+            continue
+        try:
+            _aplicar(obj, tipo, args)
+        except RuntimeError:        # el widget de C++ ya se destruyó
+            continue
+        vivos.append((ref, tipo, args))
+    _VIVOS[:] = vivos
+
+
+from .style import al_cambiar_tema  # noqa: E402
+al_cambiar_tema(refresh_all)

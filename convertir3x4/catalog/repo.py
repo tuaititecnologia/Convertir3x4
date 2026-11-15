@@ -384,6 +384,24 @@ class Repo:
             f"SELECT * FROM media WHERE {clauses} ORDER BY filename LIMIT ?", params
         ).fetchall()
 
+    def delete_media(self, ids: list[int]) -> list[str]:
+        """Quita fotos/videos del catálogo (con sus tags y análisis, por cascada).
+
+        Devuelve las miniaturas que quedaron sin uso, para borrar sus archivos:
+        dos archivos idénticos pueden compartir miniatura, y esa se conserva."""
+        if not ids:
+            return []
+        marcas = ",".join("?" * len(ids))
+        thumbs = {r[0] for r in self.conn.execute(
+            f"SELECT DISTINCT thumb_path FROM media WHERE id IN ({marcas}) AND thumb_path IS NOT NULL",
+            ids)}
+        self.conn.execute(f"DELETE FROM media_fts WHERE rowid IN ({marcas})", ids)
+        self.conn.execute(f"DELETE FROM media WHERE id IN ({marcas})", ids)
+        self.conn.commit()
+        en_uso = {r[0] for r in self.conn.execute(
+            "SELECT DISTINCT thumb_path FROM media WHERE thumb_path IS NOT NULL")}
+        return sorted(thumbs - en_uso)
+
     # ------------------------------------------------------------- FTS interno
     def _sync_fts(self, media_id: int):
         m = self.conn.execute("SELECT * FROM media WHERE id = ?", (media_id,)).fetchone()
