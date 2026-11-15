@@ -32,8 +32,21 @@ def test_resumir_copiando_calcula_porcentaje_y_eta():
                  "mb_s": 175, "eta_min": 78, "errores": 0})
     assert r.porcentaje == 25
     assert r.tono == "activo"
-    assert "250,0 GB de 1000,0 GB" in r.detalle and "175 MB/s" in r.detalle
-    assert "1 h 18 min" in r.detalle
+    assert "250 GB de 1000 GB" in r.detalle
+    assert "falta 1 h 18 min aprox." in r.detalle
+    assert "MB/s" not in r.detalle          # la velocidad no le sirve al operador
+
+
+@pytest.mark.parametrize("copia, disco", [
+    (None, {"admitido": False, "fs": "ntfs"}),
+    ({"fase": "CON_ERRORES", "errores": 3}, None),
+    ({"fase": "COPIANDO", "corriendo": True, "copiado_gb": 1, "falta_gb": 2, "mb_s": 90}, None),
+])
+def test_resumir_sin_vocabulario_tecnico(copia, disco):
+    r = resumir(copia, None, disco)
+    texto = (r.titulo + " " + r.detalle).lower()
+    for palabra in ("ntfs", "exfat", "ddrescue", "uuid", "mb/s", "netbird", "/mnt/"):
+        assert palabra not in texto, (palabra, texto)
 
 
 def test_resumir_terminado_corriendo_es_auto_formateando():
@@ -155,7 +168,7 @@ def _llamadas(p):
 
 
 def test_panel_token_invalido(panel):
-    with pytest.raises(PanelError, match="clave"):
+    with pytest.raises(PanelError, match="no reconoce a esta PC"):
         PanelClient([panel["url"]], "otro").estado()
 
 
@@ -205,3 +218,27 @@ def test_panel_auto_on_off(panel):
     assert c.estado()["auto"] is False
     assert c.set_auto(True) is True
     assert not (panel["raiz"] / "AUTO_DESACTIVADO").exists()
+
+
+@pytest.mark.parametrize("entrada, salida", [
+    ("2026-11-15", "15/11/2026"),
+    ("2026-11-15 19:42:10", "15/11/2026 19:42"),
+    ("", ""),
+    ("ayer", "ayer"),
+])
+def test_fechas_como_las_lee_el_operador(entrada, salida):
+    from convertir3x4.nas.copias import fecha
+    assert fecha(entrada) == salida
+
+
+def test_detalle_tecnico_escondido_por_defecto():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PyQt6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    from convertir3x4.ui.tabs.tab_discos import DiscosTab
+    t = DiscosTab()
+    t._timer.stop()
+    assert not t.txt_log.isVisibleTo(t)
+    t.btn_log.setChecked(True)
+    assert t.txt_log.isVisibleTo(t)
+    t.deleteLater()

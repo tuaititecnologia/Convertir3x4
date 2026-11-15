@@ -20,9 +20,10 @@ from PyQt6.QtWidgets import (
 )
 
 from ...nas.copias import (
-    URLS_POR_DEFECTO, PanelClient, acciones_para, nombre_fs, resumir,
+    URLS_POR_DEFECTO, PanelClient, acciones_para, fecha, resumir,
 )
 from ...workers import EngineWorker
+from .. import icons
 from ..style import T
 
 _POLL_MS = 3000
@@ -75,25 +76,31 @@ class DiscosTab(QWidget):
 
         lay.addWidget(_title("Discos externos"))
         lay.addWidget(_text(
-            "Los discos se enchufan por USB al NAS y se copian a la carpeta que elijas. "
-            "Desde acá ves cómo va cada copia y la manejás. El disco se lee una sola vez, "
-            "en solo lectura, y nunca se pisa un archivo del NAS."))
+            "Enchufá el disco al NAS y copialo a la carpeta que elijas. Acá ves cómo va "
+            "cada copia. Copiar nunca cambia nada del disco ni reemplaza archivos que ya "
+            "estén en el NAS."))
 
         row = QHBoxLayout()
         self.lbl_conexion = QLabel("Conectando con el NAS…")
         self.lbl_conexion.setObjectName("muted")
         self.lbl_conexion.setWordWrap(True)
         row.addWidget(self.lbl_conexion, 1)
-        self.btn_config = QPushButton("Conexión…")
+        # La conexión la configura quien administra el NAS: queda en un ⚙ chico,
+        # no como un botón más para el operador.
+        self.btn_config = QPushButton()
+        self.btn_config.setObjectName("btn_icon")
+        self.btn_config.setIcon(icons.icon("settings", 16, T.text_2))
+        self.btn_config.setFixedSize(30, 30)
+        self.btn_config.setToolTip("Conexión con el NAS (la configura quien administra el NAS)")
+        self.btn_config.setAccessibleName("Conexión con el NAS")
         self.btn_config.clicked.connect(self._configurar)
         row.addWidget(self.btn_config)
         lay.addLayout(row)
 
-        self.chk_auto = QCheckBox(
-            "Copiar, verificar y formatear solos los discos de la HyperDeck al enchufarlos")
+        self.chk_auto = QCheckBox("Copia automática de los discos de la HyperDeck")
         self.chk_auto.setToolTip(
-            "Un disco cuenta como de la HyperDeck si solo tiene archivos HyperDeck_NNNN. "
-            "Si la copia tiene algún error, no se formatea.")
+            "Apenas se enchufa un disco de la HyperDeck, se copia, se revisa que la copia "
+            "esté completa y se borra para volver a grabar. Si algo falla, no se borra.")
         self.chk_auto.setEnabled(False)
         self.chk_auto.clicked.connect(self._toggle_auto)
         lay.addWidget(self.chk_auto)
@@ -102,7 +109,7 @@ class DiscosTab(QWidget):
         lay.addWidget(_title("Enchufados al NAS"))
         self.cards_box = QVBoxLayout()
         self.cards_box.setSpacing(8)
-        self.lbl_sin_discos = QLabel("No hay discos USB enchufados al NAS.")
+        self.lbl_sin_discos = QLabel("No hay ningún disco enchufado al NAS.")
         self.lbl_sin_discos.setObjectName("muted")
         self.cards_box.addWidget(self.lbl_sin_discos)
         lay.addLayout(self.cards_box)
@@ -110,16 +117,25 @@ class DiscosTab(QWidget):
         lay.addSpacing(14)
         lay.addWidget(_title("Historial de copias"))
         self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["Disco", "Estado", "Destino", "Última novedad"])
+        self.tree.setHeaderLabels(["Disco", "Estado", "Carpeta en el NAS", "Actualizado"])
         self.tree.setRootIsDecorated(False)
         self.tree.setAccessibleName("Historial de copias")
         self.tree.itemSelectionChanged.connect(self._on_historial_sel)
         lay.addWidget(self.tree, 2)
 
+        # El registro del NAS es técnico: le sirve a quien administra el NAS, no al
+        # operador. Queda escondido detrás de un botón.
+        self.btn_log = QPushButton("Ver el detalle técnico")
+        self.btn_log.setObjectName("btn_link")
+        self.btn_log.setCheckable(True)
+        self.btn_log.setToolTip("El registro de la copia, para quien administra el NAS")
+        self.btn_log.toggled.connect(self._toggle_log)
+        lay.addWidget(self.btn_log, 0, Qt.AlignmentFlag.AlignLeft)
         self.txt_log = QPlainTextEdit()
         self.txt_log.setReadOnly(True)
-        self.txt_log.setPlaceholderText("Elegí una copia del historial para ver su registro.")
-        self.txt_log.setAccessibleName("Registro de la copia")
+        self.txt_log.setPlaceholderText("Elegí una copia de la lista para ver el detalle.")
+        self.txt_log.setAccessibleName("Detalle técnico de la copia")
+        self.txt_log.setVisible(False)
         # Monoespaciada del sistema: existe en cualquier plataforma (es un registro)
         mono = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
         mono.setPixelSize(12)
@@ -177,10 +193,8 @@ class DiscosTab(QWidget):
     # ------------------------------------------------------------- render
     def _aplicar(self, est: dict, url: str | None):
         self._estado = est
-        hora = (est.get("hora") or "")[11:19]
-        donde = (url or "").replace("http://", "").split(":")[0]
-        via = "Netbird" if donde.startswith("100.") else "red local"
-        self.lbl_conexion.setText(f"Conectado al NAS por {via} ({donde}) · actualizado {hora}")
+        hora = (est.get("hora") or "")[11:16]
+        self.lbl_conexion.setText(f"Conectado al NAS · actualizado a las {hora}")
         self.chk_auto.setEnabled(True)
         self.chk_auto.setChecked(bool(est.get("auto")))
 
@@ -209,10 +223,10 @@ class DiscosTab(QWidget):
         self.tree.clear()
         for c in copias:
             r = resumir(c)
-            disco = " ".join(x for x in (c.get("modelo"), c.get("serie")) if x) or c["uuid"]
-            it = QTreeWidgetItem([disco, r.titulo, c.get("destino") or "", c.get("actualizado") or ""])
+            disco = c.get("modelo") or "Disco"
+            it = QTreeWidgetItem([disco, r.titulo, self._carpeta(c.get("destino")),
+                                  fecha(c.get("actualizado"))])
             it.setData(0, _UUID_ROLE, c["uuid"])
-            it.setToolTip(0, f"UUID {c['uuid']}")
             it.setToolTip(1, r.detalle)
             it.setForeground(1, _color(r.tono))
             self.tree.addTopLevelItem(it)
@@ -224,8 +238,7 @@ class DiscosTab(QWidget):
 
     def _sin_conexion(self, msg):
         self.chk_auto.setEnabled(False)
-        texto = msg.split(": ", 1)[1] if msg.startswith(("PanelError", "PanelSinConexion")) else msg
-        self.lbl_conexion.setText(f"Sin conexión con el NAS. {texto}")
+        self.lbl_conexion.setText(_amigable(msg))
 
     def _on_historial_sel(self):
         items = self.tree.selectedItems()
@@ -241,9 +254,23 @@ class DiscosTab(QWidget):
     def _set_log(self, texto):
         bar = self.txt_log.verticalScrollBar()
         al_final = bar.value() >= bar.maximum() - 4
-        self.txt_log.setPlainText(texto or "(sin registro)")
+        self.txt_log.setPlainText(texto or "(sin detalle)")
         if al_final:
             bar.setValue(bar.maximum())
+
+    def _toggle_log(self, visible: bool):
+        self.txt_log.setVisible(visible)
+        self.btn_log.setText("Ocultar el detalle técnico" if visible else "Ver el detalle técnico")
+
+    def _raiz(self) -> str:
+        return self._estado.get("destinos_raiz", "/mnt/tank/multimedia")
+
+    def _carpeta(self, destino: str | None) -> str:
+        """Carpeta del NAS como la ve el operador: relativa a Multimedia."""
+        if not destino:
+            return ""
+        raiz = self._raiz().rstrip("/") + "/"
+        return destino[len(raiz):] if destino.startswith(raiz) else destino
 
     # ------------------------------------------------------------- acciones
     def _accion(self, fn):
@@ -253,34 +280,36 @@ class DiscosTab(QWidget):
         self._run(fn, ok)
 
     def _error_accion(self, msg):
-        texto = msg.split(": ", 1)[1] if msg.startswith(("PanelError", "PanelSinConexion")) else msg
-        QMessageBox.warning(self, "Discos", texto)
+        QMessageBox.warning(self, "Discos", _amigable(msg))
         self.refresh()
 
     def copiar(self, disco: dict, reintentar=False):
         if reintentar:
             r = QMessageBox.warning(
-                self, "Reintentar archivos con error",
-                "Cada lectura sobre un sector dañado empeora el disco. Lo recomendado es "
-                "rescatar esos archivos con ddrescue desde otra PC.\n\n"
-                "¿Volver a intentar igual los archivos que fallaron?",
+                self, "Volver a intentar",
+                "El disco tiene partes dañadas y cada intento puede empeorarlo. Lo más "
+                "seguro es pedirle a quien administra el NAS que rescate esos archivos.\n\n"
+                "¿Intentar copiarlos de nuevo igual?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
                 QMessageBox.StandardButton.Cancel)
             if r != QMessageBox.StandardButton.Yes:
                 return
-        raiz = self._estado.get("destinos_raiz", "/mnt/tank/multimedia")
+        # El operador ve y escribe la carpeta dentro de Multimedia
+        # ("Historial/Reuniones/2026-11-15"), no la ruta del sistema del NAS.
+        raiz = self._raiz()
         previo = self.settings.value("nas/ultimo_destino", "") or \
             self._estado.get("destino_auto", raiz)
-        destino, ok = QInputDialog.getText(
+        rel, ok = QInputDialog.getText(
             self, "Copiar disco",
-            f"Carpeta del NAS donde se copia {_nombre(disco)}\n(dentro de {raiz}; "
-            "si no existe, se crea):", QLineEdit.EchoMode.Normal, previo)
-        destino = destino.strip().rstrip("/")
-        if not ok or not destino:
+            f"¿En qué carpeta de Multimedia copio {_nombre(disco)}?\n"
+            "Si no existe, se crea.", QLineEdit.EchoMode.Normal, self._carpeta(previo))
+        rel = rel.strip().strip("/").replace("\\", "/")
+        if not ok or not rel:
             return
-        if not (destino + "/").startswith(raiz.rstrip("/") + "/"):
-            QMessageBox.warning(self, "Copiar disco", f"La carpeta tiene que estar dentro de {raiz}.")
+        if ".." in rel.split("/"):
+            QMessageBox.warning(self, "Copiar disco", "Elegí una carpeta dentro de Multimedia.")
             return
+        destino = raiz.rstrip("/") + "/" + rel
         self.settings.setValue("nas/ultimo_destino", destino)
         client, uuid = self.client, disco["uuid"]
         self._accion(lambda: client.copiar(uuid, destino, reintentar))
@@ -308,10 +337,10 @@ class DiscosTab(QWidget):
         if not activo:
             r = QMessageBox.question(
                 self, "Copia automática",
-                "Si se apaga, un disco de la HyperDeck que se enchufe al NAS no se copia ni "
-                "se formatea solo: hay que hacerlo desde acá.\n\n"
-                "Ojo: si vuelve a la HyperDeck sin formatear, se llena y corta la grabación.\n\n"
-                "¿Apagar la copia automática?")
+                "Sin la copia automática, cada disco de la HyperDeck hay que copiarlo y "
+                "borrarlo desde acá.\n\n"
+                "Ojo: si un disco vuelve a la HyperDeck sin borrar, se llena y la grabación "
+                "se corta.\n\n¿Apagar la copia automática?")
             if r != QMessageBox.StandardButton.Yes:
                 self.chk_auto.setChecked(True)
                 return
@@ -377,8 +406,6 @@ class _DiscoCard(QFrame):
     def actualizar(self, disco, copia, tarea):
         self.disco, self.copia = disco, copia
         self.lbl_nombre.setText(_nombre(disco))
-        self.lbl_nombre.setToolTip(f"{disco.get('particion')} · UUID {disco.get('uuid')} · "
-                                   f"serie {disco.get('serie') or '?'}")
         r = resumir(copia, tarea, disco)
         color = _tono(r.tono)
         self.lbl_estado.setText(f'<span style="color:{color}; font-weight:600">{r.titulo}</span>'
@@ -388,10 +415,10 @@ class _DiscoCard(QFrame):
             self.bar.setValue(r.porcentaje)
         nota = ""
         if copia and copia.get("corriendo") and copia.get("actual"):
-            nota = f"Archivo: {copia['actual']}"
+            nota = f"Copiando ahora: {copia['actual']}"
         elif not copia and disco.get("nota_auto") and not disco.get("formateado"):
             # Por qué el modo automático no lo tomó (otros archivos, vacío…).
-            nota = "Modo automático: " + disco["nota_auto"].split(": ", 1)[-1]
+            nota = "Copia automática: " + disco["nota_auto"].split(": ", 1)[-1]
         self.lbl_actual.setText(nota)
         self.lbl_actual.setVisible(bool(nota))
         acciones = acciones_para(disco, copia, tarea)
@@ -399,7 +426,8 @@ class _DiscoCard(QFrame):
             b.setVisible(clave in acciones)
         if copia and copia.get("fase") == "TERMINADO":
             self.botones["copiar"].setText("Copiar lo nuevo…")
-            self.botones["copiar"].setToolTip("Si el disco se volvió a grabar, baja solo lo nuevo.")
+            self.botones["copiar"].setToolTip(
+                "Si el disco se volvió a usar, copia solo lo que se grabó después.")
         else:
             self.botones["copiar"].setText("Copiar…")
             self.botones["copiar"].setToolTip("")
@@ -412,12 +440,12 @@ class _FormatearDialog(QDialog):
         self.setWindowTitle("Formatear disco")
         lay = QVBoxLayout(self)
         lay.addWidget(_text(
-            f"<b>{_nombre(disco)}</b><br>"
-            f"Serie {disco.get('serie') or '?'} · {disco.get('particion')} · UUID {disco.get('uuid')}<br><br>"
-            f"Copiado a <b>{copia.get('destino', '?')}</b> ({copia.get('archivos', '?')} archivos).<br><br>"
-            "Antes de borrar, el NAS compara muestras de cada archivo del disco contra su "
-            "copia. Si algo no coincide, o hay algo grabado después de la copia, no formatea.<br><br>"
-            "<b>Se va a borrar todo el contenido del disco. No se puede deshacer.</b>"))
+            f"<b>{_nombre(disco)}</b><br><br>"
+            f"Está copiado en <b>{parent._carpeta(copia.get('destino'))}</b> "
+            f"({copia.get('archivos', '?')} archivos).<br><br>"
+            "Antes de borrar, el NAS revisa que la copia esté completa. Si falta algo, o el "
+            "disco tiene algo grabado después de la copia, no lo borra.<br><br>"
+            "<b>Se va a borrar todo lo que tiene el disco. No se puede deshacer.</b>"))
         self.txt = QLineEdit()
         self.txt.setPlaceholderText("Escribí FORMATEAR para confirmar")
         self.txt.setAccessibleName("Confirmación")
@@ -441,15 +469,14 @@ class _ConexionDialog(QDialog):
         self.setWindowTitle("Conexión con el NAS")
         lay = QVBoxLayout(self)
         lay.addWidget(_text(
-            "Direcciones del servicio de copias en el NAS, separadas por coma (se prueban "
-            "en orden), y la clave de acceso, que está en el NAS en "
-            "/mnt/tank/ingreso/_copias/panel.token."))
+            "Esto lo configura quien administra el NAS. Si hay más de una dirección, "
+            "separalas con coma: se prueban en orden."))
         form = QFormLayout()
         self.txt_urls = QLineEdit(settings.value("nas/panel_urls", "") or ",".join(URLS_POR_DEFECTO))
-        form.addRow("Direcciones:", self.txt_urls)
+        form.addRow("Dirección del NAS:", self.txt_urls)
         self.txt_token = QLineEdit(settings.value("nas/panel_token", ""))
         self.txt_token.setEchoMode(QLineEdit.EchoMode.Password)
-        form.addRow("Clave:", self.txt_token)
+        form.addRow("Clave de acceso:", self.txt_token)
         lay.addLayout(form)
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Save |
                               QDialogButtonBox.StandardButton.Cancel)
@@ -465,10 +492,17 @@ class _ConexionDialog(QDialog):
 
 
 # ------------------------------------------------------------------ helpers
+def _amigable(msg: str) -> str:
+    """Los errores del NAS ya vienen en palabras del operador; cualquier otro
+    (un error interno de Python) se reemplaza por una frase entendible."""
+    if msg.startswith(("PanelError", "PanelSinConexion")):
+        return msg.split(": ", 1)[1]
+    return "Algo falló al comunicarse con el NAS. Probá de nuevo en un rato."
+
 def _nombre(disco: dict) -> str:
     modelo = disco.get("modelo") or "Disco"
-    etiqueta = f' "{disco["etiqueta"]}"' if disco.get("etiqueta") else ""
-    return f"{modelo} · {str(disco.get('disco_gb', '?')).replace('.', ',')} GB ·{etiqueta} {nombre_fs(disco.get('fs'))}"
+    etiqueta = f' · «{disco["etiqueta"]}»' if disco.get("etiqueta") else ""
+    return f"{modelo} · {str(disco.get('disco_gb', '?')).replace('.', ',')} GB{etiqueta}"
 
 
 def _color(tono):

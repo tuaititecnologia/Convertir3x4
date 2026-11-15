@@ -164,10 +164,10 @@ def _remove(path: str):
 def _friendly(e: Exception) -> str:
     """Mensaje para el operador: qué pasó, sin el detalle técnico de ffmpeg."""
     if isinstance(e, clips.ClipError):
-        first = str(e).strip().splitlines()[-1] if str(e).strip() else ""
-        return f"No se pudo convertir el video. {first}"[:300]
+        return ("No se pudo convertir el video: puede estar dañado o en un formato "
+                "que no se puede leer.")
     if isinstance(e, FileNotFoundError):
         return "No se encontró el archivo (¿se desconectó el disco o el NAS?)."
     if isinstance(e, PermissionError):
-        return "No hay permiso para escribir en la carpeta de salida."
-    return f"{type(e).__name__}: {e}"[:300]
+        return "No se puede guardar en esa carpeta: no hay permiso. Elegí otra."
+    return "Algo falló al convertir este archivo."

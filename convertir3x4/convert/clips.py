@@ -255,11 +255,12 @@ def _check_audio(out_path: str, report: AudioReport, audio_src: str | None,
         report.fixed = True
         report.after, report.peak = measure_final(out_path)
     if report.peak is not None and report.peak > TP:
-        report.warnings.append(f"El pico quedó en {report.peak:.1f} dBFS, arriba de {TP:.0f}.")
+        # Para el operador: qué notar y qué hacer. Los números quedan en el informe.
+        report.warnings.append("Tiene partes con volumen muy fuerte: escuchalo antes de usarlo.")
     if report.after is not None and abs(report.after - LUFS) > LUFS_TOLERANCE:
         report.warnings.append(
-            f"El volumen quedó en {report.after:.1f} LUFS, a más de "
-            f"{LUFS_TOLERANCE:.0f} dB de {LUFS:.0f} (el audio es muy corto o muy desparejo).")
+            "El volumen no quedó igual al de los otros videos (el audio es muy corto o "
+            "muy desparejo): escuchalo antes de usarlo.")
     return report
 
 

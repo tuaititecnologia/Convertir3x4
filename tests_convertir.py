@@ -135,7 +135,7 @@ class TestDownloadHelpers:
 
     def test_errors_in_plain_words(self):
         assert "privado" in download._explain("ERROR: Private video. Sign in")
-        assert "no está soportado" in download._explain("ERROR: Unsupported URL: x")
+        assert "de ese sitio" in download._explain("ERROR: Unsupported URL: x")
         assert "conexión" in download._explain("ERROR: Unable to download webpage")
 
     def test_every_platform_has_a_pinned_deno(self):
@@ -198,7 +198,7 @@ class TestConvertTab:
             it.setSelected(True)
         tab._refresh_panel()
         assert tab.btn_convert.text() == "Convertir 1"
-        assert "1 no se pueden convertir" in tab.lbl_summary.text()
+        assert "1 no se puede convertir" in tab.lbl_summary.text()
 
     def test_convert_batch_end_to_end(self, app, tab, media, tmp_path):
         from convertir3x4.ui.widgets.media_grid import STATE_ROLE

@@ -72,11 +72,12 @@ class AdvancedDialog(QDialog):
             if (w, h) == self._opts.aspect:
                 self.combo_ratio.setCurrentIndex(self.combo_ratio.count() - 1)
         lay.addWidget(self.combo_ratio)
-        lay.addWidget(self._help("La pantalla LED de la iglesia es 8:9. Cambiala solo para otro destino."))
+        lay.addWidget(self._help("La pantalla de la iglesia usa 8:9. Cambiala solo si lo convertido "
+                                "va a otro lado."))
         lay.addSpacing(10)
 
         lay.addWidget(self._title("Fotos"))
-        self.chk_video = QCheckBox("Exportar las fotos como video (fondo en movimiento, 30 s)")
+        self.chk_video = QCheckBox("Sacar las fotos como video de 30 segundos, con el fondo en movimiento")
         self.chk_video.setChecked(self._opts.photos_as_video)
         lay.addWidget(self.chk_video)
         lay.addSpacing(10)
@@ -90,7 +91,7 @@ class AdvancedDialog(QDialog):
         b.clicked.connect(self._browse)
         row.addWidget(b)
         lay.addLayout(row)
-        lay.addWidget(self._help("Donde quedan los videos que se bajan de internet."))
+        lay.addWidget(self._help("Dónde quedan los videos que se bajan de internet."))
         lay.addSpacing(14)
 
         buttons = QDialogButtonBox()

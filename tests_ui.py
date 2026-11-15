@@ -323,7 +323,8 @@ class TestAvailability:
         states = [tab.grid.item(i).data(STATE_ROLE) for i in range(2)]
         assert states == [None, "offline"]   # el volumen entero no está: lo explica el aviso
         assert tab.offline_box.isVisibleTo(tab)
-        assert "/Volumes/NO_EXISTE" in tab.lbl_offline.text()
+        assert "el disco «NO_EXISTE»" in tab.lbl_offline.text()
+        assert "/Volumes" not in tab.lbl_offline.text()   # sin rutas del sistema
         assert "No se encuentra el original" in tab.grid.item(1).toolTip()
         tab.deleteLater()
 

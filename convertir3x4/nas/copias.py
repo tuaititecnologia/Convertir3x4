@@ -38,7 +38,7 @@ class PanelClient:
     # ------------------------------------------------------------ transporte
     def _pedir(self, metodo, ruta, datos=None, timeout=None):
         if not self.urls:
-            raise PanelSinConexion("No hay dirección del NAS configurada.")
+            raise PanelSinConexion("Falta configurar la conexión con el NAS. Avisale a quien lo administra.")
         orden = self.urls if self.url_activa not in self.urls else \
             [self.url_activa] + [u for u in self.urls if u != self.url_activa]
         cuerpo = json.dumps(datos).encode() if datos is not None else None
@@ -60,7 +60,9 @@ class PanelClient:
                 ultimo = str(getattr(e, "reason", e))
                 continue
         self.url_activa = None
-        raise PanelSinConexion(f"El NAS no responde ({ultimo}).")
+        # El detalle técnico (`ultimo`) no se muestra: al operador le sirve qué hacer.
+        raise PanelSinConexion("No se pudo conectar con el NAS. Revisá que esté prendido "
+                               "y que esta PC esté conectada a la red de la iglesia.")
 
     # ------------------------------------------------------------ consultas
     def estado(self) -> dict:
@@ -95,10 +97,10 @@ def _mensaje_http(e: urllib.error.HTTPError) -> str:
     except ValueError:
         detalle = ""
     if e.code == 401:
-        return "El NAS rechazó la clave de acceso. Revisá la configuración."
+        return "El NAS no reconoce a esta PC. Avisale a quien administra el NAS."
     if e.code == 403:
-        return "El NAS no acepta pedidos desde esta red."
-    return detalle[:1].upper() + detalle[1:] if detalle else f"El NAS respondió con error {e.code}."
+        return "El NAS no acepta conexiones desde esta red."
+    return detalle[:1].upper() + detalle[1:] if detalle else "El NAS tuvo un problema. Probá de nuevo en un rato."
 
 
 # ------------------------------------------------------------------ textos para la UI
@@ -110,7 +112,7 @@ FASES = {
     "DETENIDA": "Detenida",
     "ERROR": "Error",
     "VERIFICACION_FALLIDA": "Verificación fallida",
-    "FORMATEADO": "Formateado",
+    "FORMATEADO": "Vacío",
 }
 
 
@@ -130,8 +132,19 @@ def nombre_fs(fs) -> str:
     return _FS.get(fs or "", fs or "")
 
 
+def fecha(texto) -> str:
+    """'2026-11-15' -> '15/11/2026' y '2026-11-15 19:42:10' -> '15/11/2026 19:42'."""
+    t = str(texto or "")
+    if len(t) >= 10 and t[4] == "-" and t[7] == "-":
+        d = f"{t[8:10]}/{t[5:7]}/{t[0:4]}"
+        return f"{d} {t[11:16]}" if len(t) >= 16 else d
+    return t
+
+
 def _gb(x) -> str:
-    return f"{float(x or 0):.1f}".replace(".", ",") + " GB"
+    # 250 GB de 1000 GB; con decimales solo si es chico (8,4 GB)
+    v = float(x or 0)
+    return (f"{v:.0f}" if v >= 10 else f"{v:.1f}".replace(".", ",")) + " GB"
 
 
 def _minutos(m) -> str:
@@ -147,34 +160,31 @@ def resumir(copia: dict | None, tarea: dict | None = None, disco: dict | None = 
     nuevo y por eso no tiene copia propia)."""
     if tarea and tarea.get("estado") == "corriendo":
         accion = "Verificando y formateando" if tarea.get("accion") == "formatear" else "Verificando"
-        return Resumen(accion, "Compara muestras del disco contra el NAS.", None, "activo")
+        return Resumen(accion, "Revisando que la copia en el NAS esté completa.", None, "activo")
     if tarea and tarea.get("estado") == "error" and not (copia or {}).get("corriendo"):
         que = "No se formateó" if tarea.get("accion") == "formatear" else "La verificación falló"
         return Resumen(que, tarea.get("mensaje") or "", None, "error")
     if disco and disco.get("admitido") is False:
-        return Resumen("No se puede leer en el NAS", f"Es {nombre_fs(disco.get('fs'))}. El NAS no lee NTFS; "
-                       "hay que copiarlo desde una PC.", None, "aviso")
+        return Resumen("El NAS no puede leer este disco", "Tiene un formato que el NAS no "
+                       "entiende. Hay que copiarlo desde una PC.", None, "aviso")
     if not copia:
         f = (disco or {}).get("formateado")
         if f:
-            return Resumen("Vacío", f"Formateado el {f.get('fecha', '')} después de copiar "
-                           f"{f.get('archivos', '?')} archivos. Listo para grabar.", None, "ok")
+            return Resumen("Vacío", f"Se borró el {fecha(f.get('fecha'))}, después de copiar "
+                           f"{f.get('archivos', '?')} archivos. Listo para volver a grabar.", None, "ok")
         return Resumen("Sin copiar", "Este disco nunca se copió al NAS.", None, "neutro")
     fase = copia.get("fase") or ""
     titulo = FASES.get(fase, fase.title() or "Desconocido")
     errores = int(copia.get("errores") or 0)
     if copia.get("corriendo"):
         if fase == "TERMINADO":   # modo auto: verifica y formatea dentro de la misma unidad
-            return Resumen("Verificando y formateando", "Copia completa; dejando el disco listo "
-                           "para la HyperDeck.", None, "activo")
+            return Resumen("Verificando y formateando", "Copia completa. Dejando el disco vacío para la HyperDeck.", None, "activo")
         hecho, falta = float(copia.get("copiado_gb") or 0), float(copia.get("falta_gb") or 0)
         total = hecho + falta
         pct = int(round(100 * hecho / total)) if total > 0 else 0
         partes = [f"{_gb(hecho)} de {_gb(total)}"]
-        if copia.get("mb_s"):
-            partes.append(f"{copia['mb_s']} MB/s")
         if copia.get("eta_min") not in (None, "") and hecho > 0:
-            partes.append(f"faltan ~{_minutos(copia['eta_min'])}")
+            partes.append(f"falta {_minutos(copia['eta_min'])} aprox.")
         if errores:
             partes.append(f"{errores} con error")
         return Resumen("Copiando" if fase == "COPIANDO" else titulo, " · ".join(partes), pct, "activo")
@@ -182,17 +192,18 @@ def resumir(copia: dict | None, tarea: dict | None = None, disco: dict | None = 
         v = copia.get("verificado")
         det = f"{copia.get('archivos', '?')} archivos en el NAS."
         if v and not v.get("fallos"):
-            det += f" Verificado el {v.get('fecha', '')}."
+            det += f" Verificado el {fecha(v.get('fecha'))}."
         if copia.get("error"):
             det += f" {copia['error']}"
         return Resumen(titulo, det, None, "ok")
     if fase == "FORMATEADO":
         return Resumen(titulo, "Vacío y listo para volver a grabar.", None, "ok")
     if fase == "CON_ERRORES":
-        return Resumen(titulo, f"{errores} archivos no se pudieron leer. El disco queda "
-                       "anotado para rescatarlo con ddrescue; no se formatea.", None, "aviso")
+        return Resumen(titulo, f"{errores} archivos no se pudieron leer. El disco no se va a "
+                       "borrar: avisale a quien administra el NAS para intentar rescatarlos.",
+                       None, "aviso")
     if fase == "DETENIDA":
-        return Resumen(titulo, "Se retoma donde quedó con Copiar.", None, "aviso")
+        return Resumen(titulo, "Tocá Copiar para seguir desde donde quedó.", None, "aviso")
     return Resumen(titulo, copia.get("error") or "", None, "error" if fase in
                    ("ERROR", "VERIFICACION_FALLIDA") else "neutro")
 

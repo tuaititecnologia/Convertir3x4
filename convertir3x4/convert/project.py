@@ -8,13 +8,13 @@ def read_project_file(path: str) -> dict | str:
     try:
         with open(path, "r", encoding="utf-8") as f:
             project = json.load(f)
-    except (json.JSONDecodeError, OSError) as e:
-        return f"No se pudo leer el proyecto:\n{e}"
+    except (json.JSONDecodeError, OSError):
+        return "No se pudo abrir el proyecto: el archivo está dañado o no es un proyecto de esta app."
     if not isinstance(project, dict):
-        return "El archivo no es un proyecto válido."
+        return "Ese archivo no es un proyecto de esta app."
     images = project.get("images", [])
     if not isinstance(images, list):
-        return "El archivo no es un proyecto válido."
+        return "Ese archivo no es un proyecto de esta app."
     # Filtrar entradas que no sean strings
     project["images"] = [p for p in images if isinstance(p, str)]
     return project

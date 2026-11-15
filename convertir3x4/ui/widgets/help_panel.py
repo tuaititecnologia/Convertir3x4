@@ -18,18 +18,18 @@ _MOD = "⌘" if sys.platform == "darwin" else "Ctrl"
 # (título, [(subtítulo, texto)])
 HELP = [
     ("Buscar", [
-        ("Encontrar", "Escribí parte del nombre, de la carpeta o un tag. "
-                      "Fotos · Videos filtra por tipo."),
+        ("Encontrar", "Escribí parte del nombre, de la carpeta o un tag. Con Fotos y "
+                      "Videos ves solo uno de los dos."),
         ("Llevar a ProPresenter", "Arrastrá la foto o el video directo a ProPresenter. "
-                                  "Queda enlazado al archivo original, no se copia."),
+                                  "ProPresenter usa el archivo original, no hace una copia."),
         ("Poner tags", "Seleccioná una o varias (con Shift o " + _MOD + ") y escribí el tag "
                        "abajo. Si no existe, se crea."),
         ("Sugerencias de la IA", "Los tags violeta los propuso la IA. Tocá el tag para "
                                  "confirmarlo o la ✕ para sacarlo: no lo vuelve a proponer."),
     ]),
     ("Catalogar", [
-        ("Agregar al catálogo", "Elegí la carpeta y tocá Catalogar. Se puede repetir "
-                                "cuando quieras: solo procesa lo nuevo."),
+        ("Sumar al catálogo", "Elegí la carpeta y tocá Catalogar. Se puede repetir "
+                              "cuando quieras: solo agrega lo que todavía no estaba."),
         ("Análisis con IA", "Propone tags y reconoce a las personas de la lista. Todo queda "
                             "como sugerencia hasta que alguien lo confirma en Buscar."),
         ("Personas", "Solo se reconoce a quien esté en la lista. Cargá de 3 a 5 fotos "
@@ -43,20 +43,20 @@ HELP = [
         ("Audio", "Los videos salen con el volumen nivelado: en la consola el fader "
                   "queda siempre en 0 dB."),
         ("Ver un video", "Pasá el mouse por arriba para ver de qué se trata, sin abrirlo."),
-        ("Si algo falla", "Pasá el mouse por el elemento marcado: dice qué pasó. "
-                          "«No disponible» suele ser el NAS o un disco desconectado."),
+        ("Si algo falla", "Pasá el mouse por arriba del que está marcado: dice qué pasó. "
+                          "«No disponible» casi siempre es el NAS o un disco desconectado."),
         ("Opciones avanzadas", "El ⚙ tiene opciones que casi nunca hacen falta. "
                                "Lo que cambies ahí vuelve a lo estándar al cerrar la app."),
     ]),
     ("Discos", [
-        ("Copiar un disco", "Enchufá el disco por USB al NAS. Aparece en la lista: "
-                            "tocá Copiar y elegí la carpeta de destino."),
-        ("Seguro", "El disco se lee una sola vez y en solo lectura. Nunca se pisa un "
-                   "archivo que ya está en el NAS."),
-        ("Formatear", "Solo cuando la copia terminó y se verificó. Si hubo errores, "
-                      "primero reintentá los errores."),
-        ("Modo automático", "Si está activado, los discos de la HyperDeck se copian, "
-                            "verifican y formatean solos al enchufarlos."),
+        ("Copiar un disco", "Enchufá el disco al NAS. Cuando aparece en la lista, tocá "
+                            "Copiar y elegí la carpeta."),
+        ("Sin riesgo", "Copiar nunca cambia nada del disco ni reemplaza archivos que ya "
+                       "estén en el NAS."),
+        ("Formatear", "Borra todo el disco para volver a grabar. Solo se puede cuando la "
+                      "copia está completa y revisada."),
+        ("Copia automática", "Si está activada, los discos de la HyperDeck se copian, se "
+                             "revisan y se borran apenas se enchufan al NAS."),
     ]),
 ]
 SHORTCUTS = [(f"{_MOD}+1 a 4", "Cambiar de módulo"), ("F1", "Abrir o cerrar la ayuda"),

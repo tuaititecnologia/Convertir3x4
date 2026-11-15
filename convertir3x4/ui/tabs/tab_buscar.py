@@ -46,6 +46,21 @@ def storage_root(path: str) -> str:
     return "/"
 
 
+_QUALITY = {"low_res": "Baja resolución: puede verse borrosa en la pantalla.",
+            "corrupt": "El archivo parece dañado."}
+
+
+def friendly_root(root: str) -> str:
+    """Cómo nombra el operador una ubicación: "el NAS", "el disco D:", "el disco «SSD»"."""
+    if root.startswith(("\\\\", "//")):
+        return "el NAS"
+    if re.match(r"^[A-Za-z]:", root):
+        return f"el disco {root[:2].upper()}"
+    if root.startswith(("/Volumes/", "/media/", "/mnt/")):
+        return f"el disco «{root.rstrip('/').rsplit('/', 1)[-1]}»"
+    return "esta PC"
+
+
 def availability(paths: list[str]) -> dict[str, bool]:
     """Qué archivos están, sin congelar la app si el NAS está desconectado.
 
@@ -198,7 +213,7 @@ class BuscarTab(QWidget):
         if repo is None:
             self.lbl_count.setText("")
             self.grid.clear()
-            self.grid.set_empty_text("Todavía no hay catálogo.\nAndá a Catalogar y elegí las carpetas con fotos y videos.")
+            self.grid.set_empty_text("Todavía no hay catálogo.\nAndá a Catalogar y elegí una carpeta con fotos y videos.")
             self.tag_bar.set_enabled(False)
             return
         self._results = repo.search(self.txt_query.text(),
@@ -236,7 +251,7 @@ class BuscarTab(QWidget):
             if m.width and m.height:
                 tip += f"\n{m.width}×{m.height}"
             if m.quality_flag and m.quality_flag != "ok":
-                tip += f"\n⚠ {m.quality_flag}"
+                tip += "\n" + _QUALITY.get(m.quality_flag, "")
             if not present[m.path]:
                 tip = (f"No se encuentra el original:\n{m.path}\n"
                        "¿Se desconectó el NAS o el disco? Así no se puede llevar a ProPresenter.")
@@ -258,12 +273,14 @@ class BuscarTab(QWidget):
         n = len(missing)
         cuantos = "1 resultado" if n == 1 else f"{n} resultados"
         if roots:
-            donde = ", ".join(roots)
-            text = (f"{cuantos} están en {donde}, que no está conectado. Se ven las miniaturas, "
+            donde = " y ".join(friendly_root(r) for r in roots)
+            verbo = "está" if n == 1 else "están"
+            text = (f"{cuantos} {verbo} en {donde}, que no está conectado. Se ven las miniaturas, "
                     "pero no se pueden llevar a ProPresenter hasta que se conecte.")
         else:
-            text = (f"{cuantos} ya no están en su carpeta (¿se movieron o se borraron?). "
-                    "Pasá el mouse por arriba para ver la ruta.")
+            verbo = "ya no está" if n == 1 else "ya no están"
+            text = (f"{cuantos} {verbo} en su carpeta (¿se movieron o se borraron?). "
+                    "Pasá el mouse por arriba para ver dónde estaban.")
         self.lbl_offline.setText(text)
         self.offline_box.setVisible(True)
 

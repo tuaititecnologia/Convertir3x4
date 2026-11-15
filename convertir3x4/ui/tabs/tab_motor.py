@@ -32,6 +32,26 @@ _CONTENT_MAX_W = 760
 _SECTION_GAP = 22
 
 
+def _resumen_catalogo(stats) -> str:
+    """El resultado de catalogar en una frase, solo con lo que importa."""
+    def n(k, uno, varios):
+        return uno if k == 1 else f"{k} {varios}"
+    partes = []
+    if stats.added:
+        partes.append(n(stats.added, "1 nuevo", "nuevos"))
+    if stats.updated:
+        partes.append(n(stats.updated, "1 actualizado", "actualizados"))
+    texto = "Listo: " + (" y ".join(partes) if partes else "no había nada nuevo") + "."
+    if stats.skipped and partes:
+        texto += f" {n(stats.skipped, '1 ya estaba', 'ya estaban')}."
+    if stats.duplicates:
+        texto += f" {n(stats.duplicates, '1 está repetido', 'están repetidos')}."
+    if stats.corrupt:
+        texto += (" 1 está dañado y no se pudo abrir." if stats.corrupt == 1 else
+                  f" {stats.corrupt} están dañados y no se pudieron abrir.")
+    return texto
+
+
 class MotorTab(QWidget):
     catalogChanged = pyqtSignal()
 
@@ -58,16 +78,16 @@ class MotorTab(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
 
-        layout.addWidget(self._title("Catalogar medios"))
+        layout.addWidget(self._title("Sumar fotos y videos al catálogo"))
         layout.addWidget(self._text(
-            "Recorre una carpeta y registra cada imagen y video en el catálogo "
-            "(dimensiones, duración, miniaturas y duplicados). Corre en esta PC "
-            "y se puede repetir cuando quieras: solo procesa lo nuevo."))
+            "Elegí una carpeta y la app suma al catálogo todas sus fotos y videos, para "
+            "encontrarlos después en Buscar. Se puede repetir cuando quieras: solo agrega "
+            "lo que todavía no estaba."))
 
         row = QHBoxLayout()
         row.setSpacing(8)
         self.txt_folder = QLineEdit()
-        self.txt_folder.setPlaceholderText("Carpeta de medios a catalogar…")
+        self.txt_folder.setPlaceholderText("Carpeta con fotos y videos…")
         self.txt_folder.setAccessibleName("Carpeta a catalogar")
         self.txt_folder.setText(self.settings.value("motor_last_dir", ""))
         row.addWidget(self.txt_folder, 1)
@@ -97,10 +117,10 @@ class MotorTab(QWidget):
         layout.addSpacing(_SECTION_GAP)
         layout.addWidget(self._title("Análisis con IA"))
         layout.addWidget(self._text(
-            "Propone tags de escena (bautismo, alabanza, placa, flyer…) y reconoce "
-            "a las personas de la lista de abajo. Todo queda como sugerencia hasta "
-            "que alguien lo confirma en Buscar. Corre en esta PC, sin internet; "
-            "solo la primera vez baja los modelos (unos 650 MB)."))
+            "Propone tags (bautismo, alabanza, placa, flyer…) y reconoce a las personas "
+            "de la lista de abajo. Todo queda como sugerencia hasta que alguien lo "
+            "confirma en Buscar. Funciona sin internet; solo la primera vez necesita "
+            "bajar unos 650 MB."))
         self.btn_ai = QPushButton("Analizar con IA")
         self.btn_ai.setIcon(icons.icon("sparkles", 15, T.text))
         self.btn_ai.clicked.connect(self._run_ai)
@@ -165,12 +185,12 @@ class MotorTab(QWidget):
             repo = Repo(conn)
             n, pend = repo.count_media(), repo.count_pending_tags()
             conn.close()
-            txt = f"{n} medios en el catálogo"
+            txt = "1 foto o video en el catálogo" if n == 1 else f"{n} fotos y videos en el catálogo"
             if pend:
                 txt += f" · {pend} con sugerencias de la IA sin revisar"
             self.lbl_count.setText(txt)
         except Exception as e:  # noqa: BLE001
-            self.lbl_count.setText(f"No se pudo leer el catálogo: {e}")
+            self.lbl_count.setText("No se pudo abrir el catálogo.")
 
     def _refresh_people(self):
         self.lst_people.clear()
@@ -230,27 +250,29 @@ class MotorTab(QWidget):
         if msg.startswith("⬇"):
             self._set_status(msg)
         else:
-            self._set_status(f"Procesando {done}/{total}…")
+            self._set_status(f"Procesando {done} de {total}…")
 
     def _on_failed(self, err):
         self._worker.wait()
         self._worker = None
         self._update_buttons()
-        self._set_status(f"Error: {err}")
+        # El detalle técnico (err) no le sirve al operador.
+        self._set_status("No se pudo terminar. Probá de nuevo; si vuelve a pasar, "
+                         "avisale a quien mantiene la app.")
 
     @staticmethod
     def _ensure_models(mdir, progress_cb):
         def cb(done, total, name):
             mb = 1024 * 1024
             progress_cb(done // mb, total // mb,
-                        f"⬇ Bajando modelos de IA (solo la primera vez): "
+                        f"⬇ Preparando el análisis (solo la primera vez): "
                         f"{done // mb} de {total // mb} MB…")
         ai_models.ensure(mdir, cb)
 
     # ------------------------------------------------------------- Etapa 0
     def _browse(self):
         start = self.txt_folder.text() or self.settings.value("motor_last_dir", "")
-        path = QFileDialog.getExistingDirectory(self, "Carpeta de medios", start)
+        path = QFileDialog.getExistingDirectory(self, "Elegí la carpeta con fotos y videos", start)
         if path:
             self.txt_folder.setText(path)
 
@@ -271,14 +293,11 @@ class MotorTab(QWidget):
                 conn.close()
 
         def done(stats):
-            self._set_status(
-                f"Listo: {stats.added} nuevos, {stats.updated} actualizados, "
-                f"{stats.skipped} sin cambios, {stats.duplicates} duplicados, "
-                f"{stats.corrupt} corruptos.")
+            self._set_status(_resumen_catalogo(stats))
             self._refresh_count()
             self.catalogChanged.emit()
 
-        self._start(job, done, "Recorriendo carpeta…")
+        self._start(job, done, "Revisando la carpeta…")
 
     # ------------------------------------------------------------- IA
     def _run_ai(self):
@@ -295,19 +314,23 @@ class MotorTab(QWidget):
                 conn.close()
 
         def done(st):
-            msg = (f"Listo: {st.analyzed} analizados, {st.scene_tags} tags de escena y "
-                   f"{st.people_tags} de personas sugeridos.")
+            sugeridos = st.scene_tags + st.people_tags
+            msg = (f"Listo: se analizaron {st.analyzed}. "
+                   + ("No hay sugerencias nuevas." if not sugeridos else
+                      "Hay 1 tag sugerido para revisar en Buscar." if sugeridos == 1 else
+                      f"Hay {sugeridos} tags sugeridos para revisar en Buscar."))
             if st.missing_files:
-                msg += f" {st.missing_files} archivos no se encontraron (se reintentan después)."
+                msg += (f" {st.missing_files} no se encontraron; se vuelven a intentar la "
+                        "próxima vez.")
             if st.errors:
-                msg += f" {st.errors} no se pudieron leer."
+                msg += f" {st.errors} no se pudieron abrir."
             if not st.analyzed and not st.missing_files and not st.errors:
                 msg = "No había nada nuevo para analizar."
             self._set_status(msg)
             self._refresh_count()
             self.catalogChanged.emit()
 
-        self._start(job, done, "Preparando análisis…")
+        self._start(job, done, "Preparando el análisis…")
 
     # ------------------------------------------------------------- personas
     def _add_person(self):

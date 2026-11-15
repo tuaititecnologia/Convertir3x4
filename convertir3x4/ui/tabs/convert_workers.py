@@ -42,7 +42,8 @@ class ThumbWorker(_Cancellable):
             except FileNotFoundError:
                 self.failed.emit(p, "No se encontró el archivo (¿se desconectó el disco o el NAS?).")
             except Exception as e:  # noqa: BLE001 — se muestra en la grilla
-                self.failed.emit(p, f"No se pudo leer el video. {e}"[:300])
+                self.failed.emit(p, "No se pudo leer el video: puede estar dañado o en un "
+                                    "formato que no se puede abrir.")
 
 
 class ConvertWorker(_Cancellable):
@@ -90,6 +91,6 @@ class DownloadWorker(_Cancellable):
         except download.DownloadError as e:
             self.failed.emit(self.url, str(e))
         except Exception as e:  # noqa: BLE001
-            self.failed.emit(self.url, f"No se pudo bajar el video. {e}"[:300])
+            self.failed.emit(self.url, "No se pudo bajar el video.")
         else:
             self.done.emit(self.url, path)

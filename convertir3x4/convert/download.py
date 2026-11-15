@@ -102,7 +102,7 @@ def _fetch(url: str, dest: str, progress_cb=None, cancel=None) -> None:
                 if progress_cb and total:
                     progress_cb(done / total)
     except OSError as e:
-        raise DownloadError(f"No se pudo bajar {os.path.basename(dest)}: revisá la conexión a internet. ({e})") from e
+        raise DownloadError("No se pudo conectar a internet. Revisá la conexión.") from e
 
 
 def _sha256(path: str) -> str:
@@ -136,12 +136,12 @@ def ensure_ytdlp(tools_dir: str, progress_cb=None, cancel=None) -> str:
                 expected = parts[0].lower()
     os.remove(sums_path)
     if not expected:
-        raise DownloadError(f"No se encontró {asset} en la lista oficial de yt-dlp.")
+        raise DownloadError("No se pudo preparar la descarga. Probá de nuevo más tarde.")
     tmp = exe + ".bajando"
     _fetch(f"{YTDLP_BASE}/{asset}", tmp, progress_cb, cancel)
     if _sha256(tmp) != expected:
         os.remove(tmp)
-        raise DownloadError("La descarga de yt-dlp no coincide con la oficial; se descartó.")
+        raise DownloadError("No se pudo preparar la descarga. Probá de nuevo más tarde.")
     os.replace(tmp, exe)
     _make_executable(exe)
     _touch_update_stamp(tools_dir)
@@ -182,7 +182,7 @@ def ensure_deno(tools_dir: str, progress_cb=None, cancel=None) -> str:
            zpath, progress_cb, cancel)
     if _sha256(zpath) != DENO_ZIPS[target]:
         os.remove(zpath)
-        raise DownloadError("La descarga de deno no coincide con la oficial; se descartó.")
+        raise DownloadError("No se pudo preparar la descarga. Probá de nuevo más tarde.")
     with zipfile.ZipFile(zpath) as z:
         z.extract(os.path.basename(exe), tools_dir)
     os.remove(zpath)
@@ -212,8 +212,9 @@ def download(url: str, out_dir: str, tools_dir: str,
     cb = progress_cb or (lambda f, m: None)
     if not tools_ready(tools_dir):
         cb(0.0, "Preparando la descarga (solo la primera vez)…")
-    ytdlp = ensure_ytdlp(tools_dir, lambda f: cb(0.05 * f, "Bajando yt-dlp…"), cancel)
-    deno = ensure_deno(tools_dir, lambda f: cb(0.05 + 0.05 * f, "Bajando deno…"), cancel)
+    prep = "Preparando la descarga (solo la primera vez)…"
+    ytdlp = ensure_ytdlp(tools_dir, lambda f: cb(0.05 * f, prep), cancel)
+    deno = ensure_deno(tools_dir, lambda f: cb(0.05 + 0.05 * f, prep), cancel)
 
     os.makedirs(out_dir, exist_ok=True)
     work = os.path.join(out_dir, f".descargando-{uuid.uuid4().hex[:8]}")
@@ -268,8 +269,7 @@ def _explain(stderr: str) -> str:
     if "private" in low or "login" in low or "sign in" in low:
         return "El video es privado o pide iniciar sesión: no se puede bajar."
     if "unsupported url" in low:
-        return "Ese sitio no está soportado. Probá con el link directo al video."
+        return "No se pueden bajar videos de ese sitio."
     if "unable to download" in low or "network" in low or "timed out" in low:
         return "No se pudo conectar. Revisá la conexión a internet."
-    last = [ln for ln in stderr.strip().splitlines() if ln.strip()]
-    return ("No se pudo bajar el video. " + (last[-1] if last else ""))[:300]
+    return "No se pudo bajar el video. Probá abrir el link en el navegador para ver si anda."

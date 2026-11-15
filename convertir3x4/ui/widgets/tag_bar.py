@@ -126,8 +126,8 @@ class TagBar(QWidget):
         chip.setFixedHeight(_CHIP_HEIGHT)
         chip.setCursor(Qt.CursorShape.PointingHandCursor)
         chip.setToolTip(
-            f"En {count} de {total} seleccionadas — clic para quitarlo de todas"
-            if partial else "Clic para quitar el tag"
+            f"Está en {count} de las {total} seleccionadas: tocá para quitarlo de todas"
+            if partial else "Tocá para quitar el tag"
         )
         chip.clicked.connect(lambda _=False, n=name: self.tagRemoved.emit(n))
         return chip
@@ -142,13 +142,13 @@ class TagBar(QWidget):
         ok.setObjectName("tag_chip_ia")
         ok.setFixedHeight(_CHIP_HEIGHT)
         ok.setCursor(Qt.CursorShape.PointingHandCursor)
-        ok.setToolTip("Sugerido por la IA — clic para confirmarlo")
+        ok.setToolTip("Lo sugirió la IA: tocá para confirmarlo")
         ok.clicked.connect(lambda _=False, n=name: self.tagConfirmed.emit(n))
         x = QPushButton("✕")
         x.setObjectName("tag_chip_ia_x")
         x.setFixedHeight(_CHIP_HEIGHT)
         x.setCursor(Qt.CursorShape.PointingHandCursor)
-        x.setToolTip("No corresponde — quitarlo (la IA no lo vuelve a sugerir)")
+        x.setToolTip("No corresponde: quitarlo (la IA no lo vuelve a sugerir)")
         x.clicked.connect(lambda _=False, n=name: self.tagRemoved.emit(n))
         row.addWidget(ok)
         row.addWidget(x)

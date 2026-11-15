@@ -642,7 +642,8 @@ class ConvertTab(QWidget):
         skipped = n_sel - len(paths)
         summary = batch.describe(paths, self._mode, self._batch_options())
         if skipped:
-            summary += f" {skipped} no se pueden convertir (no disponibles o con error)."
+            summary += (" 1 no se puede convertir (no está disponible o tuvo un error)." if skipped == 1
+                        else f" {skipped} no se pueden convertir (no están disponibles o tuvieron un error).")
         self.lbl_summary.setText(summary)
         ok = not (self._mode == batch.FONDO and not self._bg_path)
         self.btn_convert.setText(f"Convertir {len(paths)}")
@@ -699,8 +700,10 @@ class ConvertTab(QWidget):
             detail += f"\n  … y {len(existing) - 5} más"
         msg = QMessageBox(self)
         msg.setIcon(QMessageBox.Icon.Warning)
-        msg.setWindowTitle("Archivos existentes")
-        msg.setText(f"{len(existing)} archivo(s) ya existen en esa carpeta:")
+        msg.setWindowTitle("Archivos repetidos")
+        n = len(existing)
+        msg.setText("Ya hay un archivo con el mismo nombre en esa carpeta:" if n == 1 else
+                    f"Ya hay {n} archivos con el mismo nombre en esa carpeta:")
         msg.setInformativeText(f"{detail}\n\n¿Reemplazarlos?")
         msg.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         msg.setDefaultButton(QMessageBox.StandardButton.No)
@@ -777,8 +780,7 @@ class ConvertTab(QWidget):
         else:
             state, tip = "done", f"Listo: {os.path.basename(result.out_path)}"
             if result.audio and result.audio.before is not None:
-                tip += (f"\nAudio: {result.audio.before:.1f} → {result.audio.after:.1f} LUFS, "
-                        f"pico {result.audio.peak:.1f} dBFS")
+                tip += "\nEl volumen quedó nivelado para la consola."
         for p in result.job.inputs:
             it = self._item_for(p)
             if it is not None:

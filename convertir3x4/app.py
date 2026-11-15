@@ -164,10 +164,12 @@ class MainWindow(QMainWindow):
         page = self.stack.widget(index)
         target = {self.buscar_tab: self.buscar_tab.txt_query,
                   self.convert_tab: self.convert_tab.list_widget}.get(page)
-        if target is not None:
-            target.setFocus()
-        elif self.focusWidget() is not None:
-            self.focusWidget().clearFocus()
+        if target is None:
+            # La página misma recibe el foco: no dibuja borde y no lo deja caer
+            # en un botón (ni de la página ni de la barra lateral).
+            page.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+            target = page
+        target.setFocus()
 
     def _on_tab_changed(self, index: int):
         self._focus_module(index)
