@@ -242,3 +242,33 @@ def test_detalle_tecnico_escondido_por_defecto():
     t.btn_log.setChecked(True)
     assert t.txt_log.isVisibleTo(t)
     t.deleteLater()
+
+
+@pytest.mark.parametrize("disco, tipo", [
+    ({"nota_auto": "x (UUID A): disco de HyperDeck, 39 archivos, 120.5 GB. Lanzo copia a /mnt/x"}, "grabadora"),
+    ({"nota_auto": "x (UUID A): vacio, listo para grabar"}, "grabadora"),
+    ({"formateado": {"fecha": "2026-11-15"}}, "grabadora"),
+    ({"nota_auto": "x (UUID A): no es un disco de HyperDeck (3 archivos ajenos, por ejemplo 'a.jpg')"}, "otro"),
+    ({"nota_auto": "x (UUID A): es ntfs, no exFAT; no es de la HyperDeck"}, "otro"),
+    ({"nota_auto": "sdh2: ignorado, el modo automatico esta apagado (/x)"}, None),
+    ({}, None),
+])
+def test_tipo_disco_segun_lo_que_reconoce_el_nas(disco, tipo):
+    from convertir3x4.nas.copias import tipo_disco
+    assert tipo_disco(disco) == tipo
+
+
+@pytest.mark.parametrize("nota", [
+    "x (UUID A): no es un disco de HyperDeck (3 archivos ajenos, por ejemplo 'a.jpg'); se deja para copiar a mano",
+    "x (UUID A): es ntfs, no exFAT; no es de la HyperDeck",
+    "sdh2: ignorado, el modo automatico esta apagado (/mnt/tank/ingreso/_copias/AUTO_APAGADO)",
+    "x (UUID A): esta montado en otro lado, no lo toco",
+    "x (UUID A): vacio, listo para grabar",
+    "x (UUID A): algo raro de mount",
+])
+def test_nota_sin_vocabulario_tecnico(nota):
+    from convertir3x4.nas.copias import nota_operador
+    texto = nota_operador({"nota_auto": nota}).lower()
+    assert texto
+    for palabra in ("hyperdeck", "exfat", "ntfs", "uuid", "/mnt/", "montado", "mount"):
+        assert palabra not in texto, (palabra, texto)

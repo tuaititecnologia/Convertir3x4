@@ -45,7 +45,7 @@ class MainWindow(QMainWindow):
             (self.buscar_tab, "Buscar", "search"),
             (self.motor_tab, "Catalogar", "scan-search"),
             (self.convert_tab, "Convertir", "wand-sparkles"),
-            (self.discos_tab, "Discos", "hard-drive"),
+            (self.discos_tab, "Grabadora", "hard-drive"),
         ])
 
         central = QWidget()

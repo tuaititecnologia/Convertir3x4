@@ -48,14 +48,20 @@ HELP = [
         ("Opciones avanzadas", "El ⚙ tiene opciones que casi nunca hacen falta. "
                                "Lo que cambies ahí vuelve a lo estándar al cerrar la app."),
     ]),
-    ("Discos", [
-        ("Copiar un disco", "Enchufá el disco al NAS. Cuando aparece en la lista, tocá "
-                            "Copiar y elegí la carpeta."),
+    ("Grabadora", [
+        ("Para qué es", "Para guardar en el NAS lo que se grabó con la grabadora, y "
+                        "dejar el disco vacío para la próxima vez."),
+        ("Cómo sabe que es de la grabadora", "El NAS lo reconoce solo: es un disco que "
+                                             "tiene únicamente grabaciones de la grabadora. "
+                                             "Si tiene otros archivos, aparece como «Otro "
+                                             "disco» y no se toca solo."),
+        ("Copiar el disco", "Enchufá el disco de la grabadora al NAS. Cuando aparece en "
+                            "la lista, tocá Copiar y elegí la carpeta."),
         ("Sin riesgo", "Copiar nunca cambia nada del disco ni reemplaza archivos que ya "
                        "estén en el NAS."),
-        ("Formatear", "Borra todo el disco para volver a grabar. Solo se puede cuando la "
-                      "copia está completa y revisada."),
-        ("Copia automática", "Si está activada, los discos de la HyperDeck se copian, se "
+        ("Formatear", "Borra todo el disco para que la grabadora lo vuelva a usar. Solo se "
+                      "puede cuando la copia está completa y revisada."),
+        ("Copia automática", "Si está activada, los discos de la grabadora se copian, se "
                              "revisan y se borran apenas se enchufan al NAS."),
     ]),
 ]

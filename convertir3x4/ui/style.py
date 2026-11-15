@@ -224,6 +224,14 @@ QToolButton#nav_button:hover {{ background-color: {T.hover}; color: {T.text_2}; 
 QToolButton#nav_button:checked {{ background-color: {T.accent_soft}; color: {T.text}; }}
 QToolButton#nav_button:focus {{ border: 1px solid {T.accent_text}; }}
 
+/* ---------- tipo de disco (Grabadora) ---------- */
+/* Radio = mitad del alto (11 px de letra + 2 x 3 de relleno = 17): si es mayor, Qt lo ignora */
+QLabel#pill_grabadora, QLabel#pill_otro {{
+    border-radius: 8px; padding: 2px 9px; font-size: 11px; font-weight: 600;
+}}
+QLabel#pill_grabadora {{ background-color: {T.accent_soft}; color: {T.accent_text}; }}
+QLabel#pill_otro {{ background-color: {T.hover}; color: {T.text_2}; }}
+
 /* ---------- ayuda ---------- */
 QFrame#help_panel {{ background-color: {T.panel}; border-left: 1px solid {T.border_strong}; }}
 QLabel#help_title {{ color: {T.text}; font-size: 15px; font-weight: 600; }}

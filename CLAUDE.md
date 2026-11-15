@@ -38,7 +38,9 @@ convertir3x4/
   __main__.py            entry point (QApplication + DARK_STYLE + MainWindow)
   nas/copias.py          Qt-free urllib client for panel-copias (HTTP service on the NAS, port 8790,
                          token) that drives external-disk copies; resumir()/acciones_para() are pure
-  app.py                 MainWindow: left nav rail (Buscar/Catalogar/Convertir/Discos, Ctrl+1..4 via
+                         tipo_disco()/nota_operador(): recorder disk or not, read from what the NAS
+                         already decided (USB + exFAT + only HyperDeck_NNNN files), never re-checked here
+  app.py                 MainWindow: left nav rail (Buscar/Catalogar/Convertir/Grabadora, Ctrl+1..4 via
                          QShortcut) + QStackedWidget; owns window geometry + closeEvent.
   config.py              constants (APP_VERSION, ASPECT_RATIOS, VIDEO_*, etc.)
   utils.py               open_folder()
@@ -72,7 +74,8 @@ convertir3x4/
                            session-only, NEVER persisted; audio level is not an option).
                            Emits titleChanged(str); save_state/restore_state/confirm_close/
                            shutdown for MainWindow. `App` aliases it in the shim.
-    tabs/tab_discos.py     DiscosTab: USB disks plugged into the NAS, copy progress, Copiar/Detener/
+    tabs/tab_discos.py     DiscosTab, shown as "Grabadora" (operators call the HyperDeck recorder
+                           "la grabadora"; never say HyperDeck/Discos in UI): its disks plugged into the NAS, copy progress, Copiar/Detener/
                            Verificar/Formatear, auto mode, history + log. Polls every 3 s while visible.
                            Dev without NAS: CDLM_PANEL_URLS / CDLM_PANEL_TOKEN (see tests_discos.py)
     tabs/convert_workers.py  ThumbWorker / ConvertWorker / DownloadWorker (QThread, cancellable)

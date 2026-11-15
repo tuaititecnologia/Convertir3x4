@@ -178,7 +178,7 @@ def resumir(copia: dict | None, tarea: dict | None = None, disco: dict | None = 
     errores = int(copia.get("errores") or 0)
     if copia.get("corriendo"):
         if fase == "TERMINADO":   # modo auto: verifica y formatea dentro de la misma unidad
-            return Resumen("Verificando y formateando", "Copia completa. Dejando el disco vacío para la HyperDeck.", None, "activo")
+            return Resumen("Verificando y formateando", "Copia completa. Dejando el disco vacío para la grabadora.", None, "activo")
         hecho, falta = float(copia.get("copiado_gb") or 0), float(copia.get("falta_gb") or 0)
         total = hecho + falta
         pct = int(round(100 * hecho / total)) if total > 0 else 0
@@ -206,6 +206,48 @@ def resumir(copia: dict | None, tarea: dict | None = None, disco: dict | None = 
         return Resumen(titulo, "Tocá Copiar para seguir desde donde quedó.", None, "aviso")
     return Resumen(titulo, copia.get("error") or "", None, "error" if fase in
                    ("ERROR", "VERIFICACION_FALLIDA") else "neutro")
+
+
+# ------------------------------------------------------------------ ¿es de la grabadora?
+# El NAS (copiar-disco.py, modo automático) reconoce un disco de la grabadora
+# (HyperDeck) así: USB, exFAT y en la raíz SOLO archivos HyperDeck_NNNN (.mov,
+# .mp4 o .mcc). Cualquier otro disco lo deja quieto. La app no repite esa
+# revisión: la lee de la nota que deja el NAS y de sus registros de borrado.
+
+def tipo_disco(disco: dict | None) -> str | None:
+    """'grabadora', 'otro' o None si el NAS todavía no lo revisó (p. ej. con la
+    copia automática apagada)."""
+    if not disco:
+        return None
+    if disco.get("formateado"):
+        return "grabadora"       # el NAS ya lo dejó vacío para la grabadora
+    nota = (disco.get("nota_auto") or "").lower()
+    if "disco de hyperdeck," in nota or "vacio, listo para grabar" in nota:
+        return "grabadora"
+    if "no es un disco de hyperdeck" in nota or "no es de la hyperdeck" in nota:
+        return "otro"
+    return None
+
+
+def nota_operador(disco: dict | None) -> str:
+    """La nota del modo automático en palabras del operador ('' si no hace falta)."""
+    nota = ((disco or {}).get("nota_auto") or "").lower()
+    if not nota:
+        return ""
+    if "modo automatico esta apagado" in nota:
+        return ("La copia automática está apagada: si es de la grabadora, tocá Copiar.")
+    if "no es un disco de hyperdeck" in nota:
+        return ("No es un disco de la grabadora (tiene otros archivos), así que no se copia "
+                "solo. Si igual lo querés copiar, tocá Copiar.")
+    if "no es de la hyperdeck" in nota:
+        return "No es un disco de la grabadora, así que no se copia solo."
+    if "vacio, listo para grabar" in nota:
+        return "Está vacío, listo para la grabadora."
+    if "montado en otro lado" in nota:
+        return "El disco está abierto en otro lado del NAS, así que no se copió solo."
+    if "disco de hyperdeck," in nota or "ya hay una copia corriendo" in nota:
+        return ""                # el estado de la copia ya lo dice
+    return "El NAS no pudo revisar este disco solo. Si es de la grabadora, tocá Copiar."
 
 
 def acciones_para(disco: dict, copia: dict | None, tarea: dict | None) -> set[str]:

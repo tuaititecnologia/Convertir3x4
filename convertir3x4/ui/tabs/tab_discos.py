@@ -20,7 +20,7 @@ from PyQt6.QtWidgets import (
 )
 
 from ...nas.copias import (
-    URLS_POR_DEFECTO, PanelClient, acciones_para, fecha, resumir,
+    URLS_POR_DEFECTO, PanelClient, acciones_para, fecha, nota_operador, resumir, tipo_disco,
 )
 from ...workers import EngineWorker
 from .. import icons
@@ -74,11 +74,14 @@ class DiscosTab(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(10)
 
-        lay.addWidget(_title("Discos externos"))
+        # En Multimedia le dicen "la grabadora": este módulo es para sus discos, no
+        # para cualquier disco (decisión del 15/11/2026).
+        lay.addWidget(_title("Discos de la grabadora"))
         lay.addWidget(_text(
-            "Enchufá el disco al NAS y copialo a la carpeta que elijas. Acá ves cómo va "
-            "cada copia. Copiar nunca cambia nada del disco ni reemplaza archivos que ya "
-            "estén en el NAS."))
+            "Para guardar en el NAS lo que se grabó: enchufá el disco de la grabadora al "
+            "NAS. El NAS lo reconoce solo, porque tiene únicamente grabaciones de la "
+            "grabadora, y con la copia automática lo copia y lo deja vacío para volver a "
+            "grabar. Otros discos aparecen en la lista, pero no se tocan solos."))
 
         row = QHBoxLayout()
         self.lbl_conexion = QLabel("Conectando con el NAS…")
@@ -97,19 +100,19 @@ class DiscosTab(QWidget):
         row.addWidget(self.btn_config)
         lay.addLayout(row)
 
-        self.chk_auto = QCheckBox("Copia automática de los discos de la HyperDeck")
+        self.chk_auto = QCheckBox("Copia automática")
         self.chk_auto.setToolTip(
-            "Apenas se enchufa un disco de la HyperDeck, se copia, se revisa que la copia "
+            "Apenas se enchufa un disco de la grabadora, se copia, se revisa que la copia "
             "esté completa y se borra para volver a grabar. Si algo falla, no se borra.")
         self.chk_auto.setEnabled(False)
         self.chk_auto.clicked.connect(self._toggle_auto)
         lay.addWidget(self.chk_auto)
 
         lay.addSpacing(14)
-        lay.addWidget(_title("Enchufados al NAS"))
+        lay.addWidget(_title("Discos enchufados al NAS"))
         self.cards_box = QVBoxLayout()
         self.cards_box.setSpacing(8)
-        self.lbl_sin_discos = QLabel("No hay ningún disco enchufado al NAS.")
+        self.lbl_sin_discos = QLabel("No hay ningún disco enchufado al NAS. Enchufá el de la grabadora para copiarlo.")
         self.lbl_sin_discos.setObjectName("muted")
         self.cards_box.addWidget(self.lbl_sin_discos)
         lay.addLayout(self.cards_box)
@@ -280,7 +283,7 @@ class DiscosTab(QWidget):
         self._run(fn, ok)
 
     def _error_accion(self, msg):
-        QMessageBox.warning(self, "Discos", _amigable(msg))
+        QMessageBox.warning(self, "Grabadora", _amigable(msg))
         self.refresh()
 
     def copiar(self, disco: dict, reintentar=False):
@@ -337,9 +340,9 @@ class DiscosTab(QWidget):
         if not activo:
             r = QMessageBox.question(
                 self, "Copia automática",
-                "Sin la copia automática, cada disco de la HyperDeck hay que copiarlo y "
+                "Sin la copia automática, cada disco de la grabadora hay que copiarlo y "
                 "borrarlo desde acá.\n\n"
-                "Ojo: si un disco vuelve a la HyperDeck sin borrar, se llena y la grabación "
+                "Ojo: si un disco vuelve a la grabadora sin borrar, se llena y la grabación "
                 "se corta.\n\n¿Apagar la copia automática?")
             if r != QMessageBox.StandardButton.Yes:
                 self.chk_auto.setChecked(True)
@@ -370,11 +373,18 @@ class _DiscoCard(QFrame):
         lay.setContentsMargins(14, 12, 14, 12)
         lay.setSpacing(6)
 
+        head = QHBoxLayout()
+        head.setSpacing(8)
         self.lbl_nombre = QLabel()
         f = self.lbl_nombre.font()
         f.setBold(True)
         self.lbl_nombre.setFont(f)
-        lay.addWidget(self.lbl_nombre)
+        head.addWidget(self.lbl_nombre)
+        # De la grabadora u otro disco: lo decide el NAS (ver copias.tipo_disco)
+        self.lbl_tipo = QLabel()
+        head.addWidget(self.lbl_tipo)
+        head.addStretch()
+        lay.addLayout(head)
         self.lbl_estado = QLabel()
         self.lbl_estado.setWordWrap(True)
         lay.addWidget(self.lbl_estado)
@@ -406,6 +416,17 @@ class _DiscoCard(QFrame):
     def actualizar(self, disco, copia, tarea):
         self.disco, self.copia = disco, copia
         self.lbl_nombre.setText(_nombre(disco))
+        tipo = tipo_disco(disco)
+        self.lbl_tipo.setVisible(tipo is not None)
+        if tipo:
+            self.lbl_tipo.setText("Disco de la grabadora" if tipo == "grabadora" else "Otro disco")
+            self.lbl_tipo.setObjectName("pill_grabadora" if tipo == "grabadora" else "pill_otro")
+            self.lbl_tipo.setToolTip(
+                "El NAS lo reconoce porque solo tiene grabaciones de la grabadora."
+                if tipo == "grabadora" else
+                "Tiene otros archivos además de grabaciones, así que no se copia solo.")
+            self.lbl_tipo.style().unpolish(self.lbl_tipo)
+            self.lbl_tipo.style().polish(self.lbl_tipo)
         r = resumir(copia, tarea, disco)
         color = _tono(r.tono)
         self.lbl_estado.setText(f'<span style="color:{color}; font-weight:600">{r.titulo}</span>'
@@ -416,11 +437,19 @@ class _DiscoCard(QFrame):
         nota = ""
         if copia and copia.get("corriendo") and copia.get("actual"):
             nota = f"Copiando ahora: {copia['actual']}"
-        elif not copia and disco.get("nota_auto") and not disco.get("formateado"):
-            # Por qué el modo automático no lo tomó (otros archivos, vacío…).
-            nota = "Copia automática: " + disco["nota_auto"].split(": ", 1)[-1]
+        elif not copia and not disco.get("formateado"):
+            # Por qué la copia automática no lo tomó, en palabras del operador.
+            nota = nota_operador(disco)
         self.lbl_actual.setText(nota)
+        self.lbl_actual.setWordWrap(True)
         self.lbl_actual.setVisible(bool(nota))
+        # Copiar es la acción principal solo en los discos de la grabadora; en
+        # otro disco se puede, pero no se la invita.
+        principal = "btn_primary" if tipo != "otro" else ""
+        if self.botones["copiar"].objectName() != principal:
+            self.botones["copiar"].setObjectName(principal)
+            self.botones["copiar"].style().unpolish(self.botones["copiar"])
+            self.botones["copiar"].style().polish(self.botones["copiar"])
         acciones = acciones_para(disco, copia, tarea)
         for clave, b in self.botones.items():
             b.setVisible(clave in acciones)
