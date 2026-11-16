@@ -5,8 +5,13 @@ yt-dlp y deno NO vienen dentro de la app: se bajan la primera vez que se usan a
 YouTube rompe yt-dlp seguido; si viniera en el .exe, cada arreglo obligaría a
 sacar una versión nueva. Así se actualiza solo (`yt-dlp -U`, una vez por día).
 
-- yt-dlp: ejecutable oficial de GitHub, verificado contra el SHA2-256SUMS de la
-  misma versión. Trae yt-dlp-ejs adentro.
+- yt-dlp: la versión oficial "ya descomprimida" de GitHub (yt-dlp_macos.zip,
+  yt-dlp_win.zip, yt-dlp_linux.zip), verificada contra el SHA2-256SUMS de la
+  misma versión. Trae yt-dlp-ejs adentro. NO la de un solo archivo: esa se
+  descomprime en cada uso y en la Mac tardaba ~16 s en arrancar cada vez (el
+  sistema revisa lo descomprimido); la descomprimida arranca en ~0,2 s (15/11/2026).
+  Como esa versión no se actualiza sola (-U), la app compara una vez por día el
+  SHA2-256SUMS de la última versión y la reemplaza si cambió.
 - deno: versión fija y sha256 fijo por plataforma. Solo YouTube lo necesita.
 - ffmpeg: el de la app (imageio-ffmpeg), para unir video y audio.
 """
@@ -20,6 +25,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.request
 import uuid
@@ -45,7 +51,15 @@ _PERCENT = re.compile(r"(\d+(?:\.\d+)?)%")
 
 
 class DownloadError(RuntimeError):
-    """No se pudo bajar el video o las herramientas. El mensaje es para el operador."""
+    """No se pudo bajar el video o las herramientas. El mensaje es para el operador.
+
+    `por_el_programa`: el error no es del video (privado, sitio no soportado) ni
+    de la conexión, así que puede arreglarse con una versión nueva de yt-dlp
+    (YouTube cambia seguido y rompe las versiones viejas)."""
+
+    def __init__(self, msg: str, por_el_programa: bool = False):
+        super().__init__(msg)
+        self.por_el_programa = por_el_programa
 
 
 def is_link(text: str) -> bool:
@@ -56,10 +70,10 @@ def is_link(text: str) -> bool:
 
 def _ytdlp_asset() -> str:
     if sys.platform == "win32":
-        return "yt-dlp.exe"
+        return "yt-dlp_win.zip"
     if sys.platform == "darwin":
-        return "yt-dlp_macos"
-    return "yt-dlp_linux"
+        return "yt-dlp_macos.zip"
+    return "yt-dlp_linux.zip"
 
 
 def _deno_target() -> str:
@@ -71,8 +85,21 @@ def _deno_target() -> str:
     return "x86_64-unknown-linux-gnu"
 
 
-def ytdlp_path(tools_dir: str) -> str:
-    return os.path.join(tools_dir, "yt-dlp.exe" if sys.platform == "win32" else "yt-dlp")
+def _ytdlp_dir(tools_dir: str) -> str:
+    return os.path.join(tools_dir, "yt-dlp-app")
+
+
+def ytdlp_path(tools_dir: str) -> str | None:
+    """El ejecutable dentro de la carpeta descomprimida (None si no está)."""
+    d = _ytdlp_dir(tools_dir)
+    try:
+        nombres = sorted(os.listdir(d))
+    except OSError:
+        return None
+    for n in nombres:
+        if n.startswith("yt-dlp") and os.path.isfile(os.path.join(d, n)):
+            return os.path.join(d, n)
+    return None
 
 
 def deno_path(tools_dir: str) -> str:
@@ -102,7 +129,7 @@ def _fetch(url: str, dest: str, progress_cb=None, cancel=None) -> None:
                 if progress_cb and total:
                     progress_cb(done / total)
     except OSError as e:
-        raise DownloadError("No se pudo conectar a internet. Revisá la conexión.") from e
+        raise DownloadError("No se pudo conectar a internet. Verifique la conexión.") from e
 
 
 def _sha256(path: str) -> str:
@@ -118,33 +145,92 @@ def _make_executable(path: str) -> None:
         os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
-def ensure_ytdlp(tools_dir: str, progress_cb=None, cancel=None) -> str:
-    """Baja yt-dlp si falta; si ya está, lo actualiza como mucho una vez por día."""
-    os.makedirs(tools_dir, exist_ok=True)
-    exe = ytdlp_path(tools_dir)
-    if os.path.exists(exe):
-        _maybe_update(exe, tools_dir)
-        return exe
-    asset = _ytdlp_asset()
+def _hash_instalado(tools_dir: str) -> str:
+    try:
+        with open(os.path.join(tools_dir, "yt-dlp-app.sha256"), encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def _hash_publicado(tools_dir: str, cancel=None) -> str:
+    """sha256 del zip de la última versión, según su SHA2-256SUMS."""
     sums_path = os.path.join(tools_dir, "SHA2-256SUMS")
     _fetch(f"{YTDLP_BASE}/SHA2-256SUMS", sums_path, cancel=cancel)
-    expected = None
-    with open(sums_path, encoding="utf-8") as f:
-        for line in f:
-            parts = line.split()
-            if len(parts) == 2 and parts[1] == asset:
-                expected = parts[0].lower()
-    os.remove(sums_path)
+    asset, expected = _ytdlp_asset(), ""
+    try:
+        with open(sums_path, encoding="utf-8") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) == 2 and parts[1] == asset:
+                    expected = parts[0].lower()
+    finally:
+        os.remove(sums_path)
     if not expected:
-        raise DownloadError("No se pudo preparar la descarga. Probá de nuevo más tarde.")
-    tmp = exe + ".bajando"
-    _fetch(f"{YTDLP_BASE}/{asset}", tmp, progress_cb, cancel)
-    if _sha256(tmp) != expected:
-        os.remove(tmp)
-        raise DownloadError("No se pudo preparar la descarga. Probá de nuevo más tarde.")
-    os.replace(tmp, exe)
-    _make_executable(exe)
+        raise DownloadError("No se pudo instalar el componente de descarga. Intente nuevamente más tarde.")
+    return expected
+
+
+def _instalar_ytdlp(tools_dir: str, expected: str, progress_cb=None, cancel=None) -> None:
+    """Baja el zip, lo verifica, lo descomprime aparte y recién ahí reemplaza."""
+    zpath = os.path.join(tools_dir, "yt-dlp-app.zip.parcial")
+    nuevo = _ytdlp_dir(tools_dir) + ".nuevo"
+    try:
+        _fetch(f"{YTDLP_BASE}/{_ytdlp_asset()}", zpath, progress_cb, cancel)
+        if _sha256(zpath) != expected:
+            raise DownloadError("No se pudo instalar el componente de descarga. Intente nuevamente más tarde.")
+        shutil.rmtree(nuevo, ignore_errors=True)
+        with zipfile.ZipFile(zpath) as z:
+            z.extractall(nuevo)
+    finally:
+        if os.path.exists(zpath):
+            os.remove(zpath)
+    for n in os.listdir(nuevo):
+        if n.startswith("yt-dlp") and os.path.isfile(os.path.join(nuevo, n)):
+            _make_executable(os.path.join(nuevo, n))
+    actual = _ytdlp_dir(tools_dir)
+    shutil.rmtree(actual, ignore_errors=True)
+    os.replace(nuevo, actual)
+    with open(os.path.join(tools_dir, "yt-dlp-app.sha256"), "w", encoding="utf-8") as f:
+        f.write(expected)
+    # La versión vieja, de un solo archivo (hasta el 15/11/2026)
+    for viejo in ("yt-dlp", "yt-dlp.exe"):
+        if os.path.isfile(os.path.join(tools_dir, viejo)):
+            os.remove(os.path.join(tools_dir, viejo))
+    _calentar(ytdlp_path(tools_dir), cancel)
+
+
+def _calentar(exe: str | None, cancel=None) -> None:
+    """Arranca el programa recién instalado una vez. La primera vez el sistema lo
+    revisa (en la Mac ~15 s; en Windows, el antivirus): mejor que pase ahora y no
+    en medio de la primera descarga."""
+    if not exe:
+        return
+    try:
+        proc = subprocess.Popen([exe, "--version"], stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, **_popen_kwargs())
+    except OSError:
+        return
+    _cortar_si_cancelan(proc, cancel or (lambda: False), limite=120)
+    proc.wait()
+    if cancel and cancel():
+        raise clips.Cancelled()
+
+
+def ensure_ytdlp(tools_dir: str, progress_cb=None, cancel=None, actualizar: bool = True) -> str:
+    """Baja yt-dlp si falta; si ya está y `actualizar`, lo actualiza como mucho
+    una vez por día (la app lo hace al abrirse, no en medio de una descarga)."""
+    os.makedirs(tools_dir, exist_ok=True)
+    exe = ytdlp_path(tools_dir)
+    if exe:
+        if actualizar:
+            _maybe_update(tools_dir, cancel)
+        return ytdlp_path(tools_dir) or exe
+    _instalar_ytdlp(tools_dir, _hash_publicado(tools_dir, cancel), progress_cb, cancel)
     _touch_update_stamp(tools_dir)
+    exe = ytdlp_path(tools_dir)
+    if not exe:
+        raise DownloadError("No se pudo instalar el componente de descarga. Intente nuevamente más tarde.")
     return exe
 
 
@@ -157,16 +243,21 @@ def _touch_update_stamp(tools_dir: str) -> None:
         f.write(str(time.time()))
 
 
-def _maybe_update(exe: str, tools_dir: str) -> None:
+def _maybe_update(tools_dir: str, cancel=None) -> None:
+    """Una vez por día: si hay una versión nueva, la instala. Sin internet, sigue
+    con la que hay."""
     try:
         if time.time() - os.path.getmtime(_stamp(tools_dir)) < UPDATE_EVERY:
             return
     except OSError:
         pass
-    # Si falla (sin internet), se sigue con la versión que hay.
     try:
-        subprocess.run([exe, "-U"], capture_output=True, timeout=120, **_popen_kwargs())
-    except (OSError, subprocess.SubprocessError):
+        expected = _hash_publicado(tools_dir, cancel)
+        if expected != _hash_instalado(tools_dir):
+            _instalar_ytdlp(tools_dir, expected, cancel=cancel)
+    except clips.Cancelled:
+        raise
+    except (DownloadError, OSError, zipfile.BadZipFile):
         return
     _touch_update_stamp(tools_dir)
 
@@ -182,16 +273,41 @@ def ensure_deno(tools_dir: str, progress_cb=None, cancel=None) -> str:
            zpath, progress_cb, cancel)
     if _sha256(zpath) != DENO_ZIPS[target]:
         os.remove(zpath)
-        raise DownloadError("No se pudo preparar la descarga. Probá de nuevo más tarde.")
+        raise DownloadError("No se pudo instalar el componente de descarga. Intente nuevamente más tarde.")
     with zipfile.ZipFile(zpath) as z:
         z.extract(os.path.basename(exe), tools_dir)
     os.remove(zpath)
     _make_executable(exe)
+    _calentar(exe, cancel)
     return exe
 
 
+def hay_version_nueva(tools_dir: str, cancel=None) -> bool:
+    """¿La última versión publicada de yt-dlp es distinta de la instalada?
+    Sin internet, responde que no."""
+    try:
+        return _hash_publicado(tools_dir, cancel) != _hash_instalado(tools_dir)
+    except (DownloadError, OSError):
+        return False
+
+
+def actualizar(tools_dir: str, progress_cb=None, cancel=None) -> None:
+    """Instala ya la última versión de yt-dlp (sin esperar al chequeo diario)."""
+    _instalar_ytdlp(tools_dir, _hash_publicado(tools_dir, cancel), progress_cb, cancel)
+    _touch_update_stamp(tools_dir)
+
+
+def preparar(tools_dir: str, progress_cb=None, cancel=None) -> None:
+    """Lo que hace la app al abrirse: instala lo que falte (solo si se lo pidieron)
+    o actualiza yt-dlp una vez por día, en segundo plano."""
+    cb = progress_cb or (lambda f: None)
+    ensure_ytdlp(tools_dir, lambda f: cb(0.4 * f), cancel)
+    ensure_deno(tools_dir, lambda f: cb(0.4 + 0.6 * f), cancel)
+    cb(1.0)
+
+
 def tools_ready(tools_dir: str) -> bool:
-    return os.path.exists(ytdlp_path(tools_dir)) and os.path.exists(deno_path(tools_dir))
+    return bool(ytdlp_path(tools_dir)) and os.path.exists(deno_path(tools_dir))
 
 
 # ---------------------------------------------------------------- descarga
@@ -211,11 +327,14 @@ def download(url: str, out_dir: str, tools_dir: str,
     """
     cb = progress_cb or (lambda f, m: None)
     if not tools_ready(tools_dir):
-        cb(0.0, "Preparando la descarga (solo la primera vez)…")
-    prep = "Preparando la descarga (solo la primera vez)…"
-    ytdlp = ensure_ytdlp(tools_dir, lambda f: cb(0.05 * f, prep), cancel)
+        cb(0.0, "Instalando el componente de descarga (solo la primera vez)…")
+    prep = "Instalando el componente de descarga (solo la primera vez)…"
+    ytdlp = ensure_ytdlp(tools_dir, lambda f: cb(0.05 * f, prep), cancel, actualizar=False)
     deno = ensure_deno(tools_dir, lambda f: cb(0.05 + 0.05 * f, prep), cancel)
 
+    if cancel and cancel():
+        raise clips.Cancelled()
+    cb(0.1, "Buscando el video…")
     os.makedirs(out_dir, exist_ok=True)
     work = os.path.join(out_dir, f".descargando-{uuid.uuid4().hex[:8]}")
     os.makedirs(work)
@@ -229,12 +348,13 @@ def download(url: str, out_dir: str, tools_dir: str,
     try:
         with tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as err:
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=err, **_popen_kwargs())
+            # Cancelar corta al instante, aunque yt-dlp no esté escribiendo nada
+            # (antes se revisaba solo al llegar una línea: al cerrar la app con
+            # una descarga arrancando, la app se cerraba con error).
+            vigia = threading.Thread(target=_cortar_si_cancelan, args=(proc, cancel), daemon=True)
+            vigia.start()
             phase, last, final = 0, 0.0, None
             for line in proc.stdout:
-                if cancel and cancel():
-                    proc.kill()
-                    proc.wait()
-                    raise clips.Cancelled()
                 line = line.strip()
                 m = _PERCENT.fullmatch(line) or (_PERCENT.search(line) if line.endswith("%") else None)
                 if m:
@@ -242,14 +362,17 @@ def download(url: str, out_dir: str, tools_dir: str,
                     if pct + 0.2 < last:      # video y audio se bajan por separado
                         phase = min(phase + 1, 1)
                     last = pct
-                    cb(0.1 + 0.9 * min(1.0, (phase + pct) / 2), "Bajando el video…")
+                    cb(0.1 + 0.9 * min(1.0, (phase + pct) / 2), "Descargando el video…")
                 elif line and os.path.isabs(line):
                     final = line
             proc.wait()
+            if cancel and cancel():
+                raise clips.Cancelled()
             err.seek(0)
             stderr = err.read()
         if proc.returncode != 0 or not final or not os.path.exists(final):
-            raise DownloadError(_explain(stderr))
+            msg = _explain(stderr)
+            raise DownloadError(msg, por_el_programa=msg == _GENERICO)
         dest = os.path.join(out_dir, clean_name(os.path.basename(final)))
         base, ext = os.path.splitext(dest)
         n = 2
@@ -263,13 +386,28 @@ def download(url: str, out_dir: str, tools_dir: str,
         shutil.rmtree(work, ignore_errors=True)
 
 
+def _cortar_si_cancelan(proc: subprocess.Popen, cancel, limite: float | None = None) -> None:
+    """Espera a que termine `proc`; lo corta si cancelan o si pasa `limite` segundos."""
+    if not cancel:
+        return
+    inicio = time.time()
+    while proc.poll() is None:
+        if cancel() or (limite and time.time() - inicio > limite):
+            proc.kill()
+            return
+        time.sleep(0.15)
+
+
 def _explain(stderr: str) -> str:
     """Error de yt-dlp en palabras del operador."""
     low = stderr.lower()
     if "private" in low or "login" in low or "sign in" in low:
-        return "El video es privado o pide iniciar sesión: no se puede bajar."
+        return "El video es privado o requiere iniciar sesión: no se puede descargar."
     if "unsupported url" in low:
-        return "No se pueden bajar videos de ese sitio."
+        return "No se pueden descargar videos de ese sitio."
     if "unable to download" in low or "network" in low or "timed out" in low:
-        return "No se pudo conectar. Revisá la conexión a internet."
-    return "No se pudo bajar el video. Probá abrir el link en el navegador para ver si anda."
+        return "No se pudo conectar. Verifique la conexión a internet."
+    return _GENERICO
+
+
+_GENERICO = "No se pudo descargar el video. Verifique que el enlace se abra en el navegador."

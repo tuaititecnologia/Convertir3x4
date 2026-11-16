@@ -253,3 +253,23 @@ class TestStoryboard:
             assert im.width == clips.STORYBOARD_WIDTH * clips.STORYBOARD_COLS
             rows = clips.STORYBOARD_FRAMES // clips.STORYBOARD_COLS
             assert im.height == 136 * rows   # 640x360 -> 240x135, redondeado a par
+
+
+class TestAvisosDeAudio:
+    """Qué le dice la grilla al operador cuando el volumen no quedó en el objetivo."""
+
+    def _revisar(self, monkeypatch, despues, pico=-3.0):
+        monkeypatch.setattr(clips, "measure_final", lambda p: (despues, pico))
+        return clips._check_audio("x.mp4", AudioReport(before=-28.8), "src.mp4", 0)
+
+    def test_bajo_dice_que_quedo_bajo_y_que_hacer(self, monkeypatch):
+        r = self._revisar(monkeypatch, -20.9)
+        assert len(r.warnings) == 1
+        assert "más bajo" in r.warnings[0] and "consola" in r.warnings[0]
+
+    def test_alto_dice_que_quedo_alto(self, monkeypatch):
+        r = self._revisar(monkeypatch, -13.5)
+        assert len(r.warnings) == 1 and "más alto" in r.warnings[0]
+
+    def test_dentro_del_margen_no_avisa(self, monkeypatch):
+        assert self._revisar(monkeypatch, -16.4).warnings == []

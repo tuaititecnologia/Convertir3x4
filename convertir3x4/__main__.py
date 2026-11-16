@@ -19,6 +19,8 @@ def main():
     window.show()
     # Avisar en la barra lateral cuando se enchufa un disco de la grabadora
     window.discos_tab.start_background()
+    # Revisar (y si hace falta ofrecer preparar) el programa para bajar videos
+    window.convert_tab.revisar_herramientas()
     sys.exit(app.exec())
 
 

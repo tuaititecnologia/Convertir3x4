@@ -117,14 +117,41 @@ def convert_centered(src_path: str, out_path: str, aspect: tuple[int, int] = Non
     bg.save(out_path, "JPEG", quality=JPEG_QUALITY)
 
 
-def convert_double(paths: list[str], out_path: str, aspect: tuple[int, int] = None):
-    """2 fotos en la misma pantalla (o 1 sola) sobre un fondo de sus colores."""
+def cubrir(img: Image.Image, w: int, h: int) -> Image.Image:
+    """`img` agrandada para cubrir w x h sin deformar, recortada al centro."""
+    s = max(w / img.width, h / img.height)
+    r = img.resize((max(w, round(img.width * s)), max(h, round(img.height * s))), Image.LANCZOS)
+    x, y = (r.width - w) // 2, (r.height - h) // 2
+    return r.crop((x, y, x + w, y + h))
+
+
+def convert_centered_on(src_path: str, bg_path: str, out_path: str,
+                        aspect: tuple[int, int] = None):
+    """Foto entera y centrada sobre un fondo elegido (la que queda sola en
+    "2 por pantalla" con fondo elegido)."""
+    aw, ah = aspect or (DEFAULT_ASPECT_W, DEFAULT_ASPECT_H)
+    img = Image.open(src_path).convert("RGB")
+    canvas_w, canvas_h = lienzo_para([img.size], (aw, ah))
+    s = min(canvas_w / img.width, canvas_h / img.height)
+    fw, fh = round(img.width * s), round(img.height * s)
+    bg = cubrir(Image.open(bg_path).convert("RGB"), canvas_w, canvas_h)
+    bg.paste(img.resize((fw, fh), Image.LANCZOS), ((canvas_w - fw) // 2, (canvas_h - fh) // 2))
+    bg.save(out_path, "JPEG", quality=JPEG_QUALITY)
+
+
+def convert_double(paths: list[str], out_path: str, aspect: tuple[int, int] = None,
+                   bg_path: str | None = None):
+    """2 fotos en la misma pantalla (o 1 sola), sobre un fondo de sus colores o,
+    si se pasa `bg_path`, sobre ese fondo."""
     aw, ah = aspect or (DEFAULT_ASPECT_W, DEFAULT_ASPECT_H)
     images = [Image.open(p).convert("RGB") for p in paths]
 
     if len(images) == 1:
         # La que queda sola (cantidad impar) sale centrada, como en la vista previa
-        convert_centered(paths[0], out_path, aspect=(aw, ah))
+        if bg_path:
+            convert_centered_on(paths[0], bg_path, out_path, aspect=(aw, ah))
+        else:
+            convert_centered(paths[0], out_path, aspect=(aw, ah))
         return
 
     # 2 fotos: dónde va cada una lo decide convert/layout.py (igual que en la
@@ -133,7 +160,8 @@ def convert_double(paths: list[str], out_path: str, aspect: tuple[int, int] = No
     canvas_w, canvas_h = lienzo_para([img_a.size, img_b.size], (aw, ah))
     (x1, y1, w1, h1), (x2, y2, w2, h2) = dos_por_pantalla(img_a.size, img_b.size,
                                                           canvas_w, canvas_h)
-    bg = fondo_dos_zonas(canvas_w, canvas_h, _dominant_colors(img_a), _dominant_colors(img_b))
+    bg = (cubrir(Image.open(bg_path).convert("RGB"), canvas_w, canvas_h) if bg_path else
+          fondo_dos_zonas(canvas_w, canvas_h, _dominant_colors(img_a), _dominant_colors(img_b)))
     bg.paste(img_a.resize((w1, h1), Image.LANCZOS), (x1, y1))
     bg.paste(img_b.resize((w2, h2), Image.LANCZOS), (x2, y2))
     bg.save(out_path, "JPEG", quality=JPEG_QUALITY)

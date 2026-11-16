@@ -10,7 +10,7 @@
 import os
 
 from PyQt6.QtCore import Qt, QPoint, QRect, QRectF, QSize, QTimer, QUrl, QMimeData, pyqtSignal
-from PyQt6.QtGui import QPainter, QPainterPath, QPen, QColor, QDrag, QFontMetrics, QIcon, QPixmap
+from PyQt6.QtGui import QPainter, QPainterPath, QPen, QColor, QDrag, QFont, QFontMetrics, QIcon, QPixmap
 from PyQt6.QtWidgets import (
     QApplication, QListWidget, QListWidgetItem, QAbstractItemView,
     QStyledItemDelegate, QStyle,
@@ -30,6 +30,7 @@ PROGRESS_ROLE = Qt.ItemDataRole.UserRole + 7    # 0..1 mientras STATE_ROLE == "w
 STORYBOARD_ROLE = Qt.ItemDataRole.UserRole + 8  # ruta de la tira de cuadros (vista previa)
 PREVIEW_ROLE = Qt.ItemDataRole.UserRole + 9     # QPixmap del cuadro de vista previa actual
 SIZE_ROLE = Qt.ItemDataRole.UserRole + 10       # (ancho, alto) del original (vista previa de Convertir)
+ACTION_ROLE = Qt.ItemDataRole.UserRole + 11     # texto de un botón sobre la miniatura ("Cancelar", "Reintentar")
 
 # Estados que se dibujan sobre la miniatura. Sin estado: normal.
 #   loading  todavía no hay miniatura      working  convirtiendo/bajando (con %)
@@ -135,6 +136,9 @@ class ThumbDelegate(QStyledItemDelegate):
             img_rect = QRectF(box)
 
         self._paint_state(painter, state, index, img_rect)
+        accion = index.data(ACTION_ROLE)
+        if accion:
+            self._paint_action(painter, accion, option.rect)
 
         # Insignia de duración (videos)
         if index.data(KIND_ROLE) == "video" and state != "working":
@@ -206,6 +210,34 @@ class ThumbDelegate(QStyledItemDelegate):
             self._pill(painter, "! Revisar", img_rect, bottom_right=False, color=DARK["warn"])
         elif state == "error":
             self._pill(painter, "✕ Error", img_rect, bottom_right=False, color=DARK["danger"])
+
+    def action_rect(self, cell: QRect, text: str) -> QRectF:
+        """Dónde va el botón de la celda: abajo y centrado en la miniatura. Solo
+        depende de la celda, así el clic se ubica igual que el dibujo."""
+        r = QRectF(cell).adjusted(2, 2, -2, -2)
+        top = r.top() + self.PAD - 2
+        font = QFont(self.parent().font() if self.parent() else QFont())
+        font.setPixelSize(12)
+        font.setWeight(600)
+        w = QFontMetrics(font).horizontalAdvance(text) + 24
+        h = 26
+        return QRectF(r.center().x() - w / 2, top + self.thumb - h - 22, w, h)
+
+    def _paint_action(self, painter, text: str, cell: QRect):
+        rect = self.action_rect(cell, text)
+        painter.save()
+        font = painter.font()
+        font.setPixelSize(12)
+        font.setWeight(600)
+        painter.setFont(font)
+        boton = QPainterPath()
+        boton.addRoundedRect(rect, 6, 6)
+        painter.fillPath(boton, QColor(T.accent) if text != "Cancelar" else QColor(0, 0, 0, 190))
+        painter.setPen(QPen(QColor(255, 255, 255, 90), 1))
+        painter.drawPath(boton)
+        painter.setPen(QColor(T.on_image))
+        painter.drawText(rect, int(Qt.AlignmentFlag.AlignCenter), text)
+        painter.restore()
 
     def _pill(self, painter, text, img_rect: QRectF, bottom_right: bool, color: str | None = None,
               fill: QColor | None = None):
@@ -393,6 +425,7 @@ class DragOutListWidget(_HoverPreview, QListWidget):
 class ReorderListWidget(_HoverPreview, QListWidget):
     """QListWidget con drag & drop manual para reordenar."""
     orderChanged = pyqtSignal()
+    actionClicked = pyqtSignal(object)      # el item cuyo botón ("Reintentar"…) se tocó
 
     def __init__(self, parent=None, thumb: int = 130):
         super().__init__(parent)
@@ -435,6 +468,13 @@ class ReorderListWidget(_HoverPreview, QListWidget):
         return row
 
     def mousePressEvent(self, event):
+        item = self.itemAt(event.pos())
+        accion = item.data(ACTION_ROLE) if item is not None else None
+        if (accion and event.button() == Qt.MouseButton.LeftButton
+                and self._delegate.action_rect(self.visualItemRect(item), accion)
+                .contains(event.position())):
+            self.actionClicked.emit(item)      # el botón no selecciona ni arrastra
+            return
         super().mousePressEvent(event)
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_start_pos = event.pos()

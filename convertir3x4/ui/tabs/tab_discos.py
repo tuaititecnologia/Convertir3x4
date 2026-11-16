@@ -88,10 +88,10 @@ class DiscosTab(QWidget):
         # para cualquier disco (decisión del 15/11/2026).
         lay.addWidget(_title("Discos de la grabadora"))
         lay.addWidget(_text(
-            "Para guardar en el NAS lo que se grabó: enchufá el disco de la grabadora al "
-            "NAS. El NAS lo reconoce solo, porque tiene únicamente grabaciones de la "
-            "grabadora, y con la copia automática lo copia y lo deja vacío para volver a "
-            "grabar. Otros discos aparecen en la lista, pero no se tocan solos."))
+            "Para guardar en el NAS lo grabado, conecte el disco de la grabadora al NAS. "
+            "El NAS lo reconoce porque contiene únicamente grabaciones; con la copia "
+            "automática activada, lo copia y lo deja vacío para volver a grabar. Los demás "
+            "discos aparecen en la lista, pero no se copian automáticamente."))
 
         row = QHBoxLayout()
         # Estado de la conexión, bien visible mientras se conecta o si falla
@@ -113,7 +113,7 @@ class DiscosTab(QWidget):
         self.btn_config.setObjectName("btn_icon")
         icons.set_icon(self.btn_config, "settings", 16, "text_2")
         self.btn_config.setFixedSize(30, 30)
-        self.btn_config.setToolTip("Conexión con el NAS (la configura quien administra el NAS)")
+        self.btn_config.setToolTip("Conexión con el NAS (la configura el administrador del NAS)")
         self.btn_config.setAccessibleName("Conexión con el NAS")
         self.btn_config.clicked.connect(self._configurar)
         row.addWidget(self.btn_config)
@@ -128,17 +128,17 @@ class DiscosTab(QWidget):
 
         self.chk_auto = QCheckBox("Copia automática")
         self.chk_auto.setToolTip(
-            "Apenas se enchufa un disco de la grabadora, se copia, se revisa que la copia "
-            "esté completa y se borra para volver a grabar. Si algo falla, no se borra.")
+            "Cuando se conecta un disco de la grabadora, se copia, se verifica que la copia "
+            "esté completa y se borra para volver a grabar. Si ocurre un error, no se borra.")
         self.chk_auto.setEnabled(False)
         self.chk_auto.clicked.connect(self._toggle_auto)
         blay.addWidget(self.chk_auto)
 
         blay.addSpacing(14)
-        blay.addWidget(_title("Discos enchufados al NAS"))
+        blay.addWidget(_title("Discos conectados al NAS"))
         self.cards_box = QVBoxLayout()
         self.cards_box.setSpacing(8)
-        self.lbl_sin_discos = QLabel("No hay ningún disco enchufado al NAS. Enchufá el de la grabadora para copiarlo.")
+        self.lbl_sin_discos = QLabel("No hay discos conectados al NAS. Conecte el disco de la grabadora para copiarlo.")
         self.lbl_sin_discos.setObjectName("muted")
         self.cards_box.addWidget(self.lbl_sin_discos)
         blay.addLayout(self.cards_box)
@@ -160,12 +160,12 @@ class DiscosTab(QWidget):
         self.btn_log = QPushButton("Ver el detalle técnico")
         self.btn_log.setObjectName("btn_link")
         self.btn_log.setCheckable(True)
-        self.btn_log.setToolTip("El registro de la copia, para quien administra el NAS")
+        self.btn_log.setToolTip("Registro de la copia, para el administrador del NAS")
         self.btn_log.toggled.connect(self._toggle_log)
         blay.addWidget(self.btn_log, 0, Qt.AlignmentFlag.AlignLeft)
         self.txt_log = QPlainTextEdit()
         self.txt_log.setReadOnly(True)
-        self.txt_log.setPlaceholderText("Elegí una copia de la lista para ver el detalle.")
+        self.txt_log.setPlaceholderText("Seleccione una copia de la lista para ver el detalle.")
         self.txt_log.setAccessibleName("Detalle técnico de la copia")
         self.txt_log.setVisible(False)
         # Monoespaciada del sistema: existe en cualquier plataforma (es un registro)
@@ -426,8 +426,8 @@ class DiscosTab(QWidget):
         if reintentar:
             if not confirmar(
                     self, "Volver a intentar", "¿Intentar copiar de nuevo lo que falló?",
-                    "El disco tiene partes dañadas y cada intento puede empeorarlo. Lo más "
-                    "seguro es pedirle a quien administra el NAS que rescate esos archivos.",
+                    "El disco tiene partes dañadas y cada intento puede empeorarlo. Se "
+                    "recomienda solicitar al administrador del NAS que recupere esos archivos.",
                     "Intentar de nuevo", peligro=True):
                 return
         # El operador ve y escribe la carpeta dentro de Multimedia
@@ -437,13 +437,13 @@ class DiscosTab(QWidget):
             self._estado.get("destino_auto", raiz)
         rel, ok = QInputDialog.getText(
             self, "Copiar disco",
-            f"¿En qué carpeta de Multimedia copio {_nombre(disco)}?\n"
+            f"¿En qué carpeta de Multimedia desea copiar {_nombre(disco)}?\n"
             "Si no existe, se crea.", QLineEdit.EchoMode.Normal, self._carpeta(previo))
         rel = rel.strip().strip("/").replace("\\", "/")
         if not ok or not rel:
             return
         if ".." in rel.split("/"):
-            QMessageBox.warning(self, "Copiar disco", "Elegí una carpeta dentro de Multimedia.")
+            QMessageBox.warning(self, "Copiar disco", "Elija una carpeta dentro de Multimedia.")
             return
         destino = raiz.rstrip("/") + "/" + rel
         self.settings.setValue("nas/ultimo_destino", destino)
@@ -471,9 +471,9 @@ class DiscosTab(QWidget):
         if not activo:
             if not confirmar(
                     self, "Copia automática", "¿Apagar la copia automática?",
-                    "Sin ella, cada disco de la grabadora hay que copiarlo y formatearlo desde "
-                    "acá. Si un disco vuelve a la grabadora sin formatear, se llena y la "
-                    "grabación se corta.",
+                    "Sin ella, cada disco de la grabadora deberá copiarse y formatearse "
+                    "manualmente desde aquí. Si un disco vuelve a la grabadora sin formatear, "
+                    "se llena y la grabación se interrumpe.",
                     "Apagar", cancelar="Dejarla encendida", peligro=True):
                 self.chk_auto.setChecked(True)
                 return
@@ -579,7 +579,7 @@ class _DiscoCard(QFrame):
             self.lbl_tipo.setToolTip(
                 "El NAS lo reconoce porque solo tiene grabaciones de la grabadora."
                 if tipo == "grabadora" else
-                "Tiene otros archivos además de grabaciones, así que no se copia solo.")
+                "Contiene otros archivos además de grabaciones, por eso no se copia automáticamente.")
             self.lbl_tipo.style().unpolish(self.lbl_tipo)
             self.lbl_tipo.style().polish(self.lbl_tipo)
         r = resumir(copia, tarea, disco)
@@ -661,7 +661,7 @@ class _FormatearDialog(QDialog):
             "disco tiene algo grabado después de la copia, no lo borra.<br><br>"
             "<b>Se va a borrar todo lo que tiene el disco. No se puede deshacer.</b>"))
         self.txt = QLineEdit()
-        self.txt.setPlaceholderText("Escribí FORMATEAR para confirmar")
+        self.txt.setPlaceholderText("Escriba FORMATEAR para confirmar")
         self.txt.setAccessibleName("Confirmación")
         lay.addWidget(self.txt)
         self.botones = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok |
@@ -683,8 +683,8 @@ class _ConexionDialog(QDialog):
         self.setWindowTitle("Conexión con el NAS")
         lay = QVBoxLayout(self)
         lay.addWidget(_text(
-            "Esto lo configura quien administra el NAS. Si hay más de una dirección, "
-            "separalas con coma: se prueban en orden."))
+            "Esta configuración corresponde al administrador del NAS. Si hay más de una "
+            "dirección, sepárelas con comas: se prueban en orden."))
         form = QFormLayout()
         self.txt_urls = QLineEdit(settings.value("nas/panel_urls", "") or ",".join(URLS_POR_DEFECTO))
         form.addRow("Dirección del NAS:", self.txt_urls)
@@ -711,7 +711,7 @@ def _amigable(msg: str) -> str:
     (un error interno de Python) se reemplaza por una frase entendible."""
     if msg.startswith(("PanelError", "PanelSinConexion")):
         return msg.split(": ", 1)[1]
-    return "Algo falló al comunicarse con el NAS. Probá de nuevo en un rato."
+    return "Error de comunicación con el NAS. Intente nuevamente en unos minutos."
 
 def _nombre(disco: dict) -> str:
     modelo = disco.get("modelo") or "Disco"

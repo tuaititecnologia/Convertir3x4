@@ -91,17 +91,20 @@ Es la misma que usa el agente, que ya probaste en siete videos (ver su registro)
 | Herramienta | Windows (`.exe`) | Mac (desarrollo) | Cómo llega |
 |---|---|---|---|
 | ffmpeg | Incluido | Incluido | `imageio-ffmpeg`, ya empaquetado en el `.spec` |
-| yt-dlp | Se baja la primera vez | Se baja la primera vez | Ejecutable oficial de GitHub (`yt-dlp.exe` / `yt-dlp_macos`). Trae `yt-dlp-ejs` adentro |
+| yt-dlp | Se baja aparte | Se baja aparte | Versión oficial ya descomprimida de GitHub (`yt-dlp_win.zip` / `yt-dlp_macos.zip`), verificada con su SHA2-256SUMS. Trae `yt-dlp-ejs` adentro |
 | deno | Se baja la primera vez | Se baja la primera vez | Zip oficial de GitHub. Solo hace falta para YouTube, Facebook no lo usa |
 
 - yt-dlp recibe con `--ffmpeg-location` el ffmpeg de la app, para unir video y audio sin depender de otro ffmpeg.
 - Las versiones de deno quedan fijadas con su sha256, igual que los modelos de IA (`engine/ai_models.py`). yt-dlp se actualiza solo, porque es lo que se rompe.
+- **Por qué la versión descomprimida (15/11/2026):** la de un solo archivo (`yt-dlp_macos`, `yt-dlp.exe`) se descomprime en cada uso, y en la Mac el sistema revisa lo descomprimido: ~16 s antes de cada descarga. La descomprimida arranca en ~0,2 s. Como no se actualiza con `-U`, la app compara una vez por día el SHA2-256SUMS de la última versión y la reemplaza si cambió.
+- **Al abrir la app** se revisa en segundo plano: si falta, Convertir ofrece «Prepararla ahora»; si está, se actualiza sin avisar. Después de instalar o actualizar, la app la arranca una vez para que la revisión del sistema (~15 s la primera vez) no caiga en medio de una descarga.
+- **Si una descarga falla** por algo que no es del video ni de la conexión, la app se fija si salió una versión nueva. Cada video que se baja tiene un botón en la miniatura: «Cancelar» mientras baja y «Reintentar» si falló; si hay versión nueva, «Reintentar» la instala primero. Pensado para el servicio: YouTube cambia y el video hace falta ya.
 - Hay que confirmar en el CI que el ffmpeg de Windows de `imageio-ffmpeg` trae los filtros que usa la receta (`loudnorm`, `ebur128`, `gblur`, `alimiter`) y `libx264`. El de Mac (7.1) los trae.
 
 ## Cambios en el código
 
 1. **`convert/clips.py` (sin Qt).** Lee los datos del video desde `ffmpeg -i`, corre ffmpeg con progreso y cancelación, nivela y verifica el audio, y arma Centrada, Doble y Sobre fondo cuando hay un video en la selección. Devuelve un informe de audio (antes, después y avisos). También arma la tira de cuadros para la vista previa.
-2. **`convert/download.py` (sin Qt).** Baja yt-dlp y deno si faltan, los actualiza y baja los links. Limpia los nombres de los reels de Facebook ("4.7K views · 138 reactions ｜").
+2. **`convert/download.py` (sin Qt).** Prepara yt-dlp y deno, los actualiza y baja los links. Limpia los nombres de los reels de Facebook ("4.7K views · 138 reactions ｜").
 3. **Pestaña Convertir.** Grilla mixta, filtro, panel plegable y botón único.
 4. **Pestaña Buscar.** Mismo estilo, en una etapa posterior.
 

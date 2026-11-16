@@ -8,7 +8,7 @@ import ntpath
 import os
 import re
 
-from PyQt6.QtCore import Qt, QSize, QTimer
+from PyQt6.QtCore import Qt, QSize, QTimer, pyqtSignal
 from PyQt6.QtGui import QIcon, QPixmap
 from PyQt6.QtWidgets import (
     QSizePolicy,
@@ -53,6 +53,9 @@ class SearchLineEdit(QLineEdit):
 
 
 class BuscarTab(QWidget):
+    # Rutas elegidas en el catálogo para convertir (MainWindow las pasa a Convertir)
+    enviarAConvertir = pyqtSignal(list)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._conn = None
@@ -72,7 +75,7 @@ class BuscarTab(QWidget):
         row = QHBoxLayout()
         row.setSpacing(12)
         self.txt_query = SearchLineEdit()
-        self.txt_query.setPlaceholderText("Buscar por nombre, carpeta o tag…")
+        self.txt_query.setPlaceholderText("Buscar por nombre, carpeta o etiqueta…")
         self.txt_query.setAccessibleName("Buscar en el catálogo")
         self.txt_query.textChanged.connect(lambda _: self._debounce.start())
         row.addWidget(self.txt_query, 1)
@@ -104,7 +107,7 @@ class BuscarTab(QWidget):
         self.chk_pending.setCheckable(True)
         self.chk_pending.setCursor(Qt.CursorShape.PointingHandCursor)
         icons.set_icon(self.chk_pending, "sparkles", 15, "text_2", active="ia")
-        self.chk_pending.setToolTip("Mostrar solo lo que tiene tags propuestos por la IA sin revisar")
+        self.chk_pending.setToolTip("Mostrar solo los elementos con etiquetas sugeridas por la IA pendientes de revisión")
         self.chk_pending.toggled.connect(lambda _: self._do_search())
         row.addWidget(self.chk_pending)
 
@@ -135,6 +138,8 @@ class BuscarTab(QWidget):
         self.grid.setAccessibleName("Resultados")
         self.grid.itemSelectionChanged.connect(self._on_selection_changed)
         self.grid.itemDoubleClicked.connect(self._open_item)
+        self.grid.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.grid.customContextMenuRequested.connect(self._menu_grilla)
         layout.addWidget(self.grid, 1)
 
         # Tags de la selección, en un panel abajo
@@ -142,6 +147,19 @@ class BuscarTab(QWidget):
         panel.setObjectName("panel")
         p_lay = QVBoxLayout(panel)
         p_lay.setContentsMargins(14, 10, 14, 10)
+        # Lo elegido en el catálogo se manda a Convertir sin buscarlo de nuevo
+        acciones = QHBoxLayout()
+        acciones.setSpacing(10)
+        self.lbl_seleccion = QLabel("")
+        self.lbl_seleccion.setObjectName("muted")
+        acciones.addWidget(self.lbl_seleccion, 1)
+        self.btn_convertir = QPushButton("Enviar a Convertir")
+        self.btn_convertir.setObjectName("btn_primary")
+        icons.set_icon(self.btn_convertir, "wand-sparkles", 15, "on_image")
+        self.btn_convertir.setToolTip("Agrega los elementos seleccionados a la grilla de Convertir (Ctrl+Enter)")
+        self.btn_convertir.clicked.connect(self._mandar_a_convertir)
+        acciones.addWidget(self.btn_convertir)
+        p_lay.addLayout(acciones)
         self.tag_bar = TagBar()
         self.tag_bar.tagApplied.connect(self._apply_tag_to_selection)
         self.tag_bar.tagRemoved.connect(self._remove_tag_from_selection)
@@ -171,7 +189,7 @@ class BuscarTab(QWidget):
         if repo is None:
             self.lbl_count.setText("")
             self.grid.clear()
-            self.grid.set_empty_text("Todavía no hay catálogo.\nAndá a Catalogar y elegí una carpeta con fotos y videos.")
+            self.grid.set_empty_text("Todavía no hay catálogo.\nVaya a Catalogar y elija una carpeta con fotos y videos.")
             self.tag_bar.set_enabled(False)
             return
         self._results = repo.search(self.txt_query.text(),
@@ -212,7 +230,8 @@ class BuscarTab(QWidget):
                 tip += "\n" + _QUALITY.get(m.quality_flag, "")
             if not present[m.path]:
                 tip = (f"No se encuentra el original:\n{m.path}\n"
-                       "¿Se desconectó el NAS o el disco? Así no se puede llevar a ProPresenter.")
+                       "Verifique que el NAS o el disco estén conectados. Mientras tanto, no "
+                       "puede usarse en ProPresenter.")
             item.setToolTip(tip.strip())
             self.grid.addItem(item)
         n = len(results)
@@ -221,13 +240,13 @@ class BuscarTab(QWidget):
             filtro = self._kind_group.checkedButton()
             if filtro is not None and filtro.property("kind"):
                 self.grid.set_empty_text("No hay nada que coincida con la búsqueda.\n"
-                                         "Probá con otra palabra o elegí «Todo» arriba.")
+                                         "Pruebe con otra palabra o elija «Todo» arriba.")
             else:
                 self.grid.set_empty_text("No hay nada que coincida con la búsqueda.\n"
-                                         "Probá con otra palabra o con parte del nombre.")
+                                         "Pruebe con otra palabra o con parte del nombre.")
         else:
             self.grid.set_empty_text("No hay nada de este tipo en el catálogo.\n"
-                                     "Elegí «Todo» arriba para ver el resto.")
+                                     "Elija «Todo» arriba para ver el resto.")
         self._on_selection_changed()
 
     def _open_item(self, item):
@@ -237,7 +256,7 @@ class BuscarTab(QWidget):
             QMessageBox.information(
                 self, "No se puede abrir",
                 f"No se encuentra {os.path.basename(path)}.\n"
-                "¿Se desconectó el NAS o el disco donde está?")
+                "Verifique que el NAS o el disco donde está guardado estén conectados.")
 
     def _show_offline(self, missing: list[str]):
         if not missing:
@@ -249,12 +268,12 @@ class BuscarTab(QWidget):
         if roots:
             donde = " y ".join(friendly_root(r) for r in roots)
             verbo = "está" if n == 1 else "están"
-            text = (f"{cuantos} {verbo} en {donde}, que no está conectado. Se ven las miniaturas, "
-                    "pero no se pueden llevar a ProPresenter hasta que se conecte.")
+            text = (f"{cuantos} {verbo} en {donde}, que no está conectado. Se muestran las "
+                    "miniaturas, pero no pueden usarse en ProPresenter hasta que se conecte.")
         else:
             verbo = "ya no está" if n == 1 else "ya no están"
-            text = (f"{cuantos} {verbo} en su carpeta (¿se movieron o se borraron?). "
-                    "Pasá el mouse por arriba para ver dónde estaban.")
+            text = (f"{cuantos} {verbo} en su carpeta: pueden haberse movido o borrado. "
+                    "Pase el puntero sobre cada elemento para ver su ubicación anterior.")
         self.lbl_offline.setText(text)
         self.offline_box.setVisible(True)
 
@@ -283,7 +302,62 @@ class BuscarTab(QWidget):
                 ids.append(mid)
         return ids
 
+    # ------------------------------------------------------------- a Convertir
+    def _elegidos_disponibles(self) -> tuple[list[str], int]:
+        """Rutas elegidas que se pueden convertir, y cuántas no están (disco o
+        NAS desconectado, archivo movido)."""
+        paths, faltan = [], 0
+        for it in self.grid.selectedItems():
+            p = it.data(PATH_ROLE)
+            if not p:
+                continue
+            if it.data(STATE_ROLE) in ("missing", "offline") or not os.path.exists(p):
+                faltan += 1
+            else:
+                paths.append(p)
+        return paths, faltan
+
+    def _mandar_a_convertir(self):
+        paths, faltan = self._elegidos_disponibles()
+        if faltan:
+            self.lbl_seleccion.setText(
+                ("1 elemento no está disponible y no se envió" if faltan == 1 else
+                 f"{faltan} elementos no están disponibles y no se enviaron")
+                + ". Verifique que el disco o el NAS estén conectados.")
+        if paths:
+            self.enviarAConvertir.emit(paths)
+
+    def _menu_grilla(self, pos):
+        from PyQt6.QtWidgets import QMenu
+        if not self.grid.selectedItems():
+            return
+        menu = QMenu(self)
+        accion = menu.addAction("Enviar a Convertir")
+        accion.setEnabled(self.btn_convertir.isEnabled())
+        if menu.exec(self.grid.viewport().mapToGlobal(pos)) is accion:
+            self._mandar_a_convertir()
+
+    def _actualizar_seleccion(self):
+        paths, faltan = self._elegidos_disponibles()
+        n = len(self.grid.selectedItems())
+        self.btn_convertir.setEnabled(bool(paths))
+        if not n:
+            self.lbl_seleccion.setText("Seleccione fotos o videos para enviarlos a Convertir o asignarles etiquetas.")
+        else:
+            txt = "1 seleccionado" if n == 1 else f"{n} seleccionados"
+            if faltan:
+                txt += " · 1 no está disponible" if faltan == 1 else f" · {faltan} no están disponibles"
+            self.lbl_seleccion.setText(txt)
+
+    def keyPressEvent(self, event):
+        if (event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
+                and event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+            self._mandar_a_convertir()
+            return
+        super().keyPressEvent(event)
+
     def _on_selection_changed(self):
+        self._actualizar_seleccion()
         ids = self._selected_ids()
         repo = self._repo()
         self.tag_bar.set_enabled(bool(ids))

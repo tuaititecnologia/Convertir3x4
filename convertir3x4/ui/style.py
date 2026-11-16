@@ -372,6 +372,9 @@ QLabel#nonstandard_title {{ color: {T.warn}; font-weight: 600; }}
 QLabel#nonstandard_text {{ color: {T.warn}; }}
 QFrame#nonstandard QPushButton#btn_link {{ color: {T.warn}; }}
 
+/* Panel de Convertir: la parte que se desplaza no pinta fondo propio */
+QScrollArea#panel_scroll, QWidget#panel_contenido {{ background: transparent; }}
+
 /* "¿Cuántos en cada pantalla?" (Convertir): dos tarjetas con el dibujo */
 QToolButton#por_pantalla {{
     background: transparent; border: 1px solid {T.border_strong}; border-radius: 10px;

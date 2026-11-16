@@ -57,8 +57,8 @@ class AdvancedDialog(QDialog):
         lay.setContentsMargins(22, 20, 22, 18)
         lay.setSpacing(8)
 
-        note = QLabel("Lo que cambies acá vale hasta cerrar la app. "
-                      "Al volver a abrirla, todo vuelve a lo estándar.")
+        note = QLabel("Estos cambios se mantienen hasta cerrar la aplicación. "
+                      "Al volver a abrirla, se restablecen los valores estándar.")
         note.setObjectName("muted")
         note.setWordWrap(True)
         lay.addWidget(note)
@@ -92,15 +92,15 @@ class AdvancedDialog(QDialog):
         fila.addStretch()
         lay.addWidget(self.otra)
         lay.addWidget(self._help(
-            "La pantalla de la iglesia usa 8:9. Cambiala solo si lo convertido va a otro "
-            "lado. Para una pantalla de otra medida, elegí «Otra…» y poné cuánto mide de "
-            "ancho y de alto (en metros, centímetros o píxeles: importa la relación)."))
+            "La pantalla de la iglesia usa 8:9. Cámbiela solo si el material es para otra "
+            "pantalla. Para otra medida, elija «Otra…» e indique el ancho y el alto (en "
+            "metros, centímetros o píxeles: lo que importa es la proporción)."))
         self.combo_ratio.currentIndexChanged.connect(self._on_ratio)
         self._mostrar_aspecto(self._opts.aspect)
         lay.addSpacing(10)
 
         lay.addWidget(self._title("Fotos"))
-        self.chk_video = QCheckBox("Sacar las fotos como video de 30 segundos, con el fondo en movimiento")
+        self.chk_video = QCheckBox("Exportar las fotos como video de 30 segundos, con fondo en movimiento")
         self.chk_video.setChecked(self._opts.photos_as_video)
         lay.addWidget(self.chk_video)
         lay.addSpacing(10)
@@ -114,7 +114,7 @@ class AdvancedDialog(QDialog):
         b.clicked.connect(self._browse)
         row.addWidget(b)
         lay.addLayout(row)
-        lay.addWidget(self._help("Dónde quedan los videos que se bajan de internet."))
+        lay.addWidget(self._help("Carpeta donde se guardan los videos descargados de internet."))
         lay.addSpacing(14)
 
         buttons = QDialogButtonBox()

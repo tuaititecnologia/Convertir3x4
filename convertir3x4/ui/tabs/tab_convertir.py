@@ -27,7 +27,7 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
     QAbstractItemView, QButtonGroup, QFileDialog, QFrame, QHBoxLayout, QLabel,
     QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QProgressBar,
-    QPushButton, QSlider, QToolButton, QVBoxLayout, QWidget,
+    QPushButton, QScrollArea, QSlider, QToolButton, QVBoxLayout, QWidget,
 )
 
 from ...appdata import clip_cache_dir, tools_dir
@@ -39,11 +39,12 @@ from ..style import T
 from ..widgets.advanced_dialog import AdvancedDialog, SessionOptions
 from ..widgets.dialogos import confirmar
 from ..widgets.media_grid import (
-    DURATION_ROLE, KIND_ROLE, MTIME_ROLE, PATH_ROLE, PROGRESS_ROLE, SIZE_ROLE, STATE_ROLE,
+    ACTION_ROLE, DURATION_ROLE, KIND_ROLE, MTIME_ROLE, PATH_ROLE, PROGRESS_ROLE, SIZE_ROLE,
+    STATE_ROLE,
     STORYBOARD_ROLE, ReorderListWidget,
 )
 from ..widgets.vista_previa import VistaPrevia, icono_pantalla
-from .convert_workers import ConvertWorker, DownloadWorker, ThumbWorker
+from .convert_workers import ConvertWorker, DownloadWorker, ThumbWorker, ToolsWorker
 
 MEDIA_FILTER = ("Fotos y videos (*.jpg *.jpeg *.png *.bmp *.webp *.mp4 *.mov *.m4v *.mkv *.webm *.avi)"
                 ";;Fotos (*.jpg *.jpeg *.png *.bmp *.webp)"
@@ -51,6 +52,7 @@ MEDIA_FILTER = ("Fotos y videos (*.jpg *.jpeg *.png *.bmp *.webp *.mp4 *.mov *.m
                 ";;Todos (*.*)")
 IMAGE_FILTER = "Imágenes (*.jpg *.jpeg *.png *.bmp *.webp);;Todos (*.*)"
 LINK_ROLE = Qt.ItemDataRole.UserRole + 20   # link que se está bajando (sin archivo todavía)
+NUEVA_VERSION_ROLE = Qt.ItemDataRole.UserRole + 21  # falló y hay versión nueva del programa
 
 
 
@@ -67,6 +69,8 @@ class ConvertTab(QWidget):
         self._convert_worker: ConvertWorker | None = None
         self._thumb_workers: list[ThumbWorker] = []
         self._downloads: list[DownloadWorker] = []
+        self._tools_worker = None
+        self._reintentar: list[str] = []      # links que fallaron y se reintentan al actualizar
         self._last_out_dir: str | None = None
         self._jobs_total = self._jobs_done = 0
 
@@ -94,9 +98,9 @@ class ConvertTab(QWidget):
         icons.set_icon(self.btn_load, "plus", 16, "text")
         self.btn_load.setToolTip("Agregar fotos o videos de la PC o del NAS")
         bar.addWidget(self.btn_load)
-        self.btn_link = QPushButton("Pegar link")
+        self.btn_link = QPushButton("Pegar enlace")
         icons.set_icon(self.btn_link, "link", 15, "text")
-        self.btn_link.setToolTip("Bajar un video de YouTube, Facebook u otro sitio")
+        self.btn_link.setToolTip("Descargar un video de YouTube, Facebook u otro sitio")
         bar.addWidget(self.btn_link)
         self.btn_remove = self._icon_button("trash-2", "Quitar de la lista lo seleccionado (Supr). "
                                                        "Los archivos no se borran.")
@@ -145,16 +149,48 @@ class ConvertTab(QWidget):
         lr.setContentsMargins(10, 8, 10, 8)
         lr.setSpacing(8)
         self.txt_link = QLineEdit()
-        self.txt_link.setPlaceholderText("Pegá el link de YouTube o Facebook y Enter…")
-        self.txt_link.setAccessibleName("Link del video a bajar")
+        self.txt_link.setPlaceholderText("Pegue el enlace de YouTube o Facebook y presione Enter…")
+        self.txt_link.setAccessibleName("Enlace del video a descargar")
         lr.addWidget(self.txt_link, 1)
-        self.btn_link_go = QPushButton("Bajar")
+        self.btn_link_go = QPushButton("Descargar")
         self.btn_link_go.setObjectName("btn_primary")
         lr.addWidget(self.btn_link_go)
         self.btn_link_close = self._icon_button("x", "Cerrar")
         lr.addWidget(self.btn_link_close)
         self.link_row.setVisible(False)
         left.addWidget(self.link_row)
+
+        # --- mientras se baja algo: qué está pasando y cómo cortarlo
+        self.dl_bar = QFrame()
+        self.dl_bar.setObjectName("panel")
+        dl = QHBoxLayout(self.dl_bar)
+        dl.setContentsMargins(12, 6, 8, 6)
+        dl.setSpacing(8)
+        self.lbl_dl = QLabel("")
+        self.lbl_dl.setAccessibleName("Descarga en curso")
+        dl.addWidget(self.lbl_dl, 1)
+        self.btn_dl_cancel = QPushButton("Cancelar")
+        self.btn_dl_cancel.setAccessibleName("Cancelar la descarga")
+        dl.addWidget(self.btn_dl_cancel)
+        self.dl_bar.setVisible(False)
+        left.addWidget(self.dl_bar)
+
+        # --- falta preparar el programa para bajar videos (se revisa al abrir)
+        self.tools_box = QFrame()
+        self.tools_box.setObjectName("nonstandard")
+        tl = QHBoxLayout(self.tools_box)
+        tl.setContentsMargins(12, 8, 8, 8)
+        tl.setSpacing(8)
+        self.lbl_tools = QLabel("")
+        self.lbl_tools.setObjectName("nonstandard_text")
+        self.lbl_tools.setWordWrap(True)
+        tl.addWidget(self.lbl_tools, 1)
+        self.btn_tools = QPushButton("Instalar ahora")
+        tl.addWidget(self.btn_tools)
+        self.btn_tools_close = self._icon_button("x", "Más tarde")
+        tl.addWidget(self.btn_tools_close)
+        self.tools_box.setVisible(False)
+        left.addWidget(self.tools_box)
 
         # --- grilla
         self.list_widget = ReorderListWidget(thumb=THUMB_SIZE)
@@ -165,8 +201,8 @@ class ConvertTab(QWidget):
         self.list_widget.set_thumb_size(THUMB_SIZE)
         self.list_widget.setAccessibleName("Fotos y videos para convertir")
         self.list_widget.set_empty_text(
-            "Todavía no hay nada para convertir.\n"
-            "Usá «Agregar» para elegir fotos o videos, o «Pegar link» para bajar uno de internet.")
+            "Todavía no hay elementos para convertir.\n"
+            "Use «Agregar» para elegir fotos o videos, o «Pegar enlace» para descargar uno de internet.")
         left.addWidget(self.list_widget, 1)
 
         # --- barra inferior: orden · tamaño
@@ -204,13 +240,28 @@ class ConvertTab(QWidget):
         panel = QFrame()
         panel.setObjectName("sidebar")
         panel.setFixedWidth(self._PANEL_W)
-        lay = QVBoxLayout(panel)
-        lay.setContentsMargins(16, 16, 16, 16)
+        exterior = QVBoxLayout(panel)
+        exterior.setContentsMargins(0, 0, 0, 16)
+        exterior.setSpacing(8)
+        # Las opciones y la vista previa se desplazan si no entran (con muchos
+        # elementos o la ventana baja, antes se encimaban con las notas). El
+        # botón de crear queda siempre visible abajo.
+        self._panel_scroll = QScrollArea()
+        self._panel_scroll.setObjectName("panel_scroll")
+        self._panel_scroll.setWidgetResizable(True)
+        self._panel_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._panel_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        contenido = QWidget()
+        contenido.setObjectName("panel_contenido")
+        lay = QVBoxLayout(contenido)
+        lay.setContentsMargins(16, 16, 16, 4)
         lay.setSpacing(8)
+        self._panel_scroll.setWidget(contenido)
+        exterior.addWidget(self._panel_scroll, 1)
 
         # Rediseño del 15/11/2026: el operador responde dos preguntas que entiende
         # (cuántos en cada pantalla y qué fondo) y ve lo que se va a crear.
-        t1 = QLabel("¿Cuántos en cada pantalla?")
+        t1 = QLabel("Elementos por pantalla")
         t1.setObjectName("section_title")
         lay.addWidget(t1)
         fila = QHBoxLayout()
@@ -224,13 +275,13 @@ class ConvertTab(QWidget):
             b.setCheckable(True)
             b.setIconSize(QSize(44, 44))
             b.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
-            b.setMinimumSize(104, 92)
+            b.setMinimumSize(88, 92)
             b.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.setAccessibleName("Una foto o video por pantalla" if n == 1 else
                                 "Dos fotos o videos en la misma pantalla")
             b.setToolTip("Cada foto o video en su propia pantalla" if n == 1 else
-                         "De a dos en la misma pantalla, en el orden de la grilla")
+                         "Dos elementos por pantalla, en el orden de la grilla")
             b.setProperty("n", n)
             self._por_pantalla.addButton(b, n)
             self._btn_por_pantalla[n] = b
@@ -250,7 +301,7 @@ class ConvertTab(QWidget):
         seg_lay.setSpacing(2)
         self._fondo = QButtonGroup(self)
         self._btn_fondo: dict[str, QPushButton] = {}
-        for clave, texto in (("colores", "De sus colores"), ("elegido", "Uno que elijas")):
+        for clave, texto in (("colores", "Automático"), ("elegido", "Imagen propia")):
             b = QPushButton(texto)
             b.setObjectName("segment")
             b.setCheckable(True)
@@ -267,21 +318,20 @@ class ConvertTab(QWidget):
         bg_lay = QVBoxLayout(self.bg_box)
         bg_lay.setContentsMargins(0, 4, 0, 0)
         bg_lay.setSpacing(6)
-        self.lbl_bg_preview = QLabel("Sin fondo")
+        self.lbl_bg_preview = QLabel("Sin imagen")
         self.lbl_bg_preview.setObjectName("bg_preview")
         self.lbl_bg_preview.setFixedHeight(90)
         self.lbl_bg_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         bg_lay.addWidget(self.lbl_bg_preview)
-        self.btn_load_bg = QPushButton("Elegir el fondo…")
+        self.btn_load_bg = QPushButton("Elegir imagen de fondo…")
         bg_lay.addWidget(self.btn_load_bg)
         lay.addWidget(self.bg_box)
 
         lay.addSpacing(6)
-        self.lbl_va_a_crear = QLabel("Va a crear")
+        self.lbl_va_a_crear = QLabel("Resultado")
         self.lbl_va_a_crear.setObjectName("section_title")
         lay.addWidget(self.lbl_va_a_crear)
         self.vista_previa = VistaPrevia()
-        self.vista_previa.invertir.connect(self._invertir_par)
         lay.addWidget(self.vista_previa)
         # Notas sobre lo que se va a crear, pegadas a la vista previa
         self.lbl_summary = QLabel("")
@@ -297,19 +347,26 @@ class ConvertTab(QWidget):
         nl = QVBoxLayout(self.nonstd_box)
         nl.setContentsMargins(10, 8, 10, 8)
         nl.setSpacing(4)
-        t = QLabel("Fuera de lo estándar")
+        t = QLabel("Configuración no estándar")
         t.setObjectName("nonstandard_title")
         nl.addWidget(t)
         self.lbl_nonstd = QLabel("")
         self.lbl_nonstd.setObjectName("nonstandard_text")
         self.lbl_nonstd.setWordWrap(True)
         nl.addWidget(self.lbl_nonstd)
-        self.btn_reset_opts = QPushButton("Volver a lo estándar")
+        self.btn_reset_opts = QPushButton("Restablecer")
         self.btn_reset_opts.setObjectName("btn_link")
         icons.set_icon(self.btn_reset_opts, "rotate-ccw", 14, "warn")
         nl.addWidget(self.btn_reset_opts, 0, Qt.AlignmentFlag.AlignLeft)
         lay.addWidget(self.nonstd_box)
+        lay.addStretch(1)
 
+        # Abajo, siempre visible: avance, estado y el botón de crear
+        abajo = QVBoxLayout()
+        abajo.setContentsMargins(16, 0, 16, 0)
+        abajo.setSpacing(8)
+        exterior.addLayout(abajo)
+        lay = abajo
 
         # Avance del lote
         self.progress = QProgressBar()
@@ -352,7 +409,7 @@ class ConvertTab(QWidget):
         # acciones se angosta: así el filtro Todo · Fotos · Videos entra entero.
         compact = self.width() - self._PANEL_W - 46 < self._COMPACT_BELOW
         self._panel.setFixedWidth(self._PANEL_W_COMPACT if compact else self._PANEL_W)
-        for b, text in ((self.btn_load, "Agregar"), (self.btn_link, "Pegar link")):
+        for b, text in ((self.btn_load, "Agregar"), (self.btn_link, "Pegar enlace")):
             b.setText("" if compact else text)
             b.setAccessibleName(text)
 
@@ -371,6 +428,10 @@ class ConvertTab(QWidget):
         self.btn_load.clicked.connect(self._add_files)
         self.btn_link.clicked.connect(self._show_link_row)
         self.btn_link_go.clicked.connect(self._start_download)
+        self.btn_dl_cancel.clicked.connect(self._cancelar_descargas)
+        self.list_widget.actionClicked.connect(self._accion_en_celda)
+        self.btn_tools.clicked.connect(self._preparar_herramientas)
+        self.btn_tools_close.clicked.connect(lambda: self.tools_box.setVisible(False))
         self.txt_link.returnPressed.connect(self._start_download)
         self.btn_link_close.clicked.connect(lambda: self.link_row.setVisible(False))
         self.btn_remove.clicked.connect(self._remove_selected)
@@ -416,6 +477,31 @@ class ConvertTab(QWidget):
         return QIcon(px.scaled(size, size, Qt.AspectRatioMode.KeepAspectRatio,
                                Qt.TransformationMode.SmoothTransformation))
 
+    def recibir(self, paths: list[str]):
+        """Fotos y videos que llegan desde Buscar: se agregan a la grilla (los que
+        ya estaban no se repiten) y quedan elegidos, listos para convertir."""
+        nuevos = self._add_paths(paths)
+        if nuevos:
+            self._save_list()
+        quiero = set(paths)
+        self.list_widget.clearSelection()
+        primero = None
+        for it in self._items():
+            if it.data(PATH_ROLE) in quiero:
+                it.setSelected(True)
+                primero = primero or it
+        if primero is not None:
+            self.list_widget.scrollToItem(primero)
+        repetidos = len(paths) - nuevos
+        txt = ("Se agregó 1 elemento desde Buscar." if nuevos == 1 else
+               f"Se agregaron {nuevos} elementos desde Buscar." if nuevos else "")
+        if repetidos:
+            txt += (" 1 ya estaba en la lista." if repetidos == 1 else
+                    f" {repetidos} ya estaban en la lista.")
+        self.lbl_status.setText(txt.strip())
+        self._update_count()
+        self._refresh_panel()
+
     def _add_paths(self, paths: list[str], missing_ok: bool = False) -> int:
         """Agrega rutas a la grilla. Los videos piden su miniatura en segundo plano.
 
@@ -439,7 +525,7 @@ class ConvertTab(QWidget):
                     continue
                 item.setData(MTIME_ROLE, 0)
                 item.setData(STATE_ROLE, "missing")
-                item.setToolTip(f"No se encuentra:\n{path}\n¿Se desconectó el disco o el NAS?")
+                item.setToolTip(f"No se encuentra:\n{path}\nVerifique que el disco o el NAS estén conectados.")
             else:
                 item.setData(MTIME_ROLE, os.path.getmtime(path))
                 item.setToolTip(path)
@@ -481,6 +567,7 @@ class ConvertTab(QWidget):
         for lista in (self._thumb_workers, self._downloads):
             if w in lista:
                 lista.remove(w)
+        self._barra_descarga()
 
     def _item_for(self, path: str) -> QListWidgetItem | None:
         for it in self._items():
@@ -526,8 +613,8 @@ class ConvertTab(QWidget):
         if not path:           # un link que todavía se está bajando
             return
         if not open_file(path):
-            self._show_status(f"No se puede abrir {os.path.basename(path)}: no se encuentra "
-                              "(¿se desconectó el disco o el NAS?).")
+            self._show_status(f"No se puede abrir {os.path.basename(path)}: no se encuentra el "
+                              "archivo. Verifique que el disco o el NAS estén conectados.")
 
     def _remove_selected(self):
         if self._busy():
@@ -535,8 +622,15 @@ class ConvertTab(QWidget):
         rows = sorted((self.list_widget.row(it) for it in self.list_widget.selectedItems()),
                       reverse=True)
         for r in rows:
+            it = self.list_widget.item(r)
+            url = it.data(LINK_ROLE) if not it.data(PATH_ROLE) else None
+            if url:     # quitar un video que se está bajando corta su descarga
+                for w in self._downloads:
+                    if w.url == url:
+                        w.cancel()
             self.list_widget.takeItem(r)
         if rows:
+            self._barra_descarga()
             self._update_count()
             self._save_list()
             self._refresh_panel()
@@ -554,16 +648,20 @@ class ConvertTab(QWidget):
         url = self.txt_link.text().strip()
         if not download.is_link(url):
             self.txt_link.clear()
-            self.txt_link.setPlaceholderText("Eso no parece un link: tiene que empezar con http…")
+            self.txt_link.setPlaceholderText("El enlace no es válido: debe comenzar con http…")
             return
         self.txt_link.clear()
         self.link_row.setVisible(False)
+        self._bajar(url)
+
+    def _bajar(self, url: str):
         item = QListWidgetItem(url)
         item.setData(LINK_ROLE, url)
         item.setData(KIND_ROLE, "video")
         item.setData(STATE_ROLE, "working")
         item.setData(PROGRESS_ROLE, 0.0)
-        item.setToolTip(f"Bajando…\n{url}")
+        item.setData(ACTION_ROLE, "Cancelar")
+        item.setToolTip(f"Descargando…\n{url}")
         self.list_widget.addItem(item)
         w = DownloadWorker(url, self._opts.download_dir, tools_dir(), self)
         w.progress.connect(self._on_download_progress)
@@ -573,6 +671,102 @@ class ConvertTab(QWidget):
         self._downloads.append(w)
         w.start()
         self._update_count()
+        self._barra_descarga()
+
+    # ================================================================ herramientas
+    def revisar_herramientas(self):
+        """Al abrir la app (lo llama __main__, no las pruebas): si falta el
+        programa para bajar videos, ofrece prepararlo; si está, lo actualiza en
+        segundo plano una vez por día, sin molestar."""
+        if download.tools_ready(tools_dir()):
+            self._correr_herramientas(silencioso=True)
+            return
+        self.lbl_tools.setText("Para descargar videos de internet es necesario instalar un "
+                               "componente adicional (aprox. 120 MB, por única vez).")
+        self.btn_tools.setText("Instalar ahora")
+        self.btn_tools.setEnabled(True)
+        self.btn_tools.setVisible(True)
+        self.tools_box.setVisible(True)
+
+    def _preparar_herramientas(self):
+        if self._fallidos_por_version():
+            self._actualizar_y_reintentar()
+            return
+        self.btn_tools.setEnabled(False)
+        self.lbl_tools.setText("Instalando el componente de descarga…")
+        self._correr_herramientas(silencioso=False)
+
+    def _correr_herramientas(self, silencioso: bool, actualizar: bool = False):
+        if self._tools_worker is not None:
+            return
+        w = ToolsWorker(tools_dir(), self, actualizar=actualizar)
+        w._silencioso = silencioso
+        w.progress.connect(self._herramientas_avance)
+        w.done.connect(self._herramientas_listas)
+        w.failed.connect(self._herramientas_fallaron)
+        w.finished.connect(self._herramientas_fin)
+        self._tools_worker = w
+        w.start()
+
+    def _herramientas_avance(self, f: float):
+        if self.tools_box.isVisible():
+            que = ("Actualizando el componente de descarga" if self._reintentar
+                   else "Instalando el componente de descarga")
+            self.lbl_tools.setText(f"{que}… {int(f * 100)} %")
+
+    def _herramientas_listas(self):
+        self.tools_box.setVisible(False)
+        # Volver a bajar lo que había fallado
+        urls, self._reintentar = self._reintentar, []
+        for url in urls:
+            it = self._link_item(url)
+            if it is not None:
+                self.list_widget.takeItem(self.list_widget.row(it))
+            self._bajar(url)
+
+    def _herramientas_fallaron(self, motivo: str):
+        w = self.sender()
+        if self._reintentar:
+            # No se pudo actualizar: los videos vuelven a quedar con "Reintentar"
+            urls, self._reintentar = self._reintentar, []
+            for url in urls:
+                it = self._link_item(url)
+                if it is not None:
+                    it.setData(STATE_ROLE, "error")
+                    it.setData(ACTION_ROLE, "Reintentar")
+                    it.setData(NUEVA_VERSION_ROLE, False)
+            self.lbl_tools.setText(f"No se pudo actualizar el componente de descarga. "
+                                   f"{motivo or ''}".strip())
+            self.btn_tools.setVisible(False)
+            self.tools_box.setVisible(True)
+            return
+        if not motivo or getattr(w, "_silencioso", True):
+            return      # actualizar sin internet no es un problema: sigue la que hay
+        self.lbl_tools.setText(motivo)
+        self.btn_tools.setText("Reintentar")
+        self.btn_tools.setEnabled(True)
+        self.tools_box.setVisible(True)
+
+    def _herramientas_fin(self):
+        self._tools_worker = None
+
+    def _bajando(self) -> list:
+        return [w for w in self._downloads if not w.cancelled()]
+
+    def _barra_descarga(self, msg: str = ""):
+        n = len(self._bajando())
+        self.dl_bar.setVisible(n > 0)
+        if n:
+            base = "Descargando 1 video" if n == 1 else f"Descargando {n} videos"
+            detalle = msg and n == 1 and not msg.lower().startswith("descargando")
+            self.lbl_dl.setText(f"{base}: {msg[0].lower() + msg[1:]}" if detalle else f"{base}…")
+            self.btn_dl_cancel.setEnabled(True)
+
+    def _cancelar_descargas(self):
+        for w in self._downloads:
+            w.cancel()
+        self.lbl_dl.setText("Cancelando…")
+        self.btn_dl_cancel.setEnabled(False)
 
     def _link_item(self, url: str) -> QListWidgetItem | None:
         for it in self._items():
@@ -585,6 +779,8 @@ class ConvertTab(QWidget):
         if it is not None:
             it.setData(PROGRESS_ROLE, frac)
             it.setToolTip(f"{msg}\n{url}")
+        if self.btn_dl_cancel.isEnabled():
+            self._barra_descarga(msg)
 
     def _on_download_done(self, url: str, path: str):
         it = self._link_item(url)
@@ -593,7 +789,7 @@ class ConvertTab(QWidget):
         self._add_paths([path])
         self._save_list()
 
-    def _on_download_failed(self, url: str, reason: str):
+    def _on_download_failed(self, url: str, reason: str, nueva: bool = False):
         it = self._link_item(url)
         if it is None:
             return
@@ -601,8 +797,68 @@ class ConvertTab(QWidget):
             self.list_widget.takeItem(self.list_widget.row(it))
         else:
             it.setData(STATE_ROLE, "error")
-            it.setToolTip(f"{reason}\n{url}")
+            it.setData(ACTION_ROLE, "Reintentar")
+            # Si salió una versión nueva del programa, "Reintentar" la instala antes
+            it.setData(NUEVA_VERSION_ROLE, nueva)
+            extra = ("\nHay una versión nueva del componente de descarga: "
+                     "«Reintentar» la instala y vuelve a descargar el video." if nueva else "")
+            it.setToolTip(f"{reason}{extra}\n{url}")
+            if nueva:
+                self._avisar_version_nueva()
+            else:
+                self.lbl_status.setText(f"No se pudo descargar un video. {reason}")
         self._update_count()
+
+    def _accion_en_celda(self, item):
+        """Botón sobre la miniatura de un video que se baja: Cancelar o Reintentar."""
+        url = item.data(LINK_ROLE)
+        if not url or item.data(PATH_ROLE):
+            return
+        if item.data(ACTION_ROLE) == "Cancelar":
+            for w in self._downloads:
+                if w.url == url:
+                    w.cancel()
+            return
+        # Reintentar
+        if item.data(NUEVA_VERSION_ROLE):
+            self._actualizar_y_reintentar()
+            return
+        self.list_widget.takeItem(self.list_widget.row(item))
+        self._bajar(url)
+
+    def _fallidos_por_version(self) -> list:
+        return [it for it in self._items() if it.data(LINK_ROLE) and not it.data(PATH_ROLE)
+                and it.data(STATE_ROLE) == "error" and it.data(NUEVA_VERSION_ROLE)]
+
+    def _avisar_version_nueva(self):
+        """El aviso amarillo de arriba, como cuando falta preparar el programa."""
+        n = len(self._fallidos_por_version())
+        que = "un video" if n == 1 else f"{n} videos"
+        self.lbl_tools.setText(f"No se pudo descargar {que}. Hay una versión nueva del "
+                               "componente de descarga que puede resolver el problema.")
+        self.btn_tools.setText("Actualizar y reintentar")
+        self.btn_tools.setEnabled(True)
+        self.btn_tools.setVisible(True)
+        self.tools_box.setVisible(True)
+
+    def _actualizar_y_reintentar(self):
+        """Instala la versión nueva y vuelve a bajar todo lo que falló por eso.
+        Lo usan el aviso de arriba y el «Reintentar» de cada miniatura."""
+        if self._tools_worker is not None and self._reintentar:
+            return
+        for it in self._items():     # todos los que fallaron se reintentan juntos
+            u = it.data(LINK_ROLE)
+            if u and not it.data(PATH_ROLE) and it.data(STATE_ROLE) == "error" \
+                    and u not in self._reintentar:
+                self._reintentar.append(u)
+                it.setData(STATE_ROLE, "working")
+                it.setData(PROGRESS_ROLE, 0.0)
+                it.setData(ACTION_ROLE, None)
+        self.btn_tools.setEnabled(False)
+        self.btn_tools.setVisible(True)
+        self.lbl_tools.setText("Actualizando el componente de descarga…")
+        self.tools_box.setVisible(True)
+        self._correr_herramientas(silencioso=False, actualizar=True)
 
     # ================================================================ filtro y orden
     def _apply_filter(self):
@@ -685,23 +941,6 @@ class ConvertTab(QWidget):
                 return ic
             icons.set_custom(b, generador)
 
-    def _invertir_par(self, indice: int):
-        """Desde la vista previa: el de abajo (o derecha) pasa arriba (o izquierda)."""
-        try:
-            jobs = batch.plan(self._selected_paths(), self._mode, self._batch_options())
-        except ValueError:
-            return
-        if not (0 <= indice < len(jobs)) or len(jobs[indice].inputs) != 2:
-            return
-        a, b = jobs[indice].inputs
-        it_a, it_b = self._item_for(a), self._item_for(b)
-        fila_a, fila_b = self.list_widget.row(it_a), self.list_widget.row(it_b)
-        item = self.list_widget.takeItem(fila_b)
-        self.list_widget.insertItem(fila_a, item)
-        item.setSelected(True)
-        self._save_list()
-        self._refresh_panel()
-
     def _tamano_de(self, path: str):
         it = self._item_for(path)
         return it.data(SIZE_ROLE) if it is not None else None
@@ -713,20 +952,19 @@ class ConvertTab(QWidget):
         ic = it.icon()
         return None if ic.isNull() else ic.pixmap(QSize(160, 160))
 
+    def _fondo_elegido(self) -> bool:
+        return self._btn_fondo["elegido"].isChecked()
+
     def _batch_options(self) -> batch.Options:
+        # El fondo elegido vale con 1 o con 2 por pantalla
         return batch.Options(aspect=self._opts.aspect, photos_as_video=self._opts.photos_as_video,
-                             background=self._bg_path)
+                             background=self._bg_path if self._fondo_elegido() else None)
 
     def _refresh_panel(self):
         busy = self._busy()
         paths = self._selected_paths()
         n_sel = len(self.list_widget.selectedItems())
-        dos = self._por_pantalla.checkedId() == 2
-        # Con 2 por pantalla el fondo es siempre el de sus colores
-        self._btn_fondo["elegido"].setEnabled(not dos and not busy)
-        if dos and self._btn_fondo["elegido"].isChecked():
-            self._btn_fondo["colores"].setChecked(True)
-        self.bg_box.setVisible(self._mode == batch.FONDO)
+        self.bg_box.setVisible(self._fondo_elegido())
         self.btn_remove.setEnabled(n_sel > 0 and not busy)
 
         changes = self._opts.changes()
@@ -739,31 +977,31 @@ class ConvertTab(QWidget):
         try:
             jobs = batch.plan(paths, self._mode, batch.Options(
                 aspect=opts.aspect, photos_as_video=opts.photos_as_video,
-                background=opts.background or "(sin elegir)"))
+                background=(opts.background or "(sin elegir)") if self._fondo_elegido() else None))
         except ValueError:
             jobs = []
         fondo = QPixmap(self._bg_path) if self._bg_path else None
         self.vista_previa.set_datos(jobs, opts.aspect, self._pixmap_de, self._tamano_de, fondo)
         self.lbl_va_a_crear.setVisible(bool(jobs))
         if not paths:
-            self.lbl_summary.setText("Seleccioná en la grilla lo que querés convertir."
+            self.lbl_summary.setText("Seleccione en la grilla los elementos que desea convertir."
                                      if self.list_widget.count() else "")
             self.btn_convert.setText("Crear")
             self.btn_convert.setEnabled(False)
             return
         notas = []
         if self._mode == batch.DOBLE and len(paths) % 2:
-            notas.append("La última queda sola, en su propia pantalla.")
+            notas.append("El último elemento ocupa una pantalla propia.")
         if self._mode == batch.DOBLE:
-            notas.append("Tocá una pantalla para invertir el orden.")
+            notas.append("Se agrupan de a dos según el orden de la grilla. Para cambiarlo, arrastre los elementos en la grilla.")
         skipped = n_sel - len(paths)
         if skipped:
             notas.append("1 no se puede convertir (no está disponible o tuvo un error)."
                          if skipped == 1 else
                          f"{skipped} no se pueden convertir (no están disponibles o tuvieron un error).")
-        falta_fondo = self._mode == batch.FONDO and not self._bg_path
+        falta_fondo = self._fondo_elegido() and not self._bg_path
         if falta_fondo:
-            notas.insert(0, "Falta elegir el fondo.")
+            notas.insert(0, "Falta elegir la imagen de fondo.")
         self.lbl_summary.setText(" ".join(notas))
         self.lbl_summary.setVisible(bool(notas))
         self.btn_convert.setText(f"Crear {batch.que_crea(jobs)}")
@@ -784,7 +1022,7 @@ class ConvertTab(QWidget):
     # ================================================================ fondo
     def _load_background(self):
         last_dir = self.settings.value("last_dir", "")
-        path, _ = QFileDialog.getOpenFileName(self, "Elegir fondo", last_dir, IMAGE_FILTER)
+        path, _ = QFileDialog.getOpenFileName(self, "Elegir imagen de fondo", last_dir, IMAGE_FILTER)
         if not path:
             return
         self.settings.setValue("last_dir", os.path.dirname(path))
@@ -800,7 +1038,7 @@ class ConvertTab(QWidget):
                 Qt.TransformationMode.SmoothTransformation))
         else:
             self.lbl_bg_preview.clear()
-            self.lbl_bg_preview.setText("Sin fondo")
+            self.lbl_bg_preview.setText("Sin imagen")
         self._refresh_panel()
 
     # ================================================================ convertir
@@ -894,9 +1132,9 @@ class ConvertTab(QWidget):
         if result.error:
             state, tip = "error", result.error
         elif result.audio and result.audio.warnings:
-            state, tip = "warning", "Listo, pero revisá el audio:\n" + "\n".join(result.audio.warnings)
+            state, tip = "warning", "Conversión terminada. Revise el audio:\n" + "\n".join(result.audio.warnings)
         else:
-            state, tip = "done", f"Listo: {os.path.basename(result.out_path)}"
+            state, tip = "done", f"Terminado: {os.path.basename(result.out_path)}"
             if result.audio and result.audio.before is not None:
                 tip += "\nEl volumen quedó nivelado para la consola."
         for p in result.job.inputs:
@@ -920,7 +1158,7 @@ class ConvertTab(QWidget):
         if warn:
             parts.append(f"{warn} para revisar")
         if err:
-            parts.append(f"{err} con error (pasá el mouse para ver el motivo)")
+            parts.append(f"{err} con error (pase el puntero sobre el elemento para ver el motivo)")
         prefix = "Cancelado. " if cancelled else ""
         self._show_status(prefix + " · ".join(parts) + ".")
         self.btn_open_out.setVisible(ok > 0)
@@ -939,6 +1177,8 @@ class ConvertTab(QWidget):
     def shutdown(self):
         """Corta lo que está corriendo (al cerrar la app)."""
         workers = self._thumb_workers + self._downloads
+        if self._tools_worker is not None:
+            workers.append(self._tools_worker)
         if self._convert_worker is not None:
             workers.append(self._convert_worker)
         for w in workers:
@@ -1006,7 +1246,7 @@ class ConvertTab(QWidget):
         """Solo pregunta si hay una conversión en curso. Retorna False si se cancela."""
         if self._busy():
             if not confirmar(self, "Conversión en curso", "¿Cerrar y cancelar la conversión?",
-                             "Lo que ya terminó queda guardado; lo que está a medias se pierde.",
+                             "Lo terminado queda guardado; lo que está en proceso se pierde.",
                              "Cerrar y cancelar", cancelar="Seguir convirtiendo", peligro=True):
                 return False
         return True

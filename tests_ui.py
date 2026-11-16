@@ -5,6 +5,7 @@ vuelva a romperse sin que nadie lo note.
 """
 
 import os
+import re
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -455,3 +456,46 @@ class TestCambioDeTemaEnVivo:
         finally:
             style._reaplicar(app, "dark")
         assert color_del_icono(b) == oscuro
+
+
+class TestBuscarAConvertir:
+    def test_mandar_cambia_a_convertir(self, app, window, tmp_path):
+        from PIL import Image
+        f = str(tmp_path / "culto.jpg")
+        Image.new("RGB", (80, 60), (10, 20, 30)).save(f)
+        window.show_module(0)
+        window.buscar_tab.enviarAConvertir.emit([f])
+        app.processEvents()
+        assert window.stack.currentWidget() is window.convert_tab
+        assert f in window.convert_tab._paths()
+
+
+class TestRegistroDeLosTextos:
+    """Los textos de la aplicación van en usted y con vocabulario formal
+    (decisión del 15/11/2026). Revisa todos los textos del código, sin los
+    comentarios ni la documentación interna."""
+
+    PROHIBIDAS = re.compile(
+        r"\b(tocá|elegí|probá|revisá|pegá|usá|andá|escribí|seleccioná|arrastrá|enchufá|"
+        r"cargá|corré|agregá|pasá|fijate|avisale|pedile|querés|podés|tenés|"
+        r"bajar|bajando|bajarlo|mandar|mandarlos|enchufad[oa]s?|la app|el mouse)\b", re.I)
+
+    def test_sin_voseo_ni_palabras_coloquiales(self):
+        import ast
+        raiz = os.path.join(os.path.dirname(__file__), "convertir3x4")
+        encontrados = []
+        for carpeta, _, archivos in os.walk(raiz):
+            for nombre in archivos:
+                if not nombre.endswith(".py"):
+                    continue
+                ruta = os.path.join(carpeta, nombre)
+                arbol = ast.parse(open(ruta, encoding="utf-8").read())
+                docs = {id(n.body[0].value) for n in ast.walk(arbol)
+                        if isinstance(n, (ast.Module, ast.ClassDef, ast.FunctionDef))
+                        and n.body and isinstance(n.body[0], ast.Expr)
+                        and isinstance(n.body[0].value, ast.Constant)}
+                for n in ast.walk(arbol):
+                    if (isinstance(n, ast.Constant) and isinstance(n.value, str)
+                            and id(n) not in docs and self.PROHIBIDAS.search(n.value)):
+                        encontrados.append(f"{nombre}:{n.lineno}: {n.value[:70]!r}")
+        assert not encontrados, "\n".join(encontrados)

@@ -10,8 +10,8 @@ from ..config import (
     VIDEO_FPS, VIDEO_DURATION, VIDEO_OVERSIZE, VIDEO_MAX_WIDTH,
     DEFAULT_ASPECT_W, DEFAULT_ASPECT_H,
 )
-from .images import _dominant_colors, _make_textured_bg, fondo_dos_zonas
-from .layout import dos_por_pantalla, lienzo_para
+from .images import _dominant_colors, _make_textured_bg, cubrir, fondo_dos_zonas
+from .layout import dos_por_pantalla, lienzo_para, sobre_fondo
 
 
 def _write_video_frames(oversized_bg, canvas_w, canvas_h, paste_fn, out_path,
@@ -42,8 +42,9 @@ def _write_video_frames(oversized_bg, canvas_w, canvas_h, paste_fn, out_path,
 
 def convert_centered_video(src_path: str, out_path: str, aspect: tuple[int, int] = None,
                            fps: int = VIDEO_FPS, duration: int = VIDEO_DURATION,
-                           progress_cb=None):
-    """Genera un MP4 con fondo animado y foto centrada estática."""
+                           progress_cb=None, bg_path: str | None = None):
+    """Genera un MP4 con fondo animado y foto centrada estática. El fondo es de
+    sus colores o, si se pasa `bg_path`, ese fondo con el mismo movimiento suave."""
     aw, ah = aspect or (DEFAULT_ASPECT_W, DEFAULT_ASPECT_H)
     img = Image.open(src_path).convert("RGB")
     src_w, src_h = img.size
@@ -63,10 +64,10 @@ def convert_centered_video(src_path: str, out_path: str, aspect: tuple[int, int]
         img = img.resize((int(src_w * scale), int(src_h * scale)), Image.LANCZOS)
         src_w, src_h = img.size
 
-    colors = _dominant_colors(img)
     os_w = int(canvas_w * VIDEO_OVERSIZE)
     os_h = int(canvas_h * VIDEO_OVERSIZE)
-    oversized_bg = _make_textured_bg(os_w, os_h, colors)
+    oversized_bg = (cubrir(Image.open(bg_path).convert("RGB"), os_w, os_h) if bg_path
+                    else _make_textured_bg(os_w, os_h, _dominant_colors(img)))
 
     photo_x = (canvas_w - src_w) // 2
     photo_y = (canvas_h - src_h) // 2
@@ -80,13 +81,14 @@ def convert_centered_video(src_path: str, out_path: str, aspect: tuple[int, int]
 
 def convert_double_video(paths: list[str], out_path: str, aspect: tuple[int, int] = None,
                          fps: int = VIDEO_FPS, duration: int = VIDEO_DURATION,
-                         progress_cb=None):
-    """Genera un MP4 con fondo animado y dos fotos apiladas verticalmente."""
+                         progress_cb=None, bg_path: str | None = None):
+    """MP4 con dos fotos en la misma pantalla sobre un fondo animado (de sus
+    colores o el elegido en `bg_path`)."""
     aw, ah = aspect or (DEFAULT_ASPECT_W, DEFAULT_ASPECT_H)
     images = [Image.open(p).convert("RGB") for p in paths]
 
     if len(images) == 1:
-        convert_centered_video(paths[0], out_path, aspect, fps, duration, progress_cb)
+        convert_centered_video(paths[0], out_path, aspect, fps, duration, progress_cb, bg_path)
         return
 
     # Dónde va cada una: convert/layout.py (lo mismo que la vista previa)
@@ -101,11 +103,35 @@ def convert_double_video(paths: list[str], out_path: str, aspect: tuple[int, int
     fit_b = img_b.resize((w2, h2), Image.LANCZOS)
     os_w = int(canvas_w * VIDEO_OVERSIZE)
     os_h = int(canvas_h * VIDEO_OVERSIZE)
-    oversized_bg = fondo_dos_zonas(os_w, os_h, _dominant_colors(img_a), _dominant_colors(img_b))
+    oversized_bg = (cubrir(Image.open(bg_path).convert("RGB"), os_w, os_h) if bg_path else
+                    fondo_dos_zonas(os_w, os_h, _dominant_colors(img_a), _dominant_colors(img_b)))
 
     def paste_fn(frame):
         frame.paste(fit_a, (x1, y1))
         frame.paste(fit_b, (x2, y2))
+
+    _write_video_frames(oversized_bg, canvas_w, canvas_h, paste_fn, out_path,
+                        fps, duration, progress_cb)
+
+
+def convert_on_background_video(src_path: str, bg_path: str, out_path: str,
+                                aspect: tuple[int, int] = None, fps: int = VIDEO_FPS,
+                                duration: int = VIDEO_DURATION, progress_cb=None):
+    """Foto sobre un fondo elegido, como video (antes "Sobre fondo" ignoraba
+    "Exportar fotos como video"). Mismo lugar que convert_on_background."""
+    aw, ah = aspect or (DEFAULT_ASPECT_W, DEFAULT_ASPECT_H)
+    img = Image.open(src_path).convert("RGB")
+    canvas_w, canvas_h = lienzo_para([img.size], (aw, ah))
+    if max(canvas_w, canvas_h) > VIDEO_MAX_WIDTH:
+        k = VIDEO_MAX_WIDTH / max(canvas_w, canvas_h)
+        canvas_w, canvas_h = int(canvas_w * k), int(canvas_h * k)
+    x, y, fw, fh = sobre_fondo(img.size, canvas_w, canvas_h)
+    fit = img.resize((fw, fh), Image.LANCZOS)
+    os_w, os_h = int(canvas_w * VIDEO_OVERSIZE), int(canvas_h * VIDEO_OVERSIZE)
+    oversized_bg = cubrir(Image.open(bg_path).convert("RGB"), os_w, os_h)
+
+    def paste_fn(frame):
+        frame.paste(fit, (x, y))
 
     _write_video_frames(oversized_bg, canvas_w, canvas_h, paste_fn, out_path,
                         fps, duration, progress_cb)

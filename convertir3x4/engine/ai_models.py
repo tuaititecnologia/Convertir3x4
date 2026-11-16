@@ -72,7 +72,7 @@ def ensure(models_dir: str, progress_cb=None):
                     progress_cb(done, total, name)
         if h.hexdigest() != sha:
             os.remove(part)
-            raise RuntimeError(f"El modelo {name} se bajó corrupto (hash distinto). Reintentá.")
+            raise RuntimeError(f"El modelo {name} se descargó dañado. Intente nuevamente.")
         os.replace(part, dst)
 
 

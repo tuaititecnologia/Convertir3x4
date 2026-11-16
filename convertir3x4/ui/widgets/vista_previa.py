@@ -6,8 +6,8 @@ proporción de salida y las fotos y videos ubicados con el MISMO convert/layout.
 que usa la conversión: lo que se ve acá es lo que sale.
 """
 
-from PyQt6.QtCore import QPoint, QRectF, QSize, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPixmap
+from PyQt6.QtCore import QRectF, QSize, Qt
+from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPen, QPixmap
 from PyQt6.QtWidgets import QSizePolicy, QWidget
 
 from ...convert import batch
@@ -58,12 +58,8 @@ def icono_pantalla(n: int, aspect: tuple[int, int], size: int, color: str) -> QP
 
 
 class VistaPrevia(QWidget):
-    """Una miniatura por cada pantalla que se va a crear.
-
-    Tocar una pantalla con dos fotos/videos invierte el orden (cuál va arriba o
-    a la izquierda): emite `invertir(índice del trabajo)`.
-    """
-    invertir = pyqtSignal(int)
+    """Una miniatura por cada pantalla que se va a crear. Solo para mirar: el
+    orden lo decide la grilla (15/11/2026: se sacó "tocar para invertir")."""
 
     HUECO = 8
     MAX = 12            # más que esto: "y N más"
@@ -74,8 +70,6 @@ class VistaPrevia(QWidget):
         self._jobs: list = []
         self._aspect = (8, 9)
         self._datos = None      # funciones: pixmap(path), tamano(path), fondo()
-        self._hover = -1
-        self.setMouseTracking(True)
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         self.setAccessibleName("Vista previa de lo que se va a crear")
 
@@ -135,33 +129,6 @@ class VistaPrevia(QWidget):
     def _pantalla(self, celda: QRectF) -> QRectF:
         return celda.adjusted(1, 1, -1, -1)
 
-    def _indice_en(self, pos) -> int:
-        for i in range(self._visibles()):
-            if self._celda(i).contains(pos.toPointF() if hasattr(pos, "toPointF") else pos):
-                return i
-        return -1
-
-    # ------------------------------------------------------------- mouse
-    def mouseMoveEvent(self, e):
-        i = self._indice_en(e.position())
-        if i != self._hover:
-            self._hover = i
-            invertible = 0 <= i < len(self._jobs) and len(self._jobs[i].inputs) == 2
-            self.setCursor(Qt.CursorShape.PointingHandCursor if invertible
-                           else Qt.CursorShape.ArrowCursor)
-            self.setToolTip("Tocá para invertir el orden" if invertible else "")
-            self.update()
-
-    def leaveEvent(self, e):
-        self._hover = -1
-        self.update()
-        super().leaveEvent(e)
-
-    def mousePressEvent(self, e):
-        i = self._indice_en(e.position())
-        if 0 <= i < len(self._jobs) and len(self._jobs[i].inputs) == 2:
-            self.invertir.emit(i)
-
     # ------------------------------------------------------------- dibujo
     def paintEvent(self, e):
         if not self._jobs or not self._datos:
@@ -175,7 +142,7 @@ class VistaPrevia(QWidget):
             marco = QPainterPath()
             marco.addRoundedRect(pant, 3, 3)
             # Fondo: el elegido (sobre un fondo) o un gris neutro (fondo de colores)
-            if job.mode == batch.FONDO and fondo is not None and not fondo.isNull():
+            if job.con_fondo and fondo is not None and not fondo.isNull():
                 p.save()
                 p.setClipPath(marco)
                 p.drawPixmap(pant, fondo, _recorte_cubrir(fondo, pant))
@@ -191,9 +158,7 @@ class VistaPrevia(QWidget):
                 else:
                     p.fillRect(r, QColor(T.text_3))
             p.restore()
-            borde = QColor(T.accent_text if i == self._hover and len(job.inputs) == 2
-                           else T.border_strong)
-            p.setPen(QPen(borde, 1.5 if i == self._hover else 1))
+            p.setPen(QPen(QColor(T.border_strong), 1))
             p.drawPath(marco)
             if job.is_video:
                 self._insignia(p, pant)

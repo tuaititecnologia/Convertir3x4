@@ -18,7 +18,7 @@ import imageio_ffmpeg
 from PIL import Image
 
 from ..config import DEFAULT_ASPECT_W, DEFAULT_ASPECT_H, VIDEO_DURATION, VIDEO_OVERSIZE
-from .images import _dominant_colors, fondo_dos_zonas
+from .images import _dominant_colors, cubrir, fondo_dos_zonas
 from .layout import dos_por_pantalla, sobre_fondo
 
 # Lienzo de referencia: 8:9 al doble de la nativa del LED (448x504).
@@ -257,11 +257,18 @@ def _check_audio(out_path: str, report: AudioReport, audio_src: str | None,
         report.after, report.peak = measure_final(out_path)
     if report.peak is not None and report.peak > TP:
         # Para el operador: qué notar y qué hacer. Los números quedan en el informe.
-        report.warnings.append("Tiene partes con volumen muy fuerte: escuchalo antes de usarlo.")
-    if report.after is not None and abs(report.after - LUFS) > LUFS_TOLERANCE:
+        report.warnings.append("Tiene partes con volumen muy alto: escúchelo antes de usarlo.")
+    if report.after is not None and report.after < LUFS - LUFS_TOLERANCE:
+        # Pasa con audios muy desparejos (videos de teléfono: partes casi en silencio
+        # y golpes al máximo). Subirlo más exigiría comprimir tanto que se oiría mal.
         report.warnings.append(
-            "El volumen no quedó igual al de los otros videos (el audio es muy corto o "
-            "muy desparejo): escuchalo antes de usarlo.")
+            "Quedó más bajo que los demás videos: el original tiene partes muy suaves y "
+            "golpes muy fuertes, y subirlo más lo distorsionaría. Escúchelo antes de "
+            "usarlo; puede necesitar más volumen en la consola.")
+    elif report.after is not None and report.after > LUFS + LUFS_TOLERANCE:
+        report.warnings.append(
+            "Quedó más alto que los demás videos (el audio es muy corto o muy irregular). "
+            "Escúchelo antes de usarlo; puede necesitar menos volumen en la consola.")
     return report
 
 
@@ -339,12 +346,19 @@ def convert_centered_clip(src: str, out_path: str, aspect=None,
 
 
 def convert_clip_on_background(src: str, bg_path: str, out_path: str, aspect=None,
-                               progress_cb=None, cancel=None) -> AudioReport:
+                               progress_cb=None, cancel=None,
+                               centrado: bool = False) -> AudioReport:
     """Video sobre un fondo elegido, con lugar para texto (como convert_on_background):
-    arriba en una pantalla vertical, a la izquierda en una horizontal."""
+    arriba en una pantalla vertical, a la izquierda en una horizontal. Con
+    `centrado`, entero y en el centro (el que queda solo en "2 por pantalla")."""
     info = clip_info(src)
     w, h = canvas_size(aspect)
-    x, y, fw, fh = sobre_fondo((info.width, info.height), w, h)
+    if centrado:
+        s = min(w / info.width, h / info.height)
+        fw, fh = _even(info.width * s), _even(info.height * s)
+        x, y = (w - fw) // 2, (h - fh) // 2
+    else:
+        x, y, fw, fh = sobre_fondo((info.width, info.height), w, h)
     with tempfile.TemporaryDirectory() as tmpdir:
         bg_png = os.path.join(tmpdir, "fondo.png")
         _cover(Image.open(bg_path).convert("RGB"), w, h).save(bg_png)
@@ -368,13 +382,14 @@ def double_layout(size_a: tuple[int, int], size_b: tuple[int, int],
 
 
 def convert_double_clip(paths: list[str], out_path: str, aspect=None,
-                        progress_cb=None, cancel=None) -> AudioReport:
+                        progress_cb=None, cancel=None,
+                        bg_path: str | None = None) -> AudioReport:
     """Dos en la misma pantalla, al menos uno video. La salida es siempre video.
 
     Dura lo que el video más largo; el más corto queda en su último cuadro.
     El audio es el del primero (en el orden recibido) que tenga audio.
-    El fondo es el de colores de convert_double, con el mismo recorrido animado
-    que "Exportar como video".
+    El fondo es el de colores de convert_double (o el elegido en `bg_path`), con
+    el mismo recorrido animado que "Exportar como video".
     """
     if len(paths) != 2:
         raise ValueError("Doble necesita exactamente dos elementos.")
@@ -397,8 +412,9 @@ def convert_double_clip(paths: list[str], out_path: str, aspect=None,
         # Fondo animado: lienzo más grande y un recorte que se mueve (Lissajous,
         # mismo camino que _write_video_frames, ciclo de VIDEO_DURATION segundos).
         os_w, os_h = _even(w * VIDEO_OVERSIZE), _even(h * VIDEO_OVERSIZE)
-        bg = fondo_dos_zonas(os_w, os_h, _dominant_colors(frames[0]),
-                             _dominant_colors(frames[1]))
+        bg = (_cover(Image.open(bg_path).convert("RGB"), os_w, os_h) if bg_path else
+              fondo_dos_zonas(os_w, os_h, _dominant_colors(frames[0]),
+                              _dominant_colors(frames[1])))
         bg_png = os.path.join(tmpdir, "fondo.png")
         bg.save(bg_png)
         mx, my = (os_w - w) // 2, (os_h - h) // 2
@@ -452,13 +468,8 @@ def _convert(inputs, graph, out_path, duration, audio_src, audio_input,
     return report
 
 
-def _cover(img: Image.Image, w: int, h: int) -> Image.Image:
-    """Escala para cubrir w x h y recorta al centro (como el fondo de convert_on_background)."""
-    s = max(w / img.width, h / img.height)
-    img = img.resize((max(w, round(img.width * s)), max(h, round(img.height * s))),
-                     Image.LANCZOS)
-    x, y = (img.width - w) // 2, (img.height - h) // 2
-    return img.crop((x, y, x + w, y + h))
+# Un solo "cubrir sin deformar" para fotos, videos y vista previa
+_cover = cubrir
 
 
 def _grab_frame(path: str, info: ClipInfo, out_png: str) -> Image.Image:
@@ -482,19 +493,37 @@ def make_storyboard(path: str, out_jpg: str, info: ClipInfo | None = None) -> No
     """Tira de cuadros para la vista previa al pasar el mouse (como YouTube).
 
     16 cuadros de 240 px repartidos en todo el video, en una grilla de 4x4 en un
-    solo JPEG. En videos largos solo decodifica cuadros clave, así que tarda
-    décimas de segundo.
+    solo JPEG. Salta directo a cada punto (`-ss` antes de `-i`): lee unos pocos MB
+    por cuadro y no el archivo entero. Antes se recorría todo el video: con uno
+    de 4 GB en un disco externo o el NAS tardaba casi un minuto (15/11/2026).
     """
     info = info or clip_info(path)
     n = STORYBOARD_FRAMES
-    rate = (n + 1) / info.duration if info.duration else 1
-    skip = ["-skip_frame", "nokey"] if info.duration >= 60 else []
+    dur = info.duration or 0
     rows = math.ceil(n / STORYBOARD_COLS)
-    r = _run(["-y", *skip, "-i", path, "-an", "-vf",
-              f"fps={rate:.6f},scale={STORYBOARD_WIDTH}:-2,tile={STORYBOARD_COLS}x{rows}",
-              "-frames:v", "1", "-q:v", "5", out_jpg])
-    if r.returncode != 0 or not os.path.exists(out_jpg):
+    cuadros: list[Image.Image] = []
+    with tempfile.TemporaryDirectory() as tmpdir:
+        for k in range(1, n + 1):
+            t = dur * k / (n + 1) if dur else 0
+            png = os.path.join(tmpdir, f"c{k}.png")
+            _run(["-y", "-ss", f"{t:.3f}", "-i", path, "-an", "-frames:v", "1",
+                  "-vf", f"scale={STORYBOARD_WIDTH}:-2", png])
+            if os.path.exists(png):
+                with Image.open(png) as im:
+                    cuadros.append(im.convert("RGB"))
+            elif cuadros:
+                cuadros.append(cuadros[-1].copy())   # cerca del final a veces no hay cuadro
+    if not cuadros:
         raise ClipError(f"No se pudo armar la vista previa de {os.path.basename(path)}.")
+    w, h = cuadros[0].size
+    while len(cuadros) < n:
+        cuadros.insert(0, cuadros[0].copy())
+    tira = Image.new("RGB", (w * STORYBOARD_COLS, h * rows))
+    for i, c in enumerate(cuadros):
+        if c.size != (w, h):
+            c = c.resize((w, h))
+        tira.paste(c, ((i % STORYBOARD_COLS) * w, (i // STORYBOARD_COLS) * h))
+    tira.save(out_jpg, "JPEG", quality=80)
 
 
 # ---------------------------------------------------------------- miniaturas de la grilla

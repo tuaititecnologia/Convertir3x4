@@ -38,7 +38,7 @@ class PanelClient:
     # ------------------------------------------------------------ transporte
     def _pedir(self, metodo, ruta, datos=None, timeout=None):
         if not self.urls:
-            raise PanelSinConexion("Falta configurar la conexión con el NAS. Avisale a quien lo administra.")
+            raise PanelSinConexion("Falta configurar la conexión con el NAS. Comuníquese con el administrador del NAS.")
         orden = self.urls if self.url_activa not in self.urls else \
             [self.url_activa] + [u for u in self.urls if u != self.url_activa]
         cuerpo = json.dumps(datos).encode() if datos is not None else None
@@ -61,7 +61,7 @@ class PanelClient:
                 continue
         self.url_activa = None
         # El detalle técnico (`ultimo`) no se muestra: al operador le sirve qué hacer.
-        raise PanelSinConexion("No se pudo conectar con el NAS. Revisá que esté prendido "
+        raise PanelSinConexion("No se pudo conectar con el NAS. Verifique que esté encendido "
                                "y que esta PC esté conectada a la red de la iglesia.")
 
     # ------------------------------------------------------------ consultas
@@ -102,10 +102,10 @@ def _mensaje_http(e: urllib.error.HTTPError) -> str:
     except ValueError:
         detalle = ""
     if e.code == 401:
-        return "El NAS no reconoce a esta PC. Avisale a quien administra el NAS."
+        return "El NAS no reconoce a esta PC. Comuníquese con el administrador del NAS."
     if e.code == 403:
         return "El NAS no acepta conexiones desde esta red."
-    return detalle[:1].upper() + detalle[1:] if detalle else "El NAS tuvo un problema. Probá de nuevo en un rato."
+    return detalle[:1].upper() + detalle[1:] if detalle else "Se produjo un error en el NAS. Intente nuevamente en unos minutos."
 
 
 # ------------------------------------------------------------------ textos para la UI
@@ -205,11 +205,11 @@ def resumir(copia: dict | None, tarea: dict | None = None, disco: dict | None = 
     if fase == "FORMATEADO":
         return Resumen(titulo, "Vacío y listo para volver a grabar.", None, "ok")
     if fase == "CON_ERRORES":
-        return Resumen(titulo, f"{errores} archivos no se pudieron leer. El disco no se va a "
-                       "borrar: avisale a quien administra el NAS para intentar rescatarlos.",
+        return Resumen(titulo, f"{errores} archivos no se pudieron leer. El disco no se borrará: "
+                       "comuníquese con el administrador del NAS para intentar recuperarlos.",
                        None, "aviso")
     if fase == "DETENIDA":
-        return Resumen(titulo, "Tocá Copiar para seguir desde donde quedó.", None, "aviso")
+        return Resumen(titulo, "Haga clic en Copiar para continuar desde donde se detuvo.", None, "aviso")
     return Resumen(titulo, copia.get("error") or "", None, "error" if fase in
                    ("ERROR", "VERIFICACION_FALLIDA") else "neutro")
 
@@ -293,19 +293,19 @@ def nota_operador(disco: dict | None) -> str:
     if not nota:
         return ""
     if "modo automatico esta apagado" in nota:
-        return ("La copia automática está apagada: si es de la grabadora, tocá Copiar.")
+        return ("La copia automática está desactivada. Si es un disco de la grabadora, haga clic en Copiar.")
     if "no es un disco de hyperdeck" in nota:
-        return ("No es un disco de la grabadora (tiene otros archivos), así que no se copia "
-                "solo. Si igual lo querés copiar, tocá Copiar.")
+        return ("No es un disco de la grabadora (contiene otros archivos), por eso no se "
+                "copia automáticamente. Si desea copiarlo de todos modos, haga clic en Copiar.")
     if "no es de la hyperdeck" in nota:
-        return "No es un disco de la grabadora, así que no se copia solo."
+        return "No es un disco de la grabadora, por eso no se copia automáticamente."
     if "vacio, listo para grabar" in nota:
         return "Está vacío, listo para la grabadora."
     if "montado en otro lado" in nota:
-        return "El disco está abierto en otro lado del NAS, así que no se copió solo."
+        return "El disco está en uso en otra parte del NAS, por eso no se copió automáticamente."
     if "disco de hyperdeck," in nota or "ya hay una copia corriendo" in nota:
         return ""                # el estado de la copia ya lo dice
-    return "El NAS no pudo revisar este disco solo. Si es de la grabadora, tocá Copiar."
+    return "El NAS no pudo revisar este disco automáticamente. Si es de la grabadora, haga clic en Copiar."
 
 
 def acciones_para(disco: dict, copia: dict | None, tarea: dict | None) -> set[str]:

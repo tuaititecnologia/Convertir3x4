@@ -101,6 +101,7 @@ class MainWindow(QMainWindow):
 
         self.stack.currentChanged.connect(self._on_tab_changed)
         self.discos_tab.pendientes.connect(self._aviso_grabadora)
+        self.buscar_tab.enviarAConvertir.connect(self._a_convertir)
         self._restore_geometry()
 
     def _build_rail(self, modules) -> QFrame:
@@ -154,7 +155,7 @@ class MainWindow(QMainWindow):
         ver = QLabel(APP_VERSION)
         ver.setObjectName("muted")
         ver.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        ver.setToolTip("Versión de la app")
+        ver.setToolTip("Versión de la aplicación")
         col.addWidget(ver)
         return rail
 
@@ -178,6 +179,11 @@ class MainWindow(QMainWindow):
         if not visible:
             self.settings.setValue("help_seen", True)
 
+    def _a_convertir(self, paths: list[str]):
+        """Desde Buscar: lo elegido pasa a Convertir y se muestra Convertir."""
+        self.convert_tab.recibir(paths)
+        self.show_module(self.stack.indexOf(self.convert_tab))
+
     def show_module(self, index: int):
         self._nav.button(index).setChecked(True)
         self.stack.setCurrentIndex(index)
@@ -194,8 +200,8 @@ class MainWindow(QMainWindow):
         b = self._nav.button(self.stack.indexOf(self.discos_tab))
         b.set_badge(n)
         b.setToolTip("Grabadora" + ("" if not n else
-                     "  ·  hay un disco nuevo enchufado al NAS" if n == 1 else
-                     f"  ·  hay {n} discos nuevos enchufados al NAS"))
+                     "  ·  hay un disco nuevo conectado al NAS" if n == 1 else
+                     f"  ·  hay {n} discos nuevos conectados al NAS"))
 
     def _focus_module(self, index: int):
         """Al cambiar de módulo, el foco va a su lugar natural (o a ningún lado).

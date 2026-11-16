@@ -42,7 +42,7 @@ def _resumen_catalogo(stats) -> str:
         partes.append(n(stats.added, "1 nuevo", "nuevos"))
     if stats.updated:
         partes.append(n(stats.updated, "1 actualizado", "actualizados"))
-    texto = "Listo: " + (" y ".join(partes) if partes else "no había nada nuevo") + "."
+    texto = "Catalogación terminada: " + (" y ".join(partes) if partes else "no había elementos nuevos") + "."
     if stats.skipped and partes:
         texto += f" {n(stats.skipped, '1 ya estaba', 'ya estaban')}."
     if stats.duplicates:
@@ -80,7 +80,7 @@ class MotorTab(QWidget):
         layout.setSpacing(10)
 
         cab = QHBoxLayout()
-        cab.addWidget(self._title("Sumar fotos y videos al catálogo"))
+        cab.addWidget(self._title("Agregar fotos y videos al catálogo"))
         cab.addStretch()
         # Lo que casi nunca se usa (limpiar el catálogo) va escondido en el ⚙
         self.btn_avanzado = QPushButton()
@@ -93,9 +93,9 @@ class MotorTab(QWidget):
         cab.addWidget(self.btn_avanzado)
         layout.addLayout(cab)
         layout.addWidget(self._text(
-            "Elegí una carpeta y la app suma al catálogo todas sus fotos y videos, para "
-            "encontrarlos después en Buscar. Se puede repetir cuando quieras: solo agrega "
-            "lo que todavía no estaba."))
+            "Elija una carpeta: la aplicación agrega al catálogo todas sus fotos y videos "
+            "para encontrarlos luego en Buscar. Puede repetirse en cualquier momento: solo "
+            "se agrega lo que todavía no estaba."))
 
         row = QHBoxLayout()
         row.setSpacing(8)
@@ -130,10 +130,10 @@ class MotorTab(QWidget):
         layout.addSpacing(_SECTION_GAP)
         layout.addWidget(self._title("Análisis con IA"))
         layout.addWidget(self._text(
-            "Propone tags (bautismo, alabanza, placa, flyer…) y reconoce a las personas "
-            "de la lista de abajo. Todo queda como sugerencia hasta que alguien lo "
+            "Sugiere etiquetas (bautismo, alabanza, placa, flyer…) y reconoce a las "
+            "personas de la lista de abajo. Todo queda como sugerencia hasta que se "
             "confirma en Buscar. Funciona sin internet; solo la primera vez necesita "
-            "bajar unos 650 MB."))
+            "descargar aprox. 650 MB."))
         self.btn_ai = QPushButton("Analizar con IA")
         icons.set_icon(self.btn_ai, "sparkles", 15, "text")
         self.btn_ai.clicked.connect(self._run_ai)
@@ -143,9 +143,9 @@ class MotorTab(QWidget):
         layout.addSpacing(_SECTION_GAP)
         layout.addWidget(self._title("Personas reconocibles"))
         layout.addWidget(self._text(
-            "Solo se reconoce a quien esté en esta lista (pastores, invitados, "
-            "gente importante). Las demás caras se ignoran y no se guardan. "
-            "Cargá de 3 a 5 fotos por persona donde se le vea bien la cara."))
+            "Solo se reconoce a las personas de esta lista (pastores, invitados y otras "
+            "personas relevantes). Los demás rostros se ignoran y no se guardan. "
+            "Cargue de 3 a 5 fotos por persona en las que el rostro se vea con claridad."))
         self.lst_people = QListWidget()
         self.lst_people.setObjectName("people_list")
         self.lst_people.setAccessibleName("Personas reconocibles")
@@ -277,8 +277,8 @@ class MotorTab(QWidget):
         self._worker = None
         self._update_buttons()
         # El detalle técnico (err) no le sirve al operador.
-        self._set_status("No se pudo terminar. Probá de nuevo; si vuelve a pasar, "
-                         "avisale a quien mantiene la app.")
+        self._set_status("No se pudo completar la operación. Intente nuevamente; si el "
+                         "problema persiste, comuníquese con el responsable de la aplicación.")
 
     @staticmethod
     def _ensure_models(mdir, progress_cb):
@@ -292,14 +292,14 @@ class MotorTab(QWidget):
     # ------------------------------------------------------------- Etapa 0
     def _browse(self):
         start = self.txt_folder.text() or self.settings.value("motor_last_dir", "")
-        path = QFileDialog.getExistingDirectory(self, "Elegí la carpeta con fotos y videos", start)
+        path = QFileDialog.getExistingDirectory(self, "Elija la carpeta con fotos y videos", start)
         if path:
             self.txt_folder.setText(path)
 
     def _run_stage0(self):
         root = self.txt_folder.text().strip()
         if not root:
-            self._set_status("Elegí una carpeta primero.")
+            self._set_status("Primero elija una carpeta.")
             return
         self.settings.setValue("motor_last_dir", root)
         tdir = thumb_dir()
@@ -335,10 +335,10 @@ class MotorTab(QWidget):
 
         def done(st):
             sugeridos = st.scene_tags + st.people_tags
-            msg = (f"Listo: se analizaron {st.analyzed}. "
+            msg = (f"Análisis terminado: {st.analyzed} elementos analizados. "
                    + ("No hay sugerencias nuevas." if not sugeridos else
-                      "Hay 1 tag sugerido para revisar en Buscar." if sugeridos == 1 else
-                      f"Hay {sugeridos} tags sugeridos para revisar en Buscar."))
+                      "Hay 1 etiqueta sugerida para revisar en Buscar." if sugeridos == 1 else
+                      f"Hay {sugeridos} etiquetas sugeridas para revisar en Buscar."))
             if st.missing_files:
                 msg += (f" {st.missing_files} no se encontraron; se vuelven a intentar la "
                         "próxima vez.")
@@ -355,7 +355,7 @@ class MotorTab(QWidget):
     # ------------------------------------------------------------- personas
     def _add_person(self):
         name, ok = QInputDialog.getText(self, "Agregar persona",
-                                        "Nombre (así aparece como tag):")
+                                        "Nombre (así aparece como etiqueta):")
         name = " ".join(name.split())
         if not ok or not name:
             return
@@ -404,10 +404,10 @@ class MotorTab(QWidget):
             added, no_face = result
             msg = f"{name}: {added} foto{'s' if added != 1 else ''} de referencia cargada{'s' if added != 1 else ''}."
             if no_face:
-                msg += (f" En {len(no_face)} no se encontró una cara: "
+                msg += (f" En {len(no_face)} no se detectó un rostro: "
                         + ", ".join(os.path.basename(p) for p in no_face[:5]))
             if added:
-                msg += " Corré «Analizar con IA» para buscarla en el catálogo."
+                msg += " Ejecute «Analizar con IA» para buscarla en el catálogo."
             self._set_status(msg)
             self._refresh_people()
 
@@ -420,7 +420,7 @@ class MotorTab(QWidget):
         pid, name = sel
         if not confirmar(self, "Quitar persona", f"¿Quitar a {name} de la lista?",
                          "Deja de reconocerse en fotos nuevas y se borran sus fotos de "
-                         "referencia. Los tags que ya tiene en fotos se mantienen.",
+                         "referencia. Las etiquetas que ya tiene en fotos se mantienen.",
                          f"Quitar a {name}", peligro=True):
             return
         conn = connect(db_path())

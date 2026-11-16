@@ -8,7 +8,9 @@ Frases cortas, con lo que hay que hacer, en el idioma de los operadores.
 import sys
 
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QScrollArea, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import (
+    QFrame, QHBoxLayout, QLabel, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget,
+)
 
 from .. import icons
 from ..style import T
@@ -18,65 +20,88 @@ _MOD = "⌘" if sys.platform == "darwin" else "Ctrl"
 # (título, [(subtítulo, texto)])
 HELP = [
     ("Buscar", [
-        ("Encontrar", "Escribí parte del nombre, de la carpeta o un tag. Con Fotos y "
-                      "Videos ves solo uno de los dos."),
-        ("Llevar a ProPresenter", "Arrastrá la foto o el video directo a ProPresenter. "
-                                  "ProPresenter usa el archivo original, no hace una copia."),
-        ("Verlo entero", "Con doble clic, el video se abre en el reproductor de la PC y la "
-                         "foto en el visor de fotos."),
-        ("Poner tags", "Seleccioná una o varias (con Shift o " + _MOD + ") y escribí el tag "
-                       "abajo. Si no existe, se crea."),
-        ("Sugerencias de la IA", "Los tags violeta los propuso la IA. Tocá el tag para "
-                                 "confirmarlo o la ✕ para quitarlo: no lo vuelve a proponer."),
+        ("Buscar", "Escriba parte del nombre, de la carpeta o una etiqueta. Con «Fotos» o "
+                   "«Videos» se muestra solo ese tipo."),
+        ("Usar en ProPresenter", "Arrastre la foto o el video directamente a ProPresenter. "
+                                 "ProPresenter usa el archivo original; no crea una copia."),
+        ("Ver el original", "Con doble clic, el video se abre en el reproductor de la PC y "
+                            "la foto en el visor de imágenes."),
+        ("Enviar a Convertir", "Seleccione uno o varios elementos y elija «Enviar a "
+                               "Convertir» (o use el menú del botón derecho). Se agregan a "
+                               "la grilla de Convertir ya seleccionados."),
+        ("Etiquetas", "Seleccione uno o varios elementos (con Shift o " + _MOD + ") y "
+                      "escriba la etiqueta abajo. Si no existe, se crea."),
+        ("Sugerencias de la IA", "Las etiquetas violetas son sugerencias de la IA. Haga "
+                                 "clic en la etiqueta para confirmarla o en la ✕ para "
+                                 "descartarla: no volverá a sugerirse."),
     ]),
     ("Catalogar", [
-        ("Sumar al catálogo", "Elegí la carpeta y tocá Catalogar. Se puede repetir "
-                              "cuando quieras: solo agrega lo que todavía no estaba."),
-        ("Análisis con IA", "Propone tags y reconoce a las personas de la lista. Todo queda "
-                            "como sugerencia hasta que alguien lo confirma en Buscar."),
-        ("Personas", "Solo se reconoce a quien esté en la lista. Cargá de 3 a 5 fotos "
-                     "por persona donde se le vea bien la cara."),
+        ("Agregar al catálogo", "Elija la carpeta y haga clic en Catalogar. Puede repetirse "
+                                "en cualquier momento: solo se agrega lo que todavía no "
+                                "estaba."),
+        ("Análisis con IA", "Sugiere etiquetas y reconoce a las personas de la lista. Todo "
+                            "queda como sugerencia hasta que se confirma en Buscar."),
+        ("Personas", "Solo se reconoce a las personas de la lista. Cargue de 3 a 5 fotos "
+                     "por persona en las que el rostro se vea con claridad."),
     ]),
     ("Convertir", [
-        ("Agregar", "Agregá fotos o videos de la PC o del NAS, o pegá un link de "
-                    "YouTube o Facebook para bajarlo."),
-        ("Convertir", "Seleccioná en la grilla y elegí cuántos van en cada pantalla: uno, "
-                      "o dos juntos. Abajo ves cada pantalla que se va a crear; el botón "
-                      "dice cuántas fotos y videos salen."),
-        ("Dos en la misma pantalla", "Van en el orden de la grilla: el primero arriba (o a "
-                                     "la izquierda en una pantalla horizontal). Tocá la "
-                                     "pantalla en la vista previa para invertirlos. Si uno "
-                                     "es video, sale un video."),
-        ("Empezar de nuevo", "La lista se guarda sola y vuelve al abrir la app. Para "
-                             "arrancar otra, tocá Vaciar: los archivos no se borran."),
-        ("Audio", "Los videos salen con el volumen nivelado: en la consola el fader "
+        ("Agregar", "Agregue fotos o videos de la PC o del NAS, o pegue el enlace de un "
+                    "video de YouTube o Facebook para descargarlo."),
+        ("Convertir", "Seleccione los elementos en la grilla y elija cuántos van en cada "
+                      "pantalla: uno o dos. En «Resultado» se muestra cada pantalla que se "
+                      "creará, y el botón indica cuántas fotos y videos se generan."),
+        ("Dos por pantalla", "Se ubican en el orden de la grilla: el primero arriba (o a la "
+                             "izquierda en una pantalla horizontal). Para cambiar el orden, "
+                             "arrastre los elementos en la grilla. Si uno de ellos es un "
+                             "video, el resultado es un video."),
+        ("Fondo", "«Automático» genera el fondo con los colores de los elementos. "
+                  "«Imagen propia» usa una imagen elegida, con uno o dos elementos por "
+                  "pantalla; con uno, deja espacio abajo (o a la derecha) para texto."),
+        ("Nueva lista", "La lista se guarda automáticamente y se recupera al abrir la "
+                        "aplicación. Para comenzar una nueva, use «Vaciar»: los archivos no "
+                        "se borran."),
+        ("Audio", "Los videos se generan con el volumen nivelado: en la consola, el fader "
                   "queda siempre en 0 dB."),
-        ("Ver un video", "Pasá el mouse por arriba para ver de qué se trata. Con doble "
-                         "clic se abre en el reproductor de la PC."),
-        ("Si algo falla", "Pasá el mouse por arriba del que está marcado: dice qué pasó. "
-                          "«No disponible» casi siempre es el NAS o un disco desconectado."),
-        ("Opciones avanzadas", "El ⚙ tiene opciones que casi nunca hacen falta. "
-                               "Lo que cambies ahí vuelve a lo estándar al cerrar la app."),
+        ("Vista previa de videos", "Pase el puntero sobre un video para ver su contenido. "
+                                   "Con doble clic se abre en el reproductor de la PC."),
+        ("Errores", "Pase el puntero sobre el elemento marcado para ver qué ocurrió. «No "
+                    "disponible» generalmente indica que el NAS o un disco está desconectado."),
+        ("Opciones avanzadas", "El botón ⚙ contiene opciones que rara vez es necesario "
+                               "cambiar. Los cambios se restablecen al cerrar la aplicación."),
     ]),
     ("Grabadora", [
-        ("Para qué es", "Para guardar en el NAS lo que se grabó con la grabadora, y "
-                        "dejar el disco vacío para la próxima vez."),
-        ("Cómo sabe que es de la grabadora", "El NAS lo reconoce solo: es un disco que "
-                                             "tiene únicamente grabaciones de la grabadora. "
-                                             "Si tiene otros archivos, aparece como «Otro "
-                                             "disco» y no se toca solo."),
-        ("Copiar el disco", "Enchufá el disco de la grabadora al NAS. Cuando aparece en "
-                            "la lista, tocá Copiar y elegí la carpeta."),
-        ("Sin riesgo", "Copiar nunca cambia nada del disco ni reemplaza archivos que ya "
-                       "estén en el NAS."),
-        ("Formatear", "Borra todo el disco para que la grabadora lo vuelva a usar. Solo se "
-                      "puede cuando la copia está completa y revisada."),
+        ("Función", "Guarda en el NAS lo grabado con la grabadora y deja el disco vacío "
+                    "para la próxima grabación."),
+        ("Reconocimiento del disco", "El NAS reconoce automáticamente los discos que "
+                                     "contienen únicamente grabaciones de la grabadora. Si "
+                                     "un disco tiene otros archivos, aparece como «Otro "
+                                     "disco» y no se copia automáticamente."),
+        ("Copiar el disco", "Conecte el disco de la grabadora al NAS. Cuando aparezca en la "
+                            "lista, haga clic en Copiar y elija la carpeta."),
+        ("Seguridad", "La copia nunca modifica el disco ni reemplaza archivos que ya "
+                      "estén en el NAS."),
+        ("Formatear", "Borra todo el contenido del disco para que la grabadora vuelva a "
+                      "usarlo. Solo está disponible cuando la copia está completa y "
+                      "verificada."),
         ("Copia automática", "Si está activada, los discos de la grabadora se copian, se "
-                             "revisan y se borran apenas se enchufan al NAS."),
+                             "verifican y se borran en cuanto se conectan al NAS."),
     ]),
 ]
 SHORTCUTS = [(f"{_MOD}+1 a 4", "Cambiar de módulo"), ("F1", "Abrir o cerrar la ayuda"),
-             ("Supr", "Quitar de Convertir")]
+             ("Supr", "Quitar de Convertir"),
+             (f"{_MOD}+Enter", "Enviar a Convertir (en Buscar)")]
+
+
+class _Parrafo(QLabel):
+    """Texto de varias líneas que pide el alto que necesita para su ancho real.
+    Dentro de un panel con desplazamiento, Qt calcula el alto con otro ancho y
+    los párrafos se cortaban en tres líneas."""
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        alto = self.heightForWidth(self.width())
+        if alto > 0 and alto != self.minimumHeight():
+            self.setMinimumHeight(alto)
 
 
 class HelpPanel(QFrame):
@@ -135,7 +160,8 @@ class HelpPanel(QFrame):
         s.setObjectName("section_title")
         s.setContentsMargins(0, 8, 0, 0)
         self._body_lay.addWidget(s)
-        t = QLabel(text)
+        t = _Parrafo(text)
         t.setWordWrap(True)
         t.setObjectName("help_text")
+        t.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
         self._body_lay.addWidget(t)

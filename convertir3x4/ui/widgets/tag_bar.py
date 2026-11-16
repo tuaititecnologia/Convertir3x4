@@ -45,7 +45,7 @@ class TagBar(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
 
-        self.lbl = QLabel("Tags")
+        self.lbl = QLabel("Etiquetas")
         self.lbl.setObjectName("section_title")
         layout.addWidget(self.lbl)
 
@@ -70,9 +70,9 @@ class TagBar(QWidget):
 
         # Campo con autocompletado
         self.input = QLineEdit()
-        self.input.setPlaceholderText("Agregar tag y Enter…")
-        self.input.setAccessibleName("Agregar tag a la selección")
-        self.input.setToolTip("Si el tag no existe, se crea")
+        self.input.setPlaceholderText("Agregar etiqueta y presionar Enter…")
+        self.input.setAccessibleName("Agregar una etiqueta a la selección")
+        self.input.setToolTip("Si la etiqueta no existe, se crea")
         self.input.setMinimumWidth(260)
         self.input.setMaximumWidth(360)
         self._completer = QCompleter(self)
@@ -89,7 +89,7 @@ class TagBar(QWidget):
     # ------------------------------------------------------------- API
     def set_enabled(self, on: bool):
         self.input.setEnabled(on)
-        self.lbl.setText("Tags de la selección" if on else "Seleccioná fotos o videos para ver y poner tags")
+        self.lbl.setText("Etiquetas de la selección" if on else "Seleccione fotos o videos para ver y asignar etiquetas")
 
     def set_known_tags(self, names: list[str]):
         self._completer_model.setStringList(names)
@@ -126,8 +126,8 @@ class TagBar(QWidget):
         chip.setFixedHeight(_CHIP_HEIGHT)
         chip.setCursor(Qt.CursorShape.PointingHandCursor)
         chip.setToolTip(
-            f"Está en {count} de las {total} seleccionadas: tocá para quitarlo de todas"
-            if partial else "Tocá para quitar el tag"
+            f"Está en {count} de los {total} elementos seleccionados: haga clic para quitarla de todos"
+            if partial else "Haga clic para quitar la etiqueta"
         )
         chip.clicked.connect(lambda _=False, n=name: self.tagRemoved.emit(n))
         return chip
@@ -142,13 +142,13 @@ class TagBar(QWidget):
         ok.setObjectName("tag_chip_ia")
         ok.setFixedHeight(_CHIP_HEIGHT)
         ok.setCursor(Qt.CursorShape.PointingHandCursor)
-        ok.setToolTip("Lo sugirió la IA: tocá para confirmarlo")
+        ok.setToolTip("Sugerida por la IA: haga clic para confirmarla")
         ok.clicked.connect(lambda _=False, n=name: self.tagConfirmed.emit(n))
         x = QPushButton("✕")
         x.setObjectName("tag_chip_ia_x")
         x.setFixedHeight(_CHIP_HEIGHT)
         x.setCursor(Qt.CursorShape.PointingHandCursor)
-        x.setToolTip("No corresponde: quitarlo (la IA no lo vuelve a sugerir)")
+        x.setToolTip("No corresponde: descartarla (la IA no volverá a sugerirla)")
         x.clicked.connect(lambda _=False, n=name: self.tagRemoved.emit(n))
         row.addWidget(ok)
         row.addWidget(x)

@@ -7,8 +7,14 @@ cómo se informa el avance. Reglas (docs/convertir-fotos-y-videos.md):
 - Centrada: una salida por elemento. Foto -> JPG (o MP4 con fondo animado si
   está activado "Exportar fotos como video"); video -> MP4 con su audio nivelado.
 - Doble: de a pares, en el orden de la grilla. Si en el par hay un video, sale
-  video. Si queda uno suelto, sale solo.
-- Sobre fondo: una salida por elemento sobre el fondo elegido. Video -> MP4.
+  video. Si queda uno suelto, sale solo. Fondo de sus colores o, si hay uno
+  elegido (`Options.background`), ese.
+- Sobre fondo: una salida por elemento sobre el fondo elegido, con lugar para
+  texto. Video -> MP4; foto -> JPG, o MP4 con "Exportar fotos como video".
+
+Elegir el fondo y elegir cuántos van por pantalla son cosas separadas (15/11/2026:
+antes el fondo elegido solo existía con uno por pantalla, y "Sobre fondo"
+ignoraba "Exportar fotos como video").
 
 Los archivos salen numerados (`0001_…`) para conservar el orden de la grilla,
 que es el orden en que se arman las presentaciones.
@@ -21,7 +27,7 @@ from typing import Callable
 from ..catalog.db import IMAGE_EXTS, VIDEO_EXTS
 from . import clips
 from .images import convert_centered, convert_double, convert_on_background
-from .video import convert_centered_video, convert_double_video
+from .video import convert_centered_video, convert_double_video, convert_on_background_video
 
 CENTRADA, DOBLE, FONDO = "centrada", "doble", "fondo"
 MODES = (CENTRADA, DOBLE, FONDO)
@@ -50,6 +56,7 @@ class Job:
     mode: str
     is_video: bool                  # la salida es MP4
     has_clip: bool                  # alguna entrada es un video (usa clips.py)
+    con_fondo: bool = False         # va sobre el fondo elegido
 
 
 @dataclass
@@ -77,11 +84,13 @@ def plan(paths: list[str], mode: str, opts: Options) -> list[Job]:
     jobs = []
     for i, group in enumerate(groups, start=1):
         has_clip = any(kind_of(p) == "video" for p in group)
-        is_video = has_clip or (opts.photos_as_video and mode != FONDO)
+        is_video = has_clip or opts.photos_as_video
+        con_fondo = mode == FONDO or (mode == DOBLE and bool(opts.background))
         names = "+".join(_stem(p) for p in group)
-        extra = "_fondo" if mode == FONDO else ""
+        extra = "_fondo" if con_fondo else ""
         ext = ".mp4" if is_video else ".jpg"
-        jobs.append(Job(group, f"{i:04d}_{names}{extra}{sfx}{ext}", mode, is_video, has_clip))
+        jobs.append(Job(group, f"{i:04d}_{names}{extra}{sfx}{ext}", mode, is_video, has_clip,
+                        con_fondo))
     return jobs
 
 
@@ -105,9 +114,9 @@ def describe(paths: list[str], mode: str, opts: Options) -> str:
         jobs = plan(paths, mode, opts)
     except ValueError as e:
         return str(e)
-    text = f"Va a crear {que_crea(jobs)}"
+    text = f"Resultado: {que_crea(jobs)}"
     if mode == DOBLE and len(paths) % 2:
-        text += " (la última queda sola)"
+        text += " (el último elemento ocupa una pantalla propia)"
     return text + "."
 
 
@@ -126,27 +135,37 @@ def run(job: Job, out_dir: str, opts: Options,
         cb(done / total if total else 0.0)
 
     audio = None
+    bg = opts.background if job.con_fondo else None
+    solo = len(job.inputs) == 1
     try:
         if job.has_clip:
-            if job.mode == CENTRADA or (job.mode == DOBLE and len(job.inputs) == 1):
+            if job.mode == FONDO:
+                audio = clips.convert_clip_on_background(job.inputs[0], bg, out_path, aspect,
+                                                         cb, cancel)
+            elif job.mode == DOBLE and not solo:
+                audio = clips.convert_double_clip(job.inputs, out_path, aspect, cb, cancel,
+                                                  bg_path=bg)
+            elif bg:    # el que queda solo en "2 por pantalla", sobre el fondo elegido
+                audio = clips.convert_clip_on_background(job.inputs[0], bg, out_path, aspect,
+                                                         cb, cancel, centrado=True)
+            else:
                 audio = clips.convert_centered_clip(job.inputs[0], out_path, aspect, cb, cancel)
-            elif job.mode == DOBLE:
-                audio = clips.convert_double_clip(job.inputs, out_path, aspect, cb, cancel)
-            else:
-                audio = clips.convert_clip_on_background(job.inputs[0], opts.background,
-                                                         out_path, aspect, cb, cancel)
-        elif job.mode == CENTRADA:
+        elif job.mode == FONDO:
             if job.is_video:
-                convert_centered_video(job.inputs[0], out_path, aspect=aspect, progress_cb=frames_cb)
+                convert_on_background_video(job.inputs[0], bg, out_path, aspect=aspect,
+                                            progress_cb=frames_cb)
             else:
-                convert_centered(job.inputs[0], out_path, aspect=aspect)
+                convert_on_background(job.inputs[0], bg, out_path, aspect=aspect)
         elif job.mode == DOBLE:
             if job.is_video:
-                convert_double_video(job.inputs, out_path, aspect=aspect, progress_cb=frames_cb)
+                convert_double_video(job.inputs, out_path, aspect=aspect, progress_cb=frames_cb,
+                                     bg_path=bg)
             else:
-                convert_double(job.inputs, out_path, aspect=aspect)
+                convert_double(job.inputs, out_path, aspect=aspect, bg_path=bg)
+        elif job.is_video:
+            convert_centered_video(job.inputs[0], out_path, aspect=aspect, progress_cb=frames_cb)
         else:
-            convert_on_background(job.inputs[0], opts.background, out_path, aspect=aspect)
+            convert_centered(job.inputs[0], out_path, aspect=aspect)
     except clips.Cancelled:
         _remove(out_path)
         raise
@@ -171,8 +190,8 @@ def _friendly(e: Exception) -> str:
         return ("No se pudo convertir el video: puede estar dañado o en un formato "
                 "que no se puede leer.")
     if isinstance(e, FileNotFoundError):
-        return "No se encontró el archivo (¿se desconectó el disco o el NAS?)."
+        return "No se encontró el archivo. Verifique que el disco o el NAS estén conectados."
     if isinstance(e, PermissionError):
-        return "No se puede guardar en esa carpeta: no hay permiso. Elegí otra."
-    return ("Algo falló al convertir este archivo. Probá de nuevo; si vuelve a pasar, "
-            "avisale a quien mantiene la app.")
+        return "No se puede guardar en esa carpeta por falta de permisos. Elija otra."
+    return ("No se pudo convertir este archivo. Intente nuevamente; si el problema persiste, "
+            "comuníquese con el responsable de la aplicación.")

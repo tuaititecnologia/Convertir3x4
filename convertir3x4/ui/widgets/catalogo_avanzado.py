@@ -41,8 +41,8 @@ class CatalogoAvanzado(QDialog):
         lay.addWidget(t)
         ayuda = QLabel(
             "Busca fotos y videos que siguen en el catálogo pero cuyo archivo ya no existe "
-            "(se movió o se borró) y los quita. Lo que está en un disco o en el NAS "
-            "desconectado no se toca: vuelve solo cuando se conecta.")
+            "(porque se movió o se borró) y los quita. Lo que está en un disco o en el NAS "
+            "desconectado no se modifica: vuelve a estar disponible al conectarse.")
         ayuda.setObjectName("muted")
         ayuda.setWordWrap(True)
         lay.addWidget(ayuda)
@@ -99,7 +99,7 @@ class CatalogoAvanzado(QDialog):
         if rev.sin_revisar:
             donde = " y ".join(friendly_root(r) for r in rev.raices_desconectadas)
             partes.append(f"No se revisaron {rev.sin_revisar} porque {donde} no está conectado; "
-                          "esos no se tocan.")
+                          "esos elementos no se modifican.")
         self._resultado(" ".join(partes))
         self.btn_quitar.setText("Quitar 1 del catálogo…" if n == 1 else f"Quitar {n} del catálogo…")
         self.btn_quitar.setVisible(n > 0)
@@ -117,7 +117,7 @@ class CatalogoAvanzado(QDialog):
         msg.setWindowTitle("Quitar del catálogo")
         msg.setText(f"¿Quitar del catálogo {'1 foto o video' if n == 1 else f'{n} fotos y videos'} "
                     "cuyo archivo ya no existe?")
-        msg.setInformativeText(f"{ejemplos}\n\nSe pierden sus tags. No se puede deshacer.")
+        msg.setInformativeText(f"{ejemplos}\n\nSe perderán sus etiquetas. Esta acción no se puede deshacer.")
         quitar = msg.addButton("Quitar del catálogo", QMessageBox.ButtonRole.DestructiveRole)
         msg.addButton("Cancelar", QMessageBox.ButtonRole.RejectRole)
         msg.setDefaultButton(msg.buttons()[-1])
@@ -145,8 +145,8 @@ class CatalogoAvanzado(QDialog):
     def _quitado(self, n):
         self._faltan = []
         self.btn_quitar.setVisible(False)
-        self._resultado("Listo: se quitó 1 del catálogo." if n == 1 else
-                        f"Listo: se quitaron {n} del catálogo.")
+        self._resultado("Se quitó 1 elemento del catálogo." if n == 1 else
+                        f"Se quitaron {n} elementos del catálogo.")
         self.catalogChanged.emit()
 
     # ------------------------------------------------------------- comunes
@@ -174,7 +174,7 @@ class CatalogoAvanzado(QDialog):
 
     def _fallo(self, _msg):
         self._fin()
-        self._resultado("No se pudo terminar. Probá de nuevo.")
+        self._resultado("No se pudo completar la operación. Intente nuevamente.")
 
     def _fin(self):
         if self._worker is not None:

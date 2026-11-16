@@ -40,7 +40,7 @@ class ThumbWorker(_Cancellable):
             try:
                 self.ready.emit(p, clips.clip_thumbs(p, self._cache))
             except FileNotFoundError:
-                self.failed.emit(p, "No se encontró el archivo (¿se desconectó el disco o el NAS?).")
+                self.failed.emit(p, "No se encontró el archivo. Verifique que el disco o el NAS estén conectados.")
             except Exception as e:  # noqa: BLE001 — se muestra en la grilla
                 self.failed.emit(p, "No se pudo leer el video: puede estar dañado o en un "
                                     "formato que no se puede abrir.")
@@ -75,7 +75,7 @@ class DownloadWorker(_Cancellable):
     """Baja un link con yt-dlp."""
     progress = pyqtSignal(str, float, str)   # link, 0..1, texto
     done = pyqtSignal(str, str)              # link, ruta del MP4
-    failed = pyqtSignal(str, str)            # link, motivo ("" si se canceló)
+    failed = pyqtSignal(str, str, bool)      # link, motivo ("" si se canceló), hay versión nueva
 
     def __init__(self, url: str, out_dir: str, tools_dir: str, parent=None):
         super().__init__(parent)
@@ -87,10 +87,41 @@ class DownloadWorker(_Cancellable):
                                      lambda f, m: self.progress.emit(self.url, f, m),
                                      self.cancelled)
         except clips.Cancelled:
-            self.failed.emit(self.url, "")
+            self.failed.emit(self.url, "", False)
         except download.DownloadError as e:
-            self.failed.emit(self.url, str(e))
+            # Si el error puede ser del programa, fijarse si salió una versión nueva
+            # (pasa en medio de un servicio: YouTube cambia y el video hace falta ya).
+            nueva = (e.por_el_programa and not self.cancelled()
+                     and download.hay_version_nueva(self._tools, self.cancelled))
+            self.failed.emit(self.url, str(e), nueva)
         except Exception as e:  # noqa: BLE001
-            self.failed.emit(self.url, "No se pudo bajar el video. Probá de nuevo en un rato.")
+            self.failed.emit(self.url, "No se pudo descargar el video. Intente nuevamente en unos minutos.", False)
         else:
             self.done.emit(self.url, path)
+
+
+class ToolsWorker(_Cancellable):
+    """Prepara o actualiza el programa para bajar videos (al abrir la app)."""
+    progress = pyqtSignal(float)
+    done = pyqtSignal()
+    failed = pyqtSignal(str)        # motivo ("" si se canceló)
+
+    def __init__(self, tools_dir: str, parent=None, actualizar: bool = False):
+        super().__init__(parent)
+        self._tools = tools_dir
+        self._actualizar = actualizar
+
+    def run(self):
+        try:
+            if self._actualizar:
+                download.actualizar(self._tools, self.progress.emit, self.cancelled)
+            else:
+                download.preparar(self._tools, self.progress.emit, self.cancelled)
+        except clips.Cancelled:
+            self.failed.emit("")
+        except download.DownloadError as e:
+            self.failed.emit(str(e))
+        except Exception:  # noqa: BLE001
+            self.failed.emit("No se pudo instalar el componente de descarga. Intente nuevamente más tarde.")
+        else:
+            self.done.emit()

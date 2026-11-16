@@ -5,6 +5,7 @@ descarga real se probó a mano (ver docs/convertir-fotos-y-videos.md).
 """
 
 import os
+import sys
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -65,22 +66,37 @@ class TestPlan:
         jobs = batch.plan(["/a/1.jpg"], batch.FONDO, batch.Options(background="/b.jpg"))
         assert jobs[0].out_name == "0001_1_fondo_8x9.jpg"
 
+    def test_doble_con_fondo_elegido(self):
+        opts = batch.Options(background="/b.jpg")
+        jobs = batch.plan(["/a/1.jpg", "/a/2.jpg", "/a/3.jpg"], batch.DOBLE, opts)
+        assert all(j.con_fondo for j in jobs)
+        assert jobs[0].out_name == "0001_1+2_fondo_8x9.jpg"
+        # Sin fondo elegido, de sus colores como siempre
+        assert not batch.plan(["/a/1.jpg"], batch.DOBLE, batch.Options())[0].con_fondo
+        # El fondo no cuenta en "1 por pantalla" sin fondo
+        assert not batch.plan(["/a/1.jpg"], batch.CENTRADA, opts)[0].con_fondo
+
+    def test_sobre_fondo_respeta_fotos_como_video(self):
+        opts = batch.Options(background="/b.jpg", photos_as_video=True)
+        job = batch.plan(["/a/1.jpg"], batch.FONDO, opts)[0]
+        assert job.is_video and job.out_name.endswith(".mp4")
+
     def test_photos_as_video_and_aspect(self):
         jobs = batch.plan(["/a/1.jpg"], batch.CENTRADA,
                           batch.Options(aspect=(3, 4), photos_as_video=True))
         assert jobs[0].out_name == "0001_1_3x4.mp4" and jobs[0].is_video
 
     def test_describe_in_plain_words(self):
-        assert batch.describe(["/a/1.jpg"], batch.CENTRADA, batch.Options()) == "Va a crear 1 foto."
+        assert batch.describe(["/a/1.jpg"], batch.CENTRADA, batch.Options()) == "Resultado: 1 foto."
         assert batch.describe(["/a/1.jpg", "/a/2.mp4"], batch.CENTRADA,
-                              batch.Options()) == "Va a crear 1 foto y 1 video."
+                              batch.Options()) == "Resultado: 1 foto y 1 video."
         text = batch.describe(["/a/1.jpg", "/a/2.mp4", "/a/3.jpg"], batch.DOBLE, batch.Options())
-        assert text == "Va a crear 1 video y 1 foto (la última queda sola)." or \
-            text == "Va a crear 1 foto y 1 video (la última queda sola)."
+        assert text in ("Resultado: 1 video y 1 foto (el último elemento ocupa una pantalla propia).",
+                        "Resultado: 1 foto y 1 video (el último elemento ocupa una pantalla propia).")
         # Dos videos: la diferencia entre "1 por pantalla" y "2 por pantalla" se lee
         dos = ["/a/1.mp4", "/a/2.mp4"]
-        assert batch.describe(dos, batch.CENTRADA, batch.Options()) == "Va a crear 2 videos."
-        assert batch.describe(dos, batch.DOBLE, batch.Options()) == "Va a crear 1 video."
+        assert batch.describe(dos, batch.CENTRADA, batch.Options()) == "Resultado: 2 videos."
+        assert batch.describe(dos, batch.DOBLE, batch.Options()) == "Resultado: 1 video."
         assert batch.describe(["/a/1.jpg"], batch.FONDO, batch.Options()) == "Falta elegir el fondo."
 
 
@@ -103,6 +119,31 @@ class TestRun:
         r = batch.run(job, str(tmp_path), batch.Options())
         assert r.error is None and r.out_path.endswith(".mp4")
         assert clips.clip_info(r.out_path).duration == pytest.approx(3, abs=0.3)
+
+    def test_dos_fotos_sobre_fondo_elegido(self, media, tmp_path):
+        verde = str(tmp_path / "verde.jpg")
+        Image.new("RGB", (400, 400), (20, 200, 40)).save(verde)
+        opts = batch.Options(background=verde)
+        for paths in ([media["photo"], media["photo2"]], [media["photo"]]):
+            job = batch.plan(paths, batch.DOBLE, opts)[0]
+            r = batch.run(job, str(tmp_path), opts)
+            assert r.error is None
+            esquina = Image.open(r.out_path).convert("RGB").getpixel((2, 2))
+            assert esquina[1] > 150 and esquina[0] < 80      # se ve el fondo verde
+
+    def test_foto_y_video_sobre_fondo_elegido(self, media, tmp_path):
+        opts = batch.Options(background=media["photo2"])
+        for paths in ([media["photo"], media["video"]], [media["video"]]):
+            job = batch.plan(paths, batch.DOBLE, opts)[0]
+            r = batch.run(job, str(tmp_path), opts)
+            assert r.error is None and r.out_path.endswith(".mp4")
+            assert clips.clip_info(r.out_path).duration == pytest.approx(3, abs=0.3)
+
+    def test_foto_sobre_fondo_como_video(self, media, tmp_path):
+        opts = batch.Options(background=media["photo2"], photos_as_video=True)
+        job = batch.plan([media["photo"]], batch.FONDO, opts)[0]
+        r = batch.run(job, str(tmp_path), opts)
+        assert r.error is None and r.out_path.endswith(".mp4") and os.path.exists(r.out_path)
 
     def test_video_over_background(self, media, tmp_path):
         opts = batch.Options(background=media["photo2"])
@@ -416,9 +457,9 @@ class TestPanelPorPantalla:
         assert tab.btn_convert.text() == "Crear 2 videos"
         tab.set_por_pantalla(2)
         assert tab.btn_convert.text() == "Crear 1 video"
-        assert "invertir" in tab.lbl_summary.text()
+        assert "orden de la grilla" in tab.lbl_summary.text()
 
-    def test_tocar_la_vista_previa_invierte_el_par(self, app, tab, media):
+    def test_vista_previa_sigue_el_orden_de_la_grilla(self, app, tab, media):
         from PyQt6.QtCore import Qt
         from PyQt6.QtTest import QTest
         self._cargar(app, tab, media, media["photo"], media["video"])
@@ -426,19 +467,29 @@ class TestPanelPorPantalla:
         tab.resize(1200, 760)
         app.processEvents()
         antes = tab._paths()
+        assert tab.vista_previa._jobs[0].inputs == antes
+        # Tocar la vista previa no cambia nada
         centro = tab.vista_previa._celda(0).center().toPoint()
         QTest.mouseClick(tab.vista_previa, Qt.MouseButton.LeftButton, pos=centro)
         app.processEvents()
-        assert tab._paths() == list(reversed(antes))
+        assert tab._paths() == antes
 
-    def test_dos_por_pantalla_no_admite_fondo_elegido(self, app, tab, media):
-        self._cargar(app, tab, media, media["photo"])
-        tab.set_por_pantalla(1, fondo_elegido=True)
-        assert tab._mode == batch.FONDO and "Falta elegir el fondo" in tab.lbl_summary.text()
+    def test_fondo_elegido_con_uno_o_dos_por_pantalla(self, app, tab, media):
+        self._cargar(app, tab, media, media["photo"], media["photo2"])
+        tab._btn_fondo["elegido"].click()
+        assert tab._mode == batch.FONDO and "Falta elegir la imagen de fondo" in tab.lbl_summary.text()
         assert not tab.btn_convert.isEnabled()
-        tab.set_por_pantalla(2)
-        assert not tab._btn_fondo["elegido"].isEnabled()
-        assert tab._mode == batch.DOBLE
+        # Con 2 por pantalla el fondo elegido se mantiene (antes se perdía)
+        tab._btn_por_pantalla[2].click()
+        assert tab._mode == batch.DOBLE and tab._fondo_elegido()
+        assert tab.bg_box.isVisible() and not tab.btn_convert.isEnabled()
+        tab._bg_path = media["photo"]
+        tab._refresh_panel()
+        assert tab.btn_convert.isEnabled() and tab.btn_convert.text() == "Crear 1 foto"
+        assert tab._batch_options().background == media["photo"]
+        # Volver a "De sus colores" no manda el fondo
+        tab._btn_fondo["colores"].click()
+        assert tab._batch_options().background is None
 
     def test_iconos_toman_la_forma_de_la_salida(self, app):
         from convertir3x4.ui.style import T
@@ -455,3 +506,285 @@ class TestPanelPorPantalla:
         assert h > w                                   # vertical
         w, h = caja(icono_pantalla(1, (32, 9), 44, T.text))
         assert w > 2 * h                               # horizontal alargada
+
+
+class TestDescargaCancelable:
+    def _falsa(self, monkeypatch):
+        import threading
+        from convertir3x4.convert import download as dl
+        llamada = threading.Event()
+
+        def falsa(url, out, tools, cb, cancel):
+            llamada.set()
+            cb(0.1, "Buscando el video…")
+            while not cancel():
+                import time
+                time.sleep(0.02)
+            raise clips.Cancelled()
+        monkeypatch.setattr(dl, "download", falsa)
+        return llamada
+
+    def test_barra_con_cancelar(self, app, tab, monkeypatch):
+        self._falsa(monkeypatch)
+        tab.txt_link.setText("https://www.youtube.com/watch?v=x")
+        tab._start_download()
+        _wait(app, lambda: "buscando" in tab.lbl_dl.text())
+        assert tab.dl_bar.isVisible() or not tab.isVisible()
+        assert tab.lbl_dl.text() == "Descargando 1 video: buscando el video…"
+        tab.btn_dl_cancel.click()
+        _wait(app, lambda: not tab._downloads)
+        assert not tab.dl_bar.isVisible() and tab.list_widget.count() == 0
+
+    def test_quitar_el_que_se_baja_lo_cancela(self, app, tab, monkeypatch):
+        self._falsa(monkeypatch)
+        tab.txt_link.setText("https://www.youtube.com/watch?v=y")
+        tab._start_download()
+        tab.list_widget.item(0).setSelected(True)
+        tab._remove_selected()
+        _wait(app, lambda: not tab._downloads)
+        assert tab.list_widget.count() == 0
+
+
+class TestHerramientasDescarga:
+    def test_usa_la_version_descomprimida(self, tmp_path):
+        assert download._ytdlp_asset().endswith(".zip")
+        d = tmp_path / "yt-dlp-app"
+        (d / "_internal").mkdir(parents=True)
+        assert download.ytdlp_path(str(tmp_path)) is None
+        (d / "yt-dlp_macos").write_text("x")
+        assert download.ytdlp_path(str(tmp_path)).endswith("yt-dlp_macos")
+
+    def test_cancelar_corta_al_instante(self):
+        import subprocess, sys, threading, time
+        p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        ev = threading.Event()
+        threading.Timer(0.2, ev.set).start()
+        t = time.time()
+        download._cortar_si_cancelan(p, ev.is_set)
+        p.wait(5)
+        assert time.time() - t < 2 and p.returncode != 0
+
+
+class TestRevisarHerramientas:
+    def test_si_falta_ofrece_prepararla(self, app, tab, monkeypatch):
+        from convertir3x4.convert import download as dl
+        listo = {"v": False}
+        monkeypatch.setattr(dl, "tools_ready", lambda d: listo["v"])
+
+        def preparar(d, cb, cancel):
+            cb(0.5)
+            listo["v"] = True
+        monkeypatch.setattr(dl, "preparar", preparar)
+        tab.revisar_herramientas()
+        assert tab.tools_box.isVisible() and "120 MB" in tab.lbl_tools.text()
+        tab.btn_tools.click()
+        _wait(app, lambda: tab._tools_worker is None)
+        assert not tab.tools_box.isVisible()
+
+    def test_si_falla_lo_dice_y_deja_reintentar(self, app, tab, monkeypatch):
+        from convertir3x4.convert import download as dl
+        monkeypatch.setattr(dl, "tools_ready", lambda d: False)
+
+        def preparar(d, cb, cancel):
+            raise dl.DownloadError("No se pudo conectar a internet. Revisá la conexión.")
+        monkeypatch.setattr(dl, "preparar", preparar)
+        tab.revisar_herramientas()
+        tab.btn_tools.click()
+        _wait(app, lambda: tab._tools_worker is None)
+        assert tab.tools_box.isVisible() and "internet" in tab.lbl_tools.text()
+        assert tab.btn_tools.text() == "Reintentar" and tab.btn_tools.isEnabled()
+
+    def test_si_esta_actualiza_sin_molestar(self, app, tab, monkeypatch):
+        from convertir3x4.convert import download as dl
+        llamadas = []
+        monkeypatch.setattr(dl, "tools_ready", lambda d: True)
+
+        def preparar(d, cb, cancel):
+            llamadas.append(d)
+            raise dl.DownloadError("sin internet")
+        monkeypatch.setattr(dl, "preparar", preparar)
+        tab.revisar_herramientas()
+        _wait(app, lambda: tab._tools_worker is None)
+        assert llamadas and not tab.tools_box.isVisible()
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="usa un script de shell")
+    def test_el_arranque_de_prueba_se_puede_cortar(self, tmp_path):
+        import threading, time
+        lento = tmp_path / "yt-dlp"
+        lento.write_text("#!/bin/sh\nsleep 30\n")
+        lento.chmod(0o755)
+        ev = threading.Event()
+        threading.Timer(0.2, ev.set).start()
+        t = time.time()
+        with pytest.raises(clips.Cancelled):
+            download._calentar(str(lento), ev.is_set)
+        assert time.time() - t < 2
+
+
+class TestActualizarSiFallaLaDescarga:
+    def _tocar_boton(self, app, tab, item):
+        from PyQt6.QtCore import Qt
+        from PyQt6.QtTest import QTest
+        from convertir3x4.ui.widgets.media_grid import ACTION_ROLE
+        lw = tab.list_widget
+        r = lw._delegate.action_rect(lw.visualItemRect(item), item.data(ACTION_ROLE))
+        QTest.mouseClick(lw.viewport(), Qt.MouseButton.LeftButton, pos=r.center().toPoint())
+        app.processEvents()
+
+    def test_cancelar_desde_la_miniatura(self, app, tab, monkeypatch):
+        from convertir3x4.convert import download as dl
+        from convertir3x4.ui.widgets.media_grid import ACTION_ROLE
+
+        def falsa(url, out, tools, cb, cancel):
+            while not cancel():
+                time.sleep(0.02)
+            raise clips.Cancelled()
+        monkeypatch.setattr(dl, "download", falsa)
+        tab.txt_link.setText("https://www.youtube.com/watch?v=c")
+        tab._start_download()
+        item = tab.list_widget.item(0)
+        assert item.data(ACTION_ROLE) == "Cancelar"
+        self._tocar_boton(app, tab, item)
+        _wait(app, lambda: not tab._downloads)
+        assert tab.list_widget.count() == 0
+
+    def test_reintentar_actualiza_y_vuelve_a_bajar(self, app, tab, media, monkeypatch, tmp_path):
+        from convertir3x4.convert import download as dl
+        from convertir3x4.ui.widgets.media_grid import ACTION_ROLE, PATH_ROLE
+        estado = {"actualizado": False, "intentos": 0}
+        bajado = str(tmp_path / "bajado.mp4")
+        shutil.copy(media["video"], bajado)
+
+        def falsa(url, out, tools, cb, cancel):
+            estado["intentos"] += 1
+            if not estado["actualizado"]:
+                raise dl.DownloadError(dl._GENERICO, por_el_programa=True)
+            return bajado
+
+        def actualizar(d, cb, cancel):
+            estado["actualizado"] = True
+        monkeypatch.setattr(dl, "download", falsa)
+        monkeypatch.setattr(dl, "hay_version_nueva", lambda d, c=None: True)
+        monkeypatch.setattr(dl, "actualizar", actualizar)
+        tab.txt_link.setText("https://www.youtube.com/watch?v=z")
+        tab._start_download()
+        _wait(app, lambda: tab.list_widget.item(0).data(ACTION_ROLE) == "Reintentar")
+        assert "versión nueva" in tab.list_widget.item(0).toolTip()
+        # También el aviso amarillo de arriba, como cuando falta preparar el programa
+        assert tab.tools_box.isVisible() and "versión nueva" in tab.lbl_tools.text()
+        assert tab.btn_tools.text() == "Actualizar y reintentar"
+        self._tocar_boton(app, tab, tab.list_widget.item(0))
+        _wait(app, lambda: any(it.data(PATH_ROLE) == bajado for it in tab._items()))
+        assert estado == {"actualizado": True, "intentos": 2}
+        assert tab.list_widget.count() == 1 and not tab.tools_box.isVisible()
+
+    def test_el_aviso_de_arriba_actualiza_y_reintenta(self, app, tab, media, monkeypatch, tmp_path):
+        from convertir3x4.convert import download as dl
+        from convertir3x4.ui.widgets.media_grid import PATH_ROLE
+        estado = {"actualizado": False}
+        bajado = str(tmp_path / "bajado2.mp4")
+        shutil.copy(media["video"], bajado)
+
+        def falsa(url, out, tools, cb, cancel):
+            if not estado["actualizado"]:
+                raise dl.DownloadError(dl._GENERICO, por_el_programa=True)
+            return bajado
+        monkeypatch.setattr(dl, "download", falsa)
+        monkeypatch.setattr(dl, "hay_version_nueva", lambda d, c=None: True)
+        monkeypatch.setattr(dl, "actualizar", lambda d, cb, c: estado.update(actualizado=True))
+        tab.txt_link.setText("https://www.youtube.com/watch?v=b")
+        tab._start_download()
+        _wait(app, lambda: tab.tools_box.isVisible())
+        tab.btn_tools.click()
+        _wait(app, lambda: any(it.data(PATH_ROLE) == bajado for it in tab._items()))
+        assert not tab.tools_box.isVisible()
+
+    def test_si_no_se_puede_actualizar_lo_dice_arriba(self, app, tab, monkeypatch):
+        from convertir3x4.convert import download as dl
+        from convertir3x4.ui.widgets.media_grid import ACTION_ROLE
+
+        def falsa(url, out, tools, cb, cancel):
+            raise dl.DownloadError(dl._GENERICO, por_el_programa=True)
+
+        def actualizar(d, cb, c):
+            raise dl.DownloadError("No se pudo conectar a internet. Revisá la conexión.")
+        monkeypatch.setattr(dl, "download", falsa)
+        monkeypatch.setattr(dl, "hay_version_nueva", lambda d, c=None: True)
+        monkeypatch.setattr(dl, "actualizar", actualizar)
+        tab.txt_link.setText("https://www.youtube.com/watch?v=n")
+        tab._start_download()
+        _wait(app, lambda: tab.tools_box.isVisible())
+        tab.btn_tools.click()
+        _wait(app, lambda: "No se pudo actualizar" in tab.lbl_tools.text())
+        assert tab.list_widget.item(0).data(ACTION_ROLE) == "Reintentar"
+
+    def test_reintentar_sin_version_nueva_solo_reintenta(self, app, tab, monkeypatch):
+        from convertir3x4.convert import download as dl
+        from convertir3x4.ui.widgets.media_grid import ACTION_ROLE
+        intentos = []
+
+        def falsa(url, out, tools, cb, cancel):
+            intentos.append(url)
+            raise dl.DownloadError("No se pudo conectar. Revisá la conexión a internet.")
+        monkeypatch.setattr(dl, "download", falsa)
+        tab.txt_link.setText("https://www.youtube.com/watch?v=r")
+        tab._start_download()
+        _wait(app, lambda: tab.list_widget.item(0).data(ACTION_ROLE) == "Reintentar")
+        self._tocar_boton(app, tab, tab.list_widget.item(0))
+        _wait(app, lambda: len(intentos) == 2 and not tab._downloads)
+        assert tab.list_widget.count() == 1
+
+    def test_video_privado_no_ofrece_actualizar(self, app, tab, monkeypatch):
+        from convertir3x4.convert import download as dl
+        consultas = []
+
+        def falsa(url, out, tools, cb, cancel):
+            raise dl.DownloadError("El video es privado o pide iniciar sesión: no se puede bajar.")
+        monkeypatch.setattr(dl, "download", falsa)
+        monkeypatch.setattr(dl, "hay_version_nueva", lambda d, c=None: consultas.append(1) or True)
+        tab.txt_link.setText("https://www.youtube.com/watch?v=p")
+        tab._start_download()
+        _wait(app, lambda: not tab._downloads)
+        assert not consultas and not tab.tools_box.isVisible()
+
+    def test_error_generico_marca_al_programa(self):
+        assert download._explain("ERROR: algo raro") == download._GENERICO
+
+
+class TestDeBuscarAConvertir:
+    def _buscar(self, app, media, tmp_path):
+        from convertir3x4.catalog.models import Media
+        from convertir3x4.ui.tabs import tab_buscar
+        t = tab_buscar.BuscarTab()
+        t.resize(900, 600)
+        t.show()
+        perdido = str(tmp_path / "no_esta.jpg")
+        t._populate([Media(path=media["photo"], filename="foto.jpg", kind="image", id=1),
+                     Media(path=media["video"], filename="video.mp4", kind="video", id=2),
+                     Media(path=perdido, filename="no_esta.jpg", kind="image", id=3)])
+        app.processEvents()
+        return t
+
+    def test_manda_lo_elegido_y_saltea_lo_que_no_esta(self, app, media, tmp_path):
+        t = self._buscar(app, media, tmp_path)
+        recibidos = []
+        t.enviarAConvertir.connect(recibidos.append)
+        assert not t.btn_convertir.isEnabled()
+        for i in range(3):
+            t.grid.item(i).setSelected(True)
+        app.processEvents()
+        assert t.btn_convertir.isEnabled() and "1 no está disponible" in t.lbl_seleccion.text()
+        t.btn_convertir.click()
+        assert recibidos == [[media["photo"], media["video"]]]
+        t.close()
+        t.deleteLater()
+
+    def test_convertir_los_recibe_elegidos(self, app, tab, media):
+        from convertir3x4.ui.widgets.media_grid import PATH_ROLE
+        tab._add_paths([media["photo2"]])
+        tab.recibir([media["photo"], media["photo2"]])
+        elegidos = [it.data(PATH_ROLE) for it in tab.list_widget.selectedItems()]
+        assert sorted(elegidos) == sorted([media["photo"], media["photo2"]])
+        assert tab.list_widget.count() == 2
+        assert tab.lbl_status.text() == "Se agregó 1 elemento desde Buscar. 1 ya estaba en la lista."
+        assert tab.btn_convert.text() == "Crear 2 fotos"

@@ -61,8 +61,12 @@ convertir3x4/
     batch.py             Convertir jobs (Qt-free): plan() picks function + numbered output name
                          (0001_…) per mode centrada/doble/fondo; any video in a group -> MP4; run()
                          with progress/cancel, errors returned in operator words
-    download.py          links via yt-dlp + deno downloaded on first use to appdata.tools_dir()
-                         (yt-dlp verified vs SHA2-256SUMS + daily -U; deno pinned sha256)
+    download.py          links via yt-dlp + deno kept in appdata.tools_dir(). yt-dlp is the UNPACKED
+                         build (yt-dlp_macos.zip/yt-dlp_win.zip; the one-file build took ~16 s per
+                         start on macOS), verified vs SHA2-256SUMS, own daily update (no -U), warmed
+                         up once after install; deno pinned sha256. Prepared/updated at app start
+                         (ConvertTab.revisar_herramientas); failed download -> per-cell "Reintentar"
+                         that updates yt-dlp first if a newer one is out
   ui/
     style.py             theme: DARK/LIGHT palettes -> `T` (contrast-checked in tests_ui.py; follows
                          the OS light/dark at startup), apply_theme() = Fusion
@@ -158,4 +162,7 @@ The "Convertir" tab (`ui/tabs/tab_convertir.py`) holds all of the converter UI:
 
 ## Language
 
-UI and user-facing text are in **Spanish**.
+UI and user-facing text are in **Spanish**, formal register with **usted** ("Seleccione", "Elija",
+"Haga clic"), careful vocabulary ("descargar", "enviar", "enlace", "etiqueta", "puntero") and no
+technical jargon (decision of 15/11/2026; it replaced the earlier voseo). `tests_ui.py`
+(`TestRegistroDeLosTextos`) fails if voseo or colloquial words come back into UI strings.
