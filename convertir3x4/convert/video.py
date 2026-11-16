@@ -10,7 +10,8 @@ from ..config import (
     VIDEO_FPS, VIDEO_DURATION, VIDEO_OVERSIZE, VIDEO_MAX_WIDTH,
     DEFAULT_ASPECT_W, DEFAULT_ASPECT_H,
 )
-from .images import _dominant_colors, _make_textured_bg, _make_zoned_bg
+from .images import _dominant_colors, _make_textured_bg, fondo_dos_zonas
+from .layout import dos_por_pantalla, lienzo_para
 
 
 def _write_video_frames(oversized_bg, canvas_w, canvas_h, paste_fn, out_path,
@@ -88,64 +89,23 @@ def convert_double_video(paths: list[str], out_path: str, aspect: tuple[int, int
         convert_centered_video(paths[0], out_path, aspect, fps, duration, progress_cb)
         return
 
-    img1, img2 = images[0], images[1]
-    ar1 = img1.size[0] / img1.size[1]
-    ar2 = img2.size[0] / img2.size[1]
-
-    if ar1 >= ar2:
-        img_wide, img_tall = img1, img2
-    else:
-        img_wide, img_tall = img2, img1
-
-    canvas_w = max(img_wide.size[0], img_tall.size[0])
-    canvas_h = int(canvas_w * ah / aw)
-
-    # Limitar resolución
-    if canvas_w > VIDEO_MAX_WIDTH:
-        scale_factor = VIDEO_MAX_WIDTH / canvas_w
-        canvas_w = VIDEO_MAX_WIDTH
-        canvas_h = int(canvas_h * scale_factor)
-        img_wide = img_wide.resize(
-            (int(img_wide.size[0] * scale_factor), int(img_wide.size[1] * scale_factor)),
-            Image.LANCZOS)
-        img_tall = img_tall.resize(
-            (int(img_tall.size[0] * scale_factor), int(img_tall.size[1] * scale_factor)),
-            Image.LANCZOS)
-
-    margin = int(canvas_h * 0.02)
-
-    def fit_image(img, max_w, max_h):
-        w, h = img.size
-        s = min(max_w / w, max_h / h)
-        return img.resize((int(w * s), int(h * s)), Image.LANCZOS)
-
-    wide_max_w = canvas_w - margin * 2
-    wide_max_h = int(canvas_h * 0.45)
-    img_wide_fit = fit_image(img_wide, wide_max_w, wide_max_h)
-
-    tall_max_w = canvas_w - margin * 2
-    tall_max_h = canvas_h - img_wide_fit.size[1] - margin * 3
-    img_tall_fit = fit_image(img_tall, tall_max_w, tall_max_h)
-
-    used_h = img_wide_fit.size[1] + img_tall_fit.size[1]
-    remaining = canvas_h - used_h
-    margin = remaining // 3
-
-    colors_top = _dominant_colors(img_wide)
-    colors_bottom = _dominant_colors(img_tall)
-
+    # Dónde va cada una: convert/layout.py (lo mismo que la vista previa)
+    img_a, img_b = images[0], images[1]
+    canvas_w, canvas_h = lienzo_para([img_a.size, img_b.size], (aw, ah))
+    if max(canvas_w, canvas_h) > VIDEO_MAX_WIDTH:
+        k = VIDEO_MAX_WIDTH / max(canvas_w, canvas_h)
+        canvas_w, canvas_h = int(canvas_w * k), int(canvas_h * k)
+    (x1, y1, w1, h1), (x2, y2, w2, h2) = dos_por_pantalla(img_a.size, img_b.size,
+                                                          canvas_w, canvas_h)
+    fit_a = img_a.resize((w1, h1), Image.LANCZOS)
+    fit_b = img_b.resize((w2, h2), Image.LANCZOS)
     os_w = int(canvas_w * VIDEO_OVERSIZE)
     os_h = int(canvas_h * VIDEO_OVERSIZE)
-    oversized_bg = _make_zoned_bg(os_w, os_h, colors_top, colors_bottom)
-
-    x1 = (canvas_w - img_wide_fit.size[0]) // 2
-    y1 = margin
-    x2 = (canvas_w - img_tall_fit.size[0]) // 2
-    y2 = margin + img_wide_fit.size[1] + margin
+    oversized_bg = fondo_dos_zonas(os_w, os_h, _dominant_colors(img_a), _dominant_colors(img_b))
 
     def paste_fn(frame):
-        frame.paste(img_wide_fit, (x1, y1))
-        frame.paste(img_tall_fit, (x2, y2))
+        frame.paste(fit_a, (x1, y1))
+        frame.paste(fit_b, (x2, y2))
 
     _write_video_frames(oversized_bg, canvas_w, canvas_h, paste_fn, out_path,
                         fps, duration, progress_cb)

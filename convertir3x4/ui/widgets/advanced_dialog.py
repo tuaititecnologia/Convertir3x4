@@ -16,7 +16,7 @@ from dataclasses import dataclass, field, replace
 from PyQt6.QtCore import QStandardPaths, Qt
 from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout,
-    QLabel, QLineEdit, QPushButton, QVBoxLayout,
+    QLabel, QLineEdit, QPushButton, QSpinBox, QVBoxLayout, QWidget,
 )
 
 from ...config import ASPECT_RATIOS, DEFAULT_ASPECT_H, DEFAULT_ASPECT_W
@@ -69,11 +69,34 @@ class AdvancedDialog(QDialog):
         self.combo_ratio.setAccessibleName("Proporción")
         for label, w, h in ASPECT_RATIOS:
             self.combo_ratio.addItem(label, (w, h))
-            if (w, h) == self._opts.aspect:
-                self.combo_ratio.setCurrentIndex(self.combo_ratio.count() - 1)
+        # Para pantallas que no son de ninguna medida conocida (p. ej. la pantalla
+        # alargada del evento de primavera, 15/11/2026): se escribe ancho y alto.
+        self.combo_ratio.addItem("Otra…", None)
         lay.addWidget(self.combo_ratio)
-        lay.addWidget(self._help("La pantalla de la iglesia usa 8:9. Cambiala solo si lo convertido "
-                                "va a otro lado."))
+
+        self.otra = QWidget()
+        fila = QHBoxLayout(self.otra)
+        fila.setContentsMargins(0, 0, 0, 0)
+        fila.setSpacing(8)
+        fila.addWidget(QLabel("Ancho"))
+        self.spin_w = QSpinBox()
+        self.spin_w.setRange(1, 100)
+        self.spin_w.setAccessibleName("Ancho de la pantalla")
+        fila.addWidget(self.spin_w)
+        fila.addWidget(QLabel(":"))
+        fila.addWidget(QLabel("Alto"))
+        self.spin_h = QSpinBox()
+        self.spin_h.setRange(1, 100)
+        self.spin_h.setAccessibleName("Alto de la pantalla")
+        fila.addWidget(self.spin_h)
+        fila.addStretch()
+        lay.addWidget(self.otra)
+        lay.addWidget(self._help(
+            "La pantalla de la iglesia usa 8:9. Cambiala solo si lo convertido va a otro "
+            "lado. Para una pantalla de otra medida, elegí «Otra…» y poné cuánto mide de "
+            "ancho y de alto (en metros, centímetros o píxeles: importa la relación)."))
+        self.combo_ratio.currentIndexChanged.connect(self._on_ratio)
+        self._mostrar_aspecto(self._opts.aspect)
         lay.addSpacing(10)
 
         lay.addWidget(self._title("Fotos"))
@@ -123,17 +146,38 @@ class AdvancedDialog(QDialog):
         if d:
             self.txt_dir.setText(d)
 
+    def _mostrar_aspecto(self, aspect):
+        for i in range(self.combo_ratio.count()):
+            if self.combo_ratio.itemData(i) == tuple(aspect):
+                self.combo_ratio.setCurrentIndex(i)
+                break
+        else:
+            self.combo_ratio.setCurrentIndex(self.combo_ratio.count() - 1)   # Otra…
+        self.spin_w.setValue(aspect[0])
+        self.spin_h.setValue(aspect[1])
+        self._on_ratio()
+
+    def _on_ratio(self, *_):
+        self.otra.setVisible(self.combo_ratio.currentData() is None)
+
     def _reset(self):
         std = SessionOptions()
-        for i in range(self.combo_ratio.count()):
-            if self.combo_ratio.itemData(i) == std.aspect:
-                self.combo_ratio.setCurrentIndex(i)
+        self._mostrar_aspecto(std.aspect)
         self.chk_video.setChecked(std.photos_as_video)
         self.txt_dir.setText(std.download_dir)
 
+    def _aspecto(self) -> tuple[int, int]:
+        elegido = self.combo_ratio.currentData()
+        if elegido is not None:
+            return tuple(elegido)
+        from math import gcd
+        w, h = self.spin_w.value(), self.spin_h.value()
+        g = gcd(w, h)
+        return (w // g, h // g)
+
     def options(self) -> SessionOptions:
         return SessionOptions(
-            aspect=tuple(self.combo_ratio.currentData()),
+            aspect=self._aspecto(),
             photos_as_video=self.chk_video.isChecked(),
             download_dir=self.txt_dir.text().strip() or default_download_dir(),
         )

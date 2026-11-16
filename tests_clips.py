@@ -128,14 +128,17 @@ class TestParseInfo:
 
 
 class TestDoubleLayout:
-    def test_wider_goes_on_top(self):
+    def test_first_goes_on_top_in_grid_order(self):
+        # Regla del 15/11/2026: el orden de la grilla manda (la vista previa lo
+        # muestra y se puede invertir); antes iba arriba el más ancho.
         layout = double_layout((400, 800), (1600, 900), 896, 1008)
-        assert [idx for idx, *_ in layout] == [1, 0]
+        assert [idx for idx, *_ in layout] == [0, 1]
+        (_, _, y1, _, _), (_, _, y2, _, _) = layout
+        assert y1 < y2
 
-    def test_fits_canvas_and_top_is_at_most_45_percent(self):
+    def test_fits_canvas_even_sizes(self):
         (_, x1, y1, w1, h1), (_, x2, y2, w2, h2) = double_layout((1920, 1080), (1080, 1920),
                                                                  896, 1008)
-        assert h1 <= 1008 * 0.45
         assert y1 >= 0 and y1 + h1 <= y2 and y2 + h2 <= 1008
         assert x1 >= 0 and x1 + w1 <= 896 and x2 >= 0 and x2 + w2 <= 896
         assert all(v % 2 == 0 for v in (w1, h1, w2, h2))
@@ -207,6 +210,15 @@ class TestDouble:
 
 
 SPIKES = "aevalsrc=0.02*sin(2*PI*440*t)+0.97*lt(mod(t\\,1)\\,0.003):sample_rate=48000"
+
+
+class TestHorizontal:
+    def test_photo_and_video_side_by_side_in_a_wide_screen(self, tmp, wide, photo):
+        out = os.path.join(tmp, "doble_21x9.mp4")
+        convert_double_clip([photo, wide], out, aspect=(21, 9))
+        info = clip_info(out)
+        assert abs(info.width / info.height - 21 / 9) < 0.02
+        assert info.width % 2 == 0 and info.height % 2 == 0
 
 
 class TestPeakFix:

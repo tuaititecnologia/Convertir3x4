@@ -22,5 +22,6 @@ ASPECT_RATIOS = [
     ("4:5", 4, 5),
     ("9:16", 9, 16),
     ("1:1", 1, 1),
+    ("16:9 — horizontal", 16, 9),
 ]
 DEFAULT_ASPECT_W, DEFAULT_ASPECT_H = 8, 9

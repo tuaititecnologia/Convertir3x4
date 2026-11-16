@@ -18,7 +18,8 @@ import imageio_ffmpeg
 from PIL import Image
 
 from ..config import DEFAULT_ASPECT_W, DEFAULT_ASPECT_H, VIDEO_DURATION, VIDEO_OVERSIZE
-from .images import _dominant_colors, _make_zoned_bg
+from .images import _dominant_colors, fondo_dos_zonas
+from .layout import dos_por_pantalla, sobre_fondo
 
 # Lienzo de referencia: 8:9 al doble de la nativa del LED (448x504).
 BASE_W, BASE_H = 896, 1008
@@ -339,18 +340,17 @@ def convert_centered_clip(src: str, out_path: str, aspect=None,
 
 def convert_clip_on_background(src: str, bg_path: str, out_path: str, aspect=None,
                                progress_cb=None, cancel=None) -> AudioReport:
-    """Video en la mitad de arriba sobre un fondo elegido (como convert_on_background)."""
+    """Video sobre un fondo elegido, con lugar para texto (como convert_on_background):
+    arriba en una pantalla vertical, a la izquierda en una horizontal."""
     info = clip_info(src)
     w, h = canvas_size(aspect)
-    margin = int(w * 0.05)
-    max_w, max_h = _even(w - margin * 2), _even(h * 0.50 - margin)
+    x, y, fw, fh = sobre_fondo((info.width, info.height), w, h)
     with tempfile.TemporaryDirectory() as tmpdir:
         bg_png = os.path.join(tmpdir, "fondo.png")
         _cover(Image.open(bg_path).convert("RGB"), w, h).save(bg_png)
         graph = (
-            f"[1:v]scale={max_w}:{max_h}:force_original_aspect_ratio=decrease"
-            f":force_divisible_by=2,setsar=1[fg];"
-            f"[0:v][fg]overlay=(W-w)/2:{margin}:shortest=1,setsar=1,format=yuv420p[v]"
+            f"[1:v]scale={fw}:{fh},setsar=1[fg];"
+            f"[0:v][fg]overlay={x}:{y}:shortest=1,setsar=1,format=yuv420p[v]"
         )
         inputs = ["-loop", "1", "-framerate", f"{info.fps:g}", "-i", bg_png, "-i", src]
         return _convert(inputs, graph, out_path, info.duration,
@@ -361,31 +361,15 @@ def convert_clip_on_background(src: str, bg_path: str, out_path: str, aspect=Non
 
 def double_layout(size_a: tuple[int, int], size_b: tuple[int, int],
                   w: int, h: int) -> list[tuple[int, int, int, int, int]]:
-    """Lugar de cada elemento en Doble: [(índice, x, y, ancho, alto)] de arriba a abajo.
-
-    Misma regla que convert_double: el más ancho arriba, con hasta 45 % del alto,
-    y el más alto ocupa el resto.
-    """
-    ar_a, ar_b = size_a[0] / size_a[1], size_b[0] / size_b[1]
-    order = [(0, size_a), (1, size_b)] if ar_a >= ar_b else [(1, size_b), (0, size_a)]
-    margin = int(h * 0.02)
-
-    def fit(size, max_w, max_h):
-        s = min(max_w / size[0], max_h / size[1])
-        return _even(size[0] * s), _even(size[1] * s)
-
-    top_w, top_h = fit(order[0][1], w - margin * 2, int(h * 0.45))
-    bot_w, bot_h = fit(order[1][1], w - margin * 2, h - top_h - margin * 3)
-    margin = (h - top_h - bot_h) // 3
-    return [
-        (order[0][0], (w - top_w) // 2, margin, top_w, top_h),
-        (order[1][0], (w - bot_w) // 2, margin * 2 + top_h, bot_w, bot_h),
-    ]
+    """Lugar de cada elemento: [(índice, x, y, ancho, alto)], el primero arriba (o a
+    la izquierda). La regla es la de convert/layout.py, igual que fotos y vista previa."""
+    r1, r2 = dos_por_pantalla(size_a, size_b, w, h)
+    return [(0, *r1), (1, *r2)]
 
 
 def convert_double_clip(paths: list[str], out_path: str, aspect=None,
                         progress_cb=None, cancel=None) -> AudioReport:
-    """Dos elementos apilados, al menos uno video. La salida es siempre video.
+    """Dos en la misma pantalla, al menos uno video. La salida es siempre video.
 
     Dura lo que el video más largo; el más corto queda en su último cuadro.
     El audio es el del primero (en el orden recibido) que tenga audio.
@@ -412,10 +396,9 @@ def convert_double_clip(paths: list[str], out_path: str, aspect=None,
 
         # Fondo animado: lienzo más grande y un recorte que se mueve (Lissajous,
         # mismo camino que _write_video_frames, ciclo de VIDEO_DURATION segundos).
-        top_idx, bot_idx = layout[0][0], layout[1][0]
         os_w, os_h = _even(w * VIDEO_OVERSIZE), _even(h * VIDEO_OVERSIZE)
-        bg = _make_zoned_bg(os_w, os_h, _dominant_colors(frames[top_idx]),
-                            _dominant_colors(frames[bot_idx]))
+        bg = fondo_dos_zonas(os_w, os_h, _dominant_colors(frames[0]),
+                             _dominant_colors(frames[1]))
         bg_png = os.path.join(tmpdir, "fondo.png")
         bg.save(bg_png)
         mx, my = (os_w - w) // 2, (os_h - h) // 2

@@ -233,14 +233,31 @@ class DiscosTab(QWidget):
             self._timer.stop()
 
     def _run(self, fn, on_ok=None, on_fail=None):
+        # Las respuestas llegan a MÉTODOS de la pestaña (no a lambdas): si la
+        # pestaña ya no existe, Qt corta la conexión solo y no se ejecuta nada
+        # sobre una pantalla destruida.
         w = EngineWorker(lambda _cb: fn())
+        w._al_terminar = on_ok
+        w._al_fallar = on_fail or self._error_accion
         self._workers.add(w)
-        if on_ok:
-            w.finished_ok.connect(on_ok)
-        w.failed.connect(on_fail or self._error_accion)
-        w.finished.connect(lambda: self._workers.discard(w))
+        w.finished_ok.connect(self._respuesta_ok)
+        w.failed.connect(self._respuesta_fallo)
+        w.finished.connect(self._worker_terminado)
         w.start()
         return w
+
+    def _respuesta_ok(self, resultado):
+        cb = getattr(self.sender(), "_al_terminar", None)
+        if cb:
+            cb(resultado)
+
+    def _respuesta_fallo(self, msg):
+        cb = getattr(self.sender(), "_al_fallar", None)
+        if cb:
+            cb(msg)
+
+    def _worker_terminado(self):
+        self._workers.discard(self.sender())
 
     def refresh(self):
         if self._polling:

@@ -156,20 +156,25 @@ class CatalogoAvanzado(QDialog):
         self.progress.setRange(0, 0)
         self.progress.setVisible(True)
         w = EngineWorker(fn)
-        w.progress.connect(lambda d, t, _m: (self.progress.setRange(0, t or 1),
-                                             self.progress.setValue(d)))
-
-        def ok(res):
-            self._fin()
-            on_ok(res)
-
-        def fallo(_msg):
-            self._fin()
-            self._resultado("No se pudo terminar. Probá de nuevo.")
-        w.finished_ok.connect(ok)
-        w.failed.connect(fallo)
+        self._al_terminar = on_ok
+        # Métodos (no lambdas): si la ventana se cierra antes, Qt corta la conexión.
+        w.progress.connect(self._avance)
+        w.finished_ok.connect(self._ok)
+        w.failed.connect(self._fallo)
         self._worker = w
         w.start()
+
+    def _avance(self, hecho, total, _msg):
+        self.progress.setRange(0, total or 1)
+        self.progress.setValue(hecho)
+
+    def _ok(self, resultado):
+        self._fin()
+        self._al_terminar(resultado)
+
+    def _fallo(self, _msg):
+        self._fin()
+        self._resultado("No se pudo terminar. Probá de nuevo.")
 
     def _fin(self):
         if self._worker is not None:

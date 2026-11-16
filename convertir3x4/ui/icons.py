@@ -90,6 +90,15 @@ def set_pixmap(label, name: str, size: int = 18, color: str = "text_3"):
     _aplicar(label, "pixmap", args)
 
 
+def set_custom(obj, generador):
+    """Icono dibujado a mano (p. ej. la pantalla con la proporción de salida):
+    `generador()` devuelve el QIcon con los colores del tema actual. Si ya había
+    uno para este widget, se reemplaza."""
+    _VIVOS[:] = [v for v in _VIVOS if v[0]() is not obj]
+    _VIVOS.append((weakref.ref(obj), "custom", generador))
+    obj.setIcon(generador())
+
+
 def refresh_all():
     """Vuelve a pintar todos los iconos con los colores del tema actual."""
     vivos = []
@@ -98,7 +107,10 @@ def refresh_all():
         if obj is None:
             continue
         try:
-            _aplicar(obj, tipo, args)
+            if tipo == "custom":
+                obj.setIcon(args())
+            else:
+                _aplicar(obj, tipo, args)
         except RuntimeError:        # el widget de C++ ya se destruyó
             continue
         vivos.append((ref, tipo, args))

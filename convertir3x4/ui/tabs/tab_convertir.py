@@ -27,7 +27,7 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
     QAbstractItemView, QButtonGroup, QFileDialog, QFrame, QHBoxLayout, QLabel,
     QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QProgressBar,
-    QPushButton, QRadioButton, QSlider, QVBoxLayout, QWidget,
+    QPushButton, QSlider, QToolButton, QVBoxLayout, QWidget,
 )
 
 from ...appdata import clip_cache_dir, tools_dir
@@ -39,9 +39,10 @@ from ..style import T
 from ..widgets.advanced_dialog import AdvancedDialog, SessionOptions
 from ..widgets.dialogos import confirmar
 from ..widgets.media_grid import (
-    DURATION_ROLE, KIND_ROLE, MTIME_ROLE, PATH_ROLE, PROGRESS_ROLE, STATE_ROLE,
+    DURATION_ROLE, KIND_ROLE, MTIME_ROLE, PATH_ROLE, PROGRESS_ROLE, SIZE_ROLE, STATE_ROLE,
     STORYBOARD_ROLE, ReorderListWidget,
 )
+from ..widgets.vista_previa import VistaPrevia, icono_pantalla
 from .convert_workers import ConvertWorker, DownloadWorker, ThumbWorker
 
 MEDIA_FILTER = ("Fotos y videos (*.jpg *.jpeg *.png *.bmp *.webp *.mp4 *.mov *.m4v *.mkv *.webm *.avi)"
@@ -51,11 +52,6 @@ MEDIA_FILTER = ("Fotos y videos (*.jpg *.jpeg *.png *.bmp *.webp *.mp4 *.mov *.m
 IMAGE_FILTER = "Imágenes (*.jpg *.jpeg *.png *.bmp *.webp);;Todos (*.*)"
 LINK_ROLE = Qt.ItemDataRole.UserRole + 20   # link que se está bajando (sin archivo todavía)
 
-MODES = [
-    (batch.CENTRADA, "Centrada", "Ocupa toda la pantalla, con un fondo de sus colores."),
-    (batch.DOBLE, "Doble", "De a dos: una arriba y otra abajo, en el orden de la grilla."),
-    (batch.FONDO, "Sobre fondo", "Arriba de un fondo que elegís, con lugar abajo para texto."),
-]
 
 
 class ConvertTab(QWidget):
@@ -66,7 +62,6 @@ class ConvertTab(QWidget):
         self.sort_asc = True
         self._pixmap_cache: dict[str, QPixmap] = {}
         self._bg_path: str | None = None
-        self._mode = batch.CENTRADA
         # Opciones avanzadas: SOLO en memoria, vuelven a lo estándar al abrir la app.
         self._opts = SessionOptions()
         self._convert_worker: ConvertWorker | None = None
@@ -213,43 +208,86 @@ class ConvertTab(QWidget):
         lay.setContentsMargins(16, 16, 16, 16)
         lay.setSpacing(8)
 
-        title = QLabel("Cómo armarla")
-        title.setObjectName("section_title")
-        lay.addWidget(title)
-
-        # Una opción entre tres: botones de opción (el control estándar para
-        # eso), con la descripción en gris debajo de cada uno.
-        self._mode_group = QButtonGroup(self)
-        self._mode_buttons: dict[str, QRadioButton] = {}
-        for key, name, desc in MODES:
-            b = QRadioButton(name)
-            b.setObjectName("mode_option")
+        # Rediseño del 15/11/2026: el operador responde dos preguntas que entiende
+        # (cuántos en cada pantalla y qué fondo) y ve lo que se va a crear.
+        t1 = QLabel("¿Cuántos en cada pantalla?")
+        t1.setObjectName("section_title")
+        lay.addWidget(t1)
+        fila = QHBoxLayout()
+        fila.setSpacing(8)
+        self._por_pantalla = QButtonGroup(self)
+        self._btn_por_pantalla: dict[int, QToolButton] = {}
+        for n in (1, 2):
+            b = QToolButton()
+            b.setObjectName("por_pantalla")
+            b.setText(f"{n} por pantalla")
+            b.setCheckable(True)
+            b.setIconSize(QSize(44, 44))
+            b.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
+            b.setMinimumSize(104, 92)
+            b.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
-            b.setAccessibleDescription(desc)
-            b.setProperty("mode", key)
-            self._mode_group.addButton(b)
-            self._mode_buttons[key] = b
-            lay.addWidget(b)
-            d = QLabel(desc)
-            d.setObjectName("muted")
-            d.setWordWrap(True)
-            d.setContentsMargins(26, 0, 0, 6)
-            lay.addWidget(d)
-        self._mode_buttons[batch.CENTRADA].setChecked(True)
+            b.setAccessibleName("Una foto o video por pantalla" if n == 1 else
+                                "Dos fotos o videos en la misma pantalla")
+            b.setToolTip("Cada foto o video en su propia pantalla" if n == 1 else
+                         "De a dos en la misma pantalla, en el orden de la grilla")
+            b.setProperty("n", n)
+            self._por_pantalla.addButton(b, n)
+            self._btn_por_pantalla[n] = b
+            fila.addWidget(b)
+        self._btn_por_pantalla[1].setChecked(True)
+        lay.addLayout(fila)
+        self._dibujar_iconos_pantalla()
 
-        # Fondo (solo en "Sobre fondo")
+        lay.addSpacing(6)
+        t2 = QLabel("Fondo")
+        t2.setObjectName("section_title")
+        lay.addWidget(t2)
+        seg = QFrame()
+        seg.setObjectName("segmented")
+        seg_lay = QHBoxLayout(seg)
+        seg_lay.setContentsMargins(3, 3, 3, 3)
+        seg_lay.setSpacing(2)
+        self._fondo = QButtonGroup(self)
+        self._btn_fondo: dict[str, QPushButton] = {}
+        for clave, texto in (("colores", "De sus colores"), ("elegido", "Uno que elijas")):
+            b = QPushButton(texto)
+            b.setObjectName("segment")
+            b.setCheckable(True)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setProperty("fondo", clave)
+            self._fondo.addButton(b)
+            self._btn_fondo[clave] = b
+            seg_lay.addWidget(b, 1)
+        self._btn_fondo["colores"].setChecked(True)
+        lay.addWidget(seg)
+
+        # Fondo elegido (solo con 1 por pantalla)
         self.bg_box = QWidget()
         bg_lay = QVBoxLayout(self.bg_box)
         bg_lay.setContentsMargins(0, 4, 0, 0)
         bg_lay.setSpacing(6)
         self.lbl_bg_preview = QLabel("Sin fondo")
         self.lbl_bg_preview.setObjectName("bg_preview")
-        self.lbl_bg_preview.setFixedHeight(110)
+        self.lbl_bg_preview.setFixedHeight(90)
         self.lbl_bg_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         bg_lay.addWidget(self.lbl_bg_preview)
-        self.btn_load_bg = QPushButton("Elegir fondo…")
+        self.btn_load_bg = QPushButton("Elegir el fondo…")
         bg_lay.addWidget(self.btn_load_bg)
         lay.addWidget(self.bg_box)
+
+        lay.addSpacing(6)
+        self.lbl_va_a_crear = QLabel("Va a crear")
+        self.lbl_va_a_crear.setObjectName("section_title")
+        lay.addWidget(self.lbl_va_a_crear)
+        self.vista_previa = VistaPrevia()
+        self.vista_previa.invertir.connect(self._invertir_par)
+        lay.addWidget(self.vista_previa)
+        # Notas sobre lo que se va a crear, pegadas a la vista previa
+        self.lbl_summary = QLabel("")
+        self.lbl_summary.setObjectName("muted")
+        self.lbl_summary.setWordWrap(True)
+        lay.addWidget(self.lbl_summary)
 
         lay.addStretch(1)
 
@@ -272,9 +310,6 @@ class ConvertTab(QWidget):
         nl.addWidget(self.btn_reset_opts, 0, Qt.AlignmentFlag.AlignLeft)
         lay.addWidget(self.nonstd_box)
 
-        self.lbl_summary = QLabel("")
-        self.lbl_summary.setWordWrap(True)
-        lay.addWidget(self.lbl_summary)
 
         # Avance del lote
         self.progress = QProgressBar()
@@ -348,7 +383,8 @@ class ConvertTab(QWidget):
         self.list_widget.itemDoubleClicked.connect(self._open_item)
         self.thumb_slider.valueChanged.connect(self._on_thumb_resize)
         self._kind_group.buttonClicked.connect(lambda _: self._apply_filter())
-        self._mode_group.buttonClicked.connect(self._on_mode)
+        self._por_pantalla.idClicked.connect(lambda _n: self._refresh_panel())
+        self._fondo.buttonClicked.connect(lambda _b: self._refresh_panel())
         self.btn_convert.clicked.connect(self._convert)
         self.btn_cancel.clicked.connect(self._cancel)
         self.btn_advanced.clicked.connect(self._open_advanced)
@@ -409,6 +445,9 @@ class ConvertTab(QWidget):
                 item.setToolTip(path)
                 if kind == "image":
                     icon = self._make_icon(path, size)
+                    px = self._cached_pixmap(path)
+                    if px is not None:
+                        item.setData(SIZE_ROLE, (px.width(), px.height()))
                     if icon is None:
                         item.setData(STATE_ROLE, "error")
                         item.setToolTip(f"No se pudo abrir la imagen:\n{path}")
@@ -430,9 +469,18 @@ class ConvertTab(QWidget):
         w = ThumbWorker(paths, clip_cache_dir(), self)
         w.ready.connect(self._on_thumb_ready)
         w.failed.connect(self._on_thumb_failed)
-        w.finished.connect(lambda: self._thumb_workers.remove(w) if w in self._thumb_workers else None)
+        w.finished.connect(self._worker_terminado)
         self._thumb_workers.append(w)
         w.start()
+
+    def _worker_terminado(self):
+        # Método (no lambda): si la pestaña ya no existe, Qt corta la conexión
+        # solo; un lambda podía ejecutarse sobre una pestaña destruida y tirar
+        # la app (pasó en las pruebas, 15/11/2026).
+        w = self.sender()
+        for lista in (self._thumb_workers, self._downloads):
+            if w in lista:
+                lista.remove(w)
 
     def _item_for(self, path: str) -> QListWidgetItem | None:
         for it in self._items():
@@ -448,6 +496,7 @@ class ConvertTab(QWidget):
         if not px.isNull():
             it.setIcon(QIcon(px))
         it.setData(DURATION_ROLE, thumbs.info.duration)
+        it.setData(SIZE_ROLE, (thumbs.info.width, thumbs.info.height))
         it.setData(STORYBOARD_ROLE, thumbs.storyboard)
         if it.data(STATE_ROLE) == "loading":
             it.setData(STATE_ROLE, None)
@@ -520,7 +569,7 @@ class ConvertTab(QWidget):
         w.progress.connect(self._on_download_progress)
         w.done.connect(self._on_download_done)
         w.failed.connect(self._on_download_failed)
-        w.finished.connect(lambda: self._downloads.remove(w) if w in self._downloads else None)
+        w.finished.connect(self._worker_terminado)
         self._downloads.append(w)
         w.start()
         self._update_count()
@@ -608,9 +657,61 @@ class ConvertTab(QWidget):
                 out.append(it.data(PATH_ROLE))
         return out
 
-    def _on_mode(self, button):
-        self._mode = button.property("mode")
+    @property
+    def _mode(self) -> str:
+        """El modo de batch.py sale de las dos preguntas del panel."""
+        if self._por_pantalla.checkedId() == 2:
+            return batch.DOBLE
+        return batch.FONDO if self._btn_fondo["elegido"].isChecked() else batch.CENTRADA
+
+    def set_por_pantalla(self, n: int, fondo_elegido: bool = False):
+        self._btn_por_pantalla[n].setChecked(True)
+        self._btn_fondo["elegido" if fondo_elegido else "colores"].setChecked(True)
         self._refresh_panel()
+
+    def _dibujar_iconos_pantalla(self):
+        """Los iconos toman la forma de la proporción de salida (que puede ser
+        vertical, cuadrada u horizontal) y se repintan si cambia el tema."""
+        for n, b in self._btn_por_pantalla.items():
+            def generador(n=n):
+                ic = QIcon()
+                ic.addPixmap(icono_pantalla(n, self._opts.aspect, 44, T.text_2),
+                             QIcon.Mode.Normal, QIcon.State.Off)
+                on = icono_pantalla(n, self._opts.aspect, 44, T.accent_text)
+                ic.addPixmap(on, QIcon.Mode.Normal, QIcon.State.On)
+                ic.addPixmap(on, QIcon.Mode.Active, QIcon.State.On)
+                ic.addPixmap(icono_pantalla(n, self._opts.aspect, 44, T.text_disabled),
+                             QIcon.Mode.Disabled, QIcon.State.Off)
+                return ic
+            icons.set_custom(b, generador)
+
+    def _invertir_par(self, indice: int):
+        """Desde la vista previa: el de abajo (o derecha) pasa arriba (o izquierda)."""
+        try:
+            jobs = batch.plan(self._selected_paths(), self._mode, self._batch_options())
+        except ValueError:
+            return
+        if not (0 <= indice < len(jobs)) or len(jobs[indice].inputs) != 2:
+            return
+        a, b = jobs[indice].inputs
+        it_a, it_b = self._item_for(a), self._item_for(b)
+        fila_a, fila_b = self.list_widget.row(it_a), self.list_widget.row(it_b)
+        item = self.list_widget.takeItem(fila_b)
+        self.list_widget.insertItem(fila_a, item)
+        item.setSelected(True)
+        self._save_list()
+        self._refresh_panel()
+
+    def _tamano_de(self, path: str):
+        it = self._item_for(path)
+        return it.data(SIZE_ROLE) if it is not None else None
+
+    def _pixmap_de(self, path: str):
+        it = self._item_for(path)
+        if it is None:
+            return None
+        ic = it.icon()
+        return None if ic.isNull() else ic.pixmap(QSize(160, 160))
 
     def _batch_options(self) -> batch.Options:
         return batch.Options(aspect=self._opts.aspect, photos_as_video=self._opts.photos_as_video,
@@ -620,6 +721,11 @@ class ConvertTab(QWidget):
         busy = self._busy()
         paths = self._selected_paths()
         n_sel = len(self.list_widget.selectedItems())
+        dos = self._por_pantalla.checkedId() == 2
+        # Con 2 por pantalla el fondo es siempre el de sus colores
+        self._btn_fondo["elegido"].setEnabled(not dos and not busy)
+        if dos and self._btn_fondo["elegido"].isChecked():
+            self._btn_fondo["colores"].setChecked(True)
         self.bg_box.setVisible(self._mode == batch.FONDO)
         self.btn_remove.setEnabled(n_sel > 0 and not busy)
 
@@ -629,30 +735,50 @@ class ConvertTab(QWidget):
 
         if busy:
             return
+        opts = self._batch_options()
+        try:
+            jobs = batch.plan(paths, self._mode, batch.Options(
+                aspect=opts.aspect, photos_as_video=opts.photos_as_video,
+                background=opts.background or "(sin elegir)"))
+        except ValueError:
+            jobs = []
+        fondo = QPixmap(self._bg_path) if self._bg_path else None
+        self.vista_previa.set_datos(jobs, opts.aspect, self._pixmap_de, self._tamano_de, fondo)
+        self.lbl_va_a_crear.setVisible(bool(jobs))
         if not paths:
             self.lbl_summary.setText("Seleccioná en la grilla lo que querés convertir."
                                      if self.list_widget.count() else "")
-            self.btn_convert.setText("Convertir")
+            self.btn_convert.setText("Crear")
             self.btn_convert.setEnabled(False)
             return
+        notas = []
+        if self._mode == batch.DOBLE and len(paths) % 2:
+            notas.append("La última queda sola, en su propia pantalla.")
+        if self._mode == batch.DOBLE:
+            notas.append("Tocá una pantalla para invertir el orden.")
         skipped = n_sel - len(paths)
-        summary = batch.describe(paths, self._mode, self._batch_options())
         if skipped:
-            summary += (" 1 no se puede convertir (no está disponible o tuvo un error)." if skipped == 1
-                        else f" {skipped} no se pueden convertir (no están disponibles o tuvieron un error).")
-        self.lbl_summary.setText(summary)
-        ok = not (self._mode == batch.FONDO and not self._bg_path)
-        self.btn_convert.setText(f"Convertir {len(paths)}")
-        self.btn_convert.setEnabled(ok)
+            notas.append("1 no se puede convertir (no está disponible o tuvo un error)."
+                         if skipped == 1 else
+                         f"{skipped} no se pueden convertir (no están disponibles o tuvieron un error).")
+        falta_fondo = self._mode == batch.FONDO and not self._bg_path
+        if falta_fondo:
+            notas.insert(0, "Falta elegir el fondo.")
+        self.lbl_summary.setText(" ".join(notas))
+        self.lbl_summary.setVisible(bool(notas))
+        self.btn_convert.setText(f"Crear {batch.que_crea(jobs)}")
+        self.btn_convert.setEnabled(not falta_fondo)
 
     def _open_advanced(self):
         dlg = AdvancedDialog(self._opts, self)
         if dlg.exec():
             self._opts = dlg.options()
+            self._dibujar_iconos_pantalla()     # la proporción pudo cambiar
             self._refresh_panel()
 
     def _reset_options(self):
         self._opts = SessionOptions()
+        self._dibujar_iconos_pantalla()
         self._refresh_panel()
 
     # ================================================================ fondo
@@ -738,7 +864,7 @@ class ConvertTab(QWidget):
         for b in (self.btn_load, self.btn_link, self.btn_clear, self.btn_advanced,
                   self.btn_load_bg):
             b.setEnabled(not busy)
-        for b in self._mode_buttons.values():
+        for b in (*self._btn_por_pantalla.values(), *self._btn_fondo.values()):
             b.setEnabled(not busy)
         self.btn_convert.setVisible(not busy)
         self.btn_cancel.setVisible(busy)

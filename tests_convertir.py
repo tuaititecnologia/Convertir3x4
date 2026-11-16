@@ -71,11 +71,16 @@ class TestPlan:
         assert jobs[0].out_name == "0001_1_3x4.mp4" and jobs[0].is_video
 
     def test_describe_in_plain_words(self):
-        assert batch.describe(["/a/1.jpg"], batch.CENTRADA, batch.Options()) == "Sale 1 foto."
+        assert batch.describe(["/a/1.jpg"], batch.CENTRADA, batch.Options()) == "Va a crear 1 foto."
         assert batch.describe(["/a/1.jpg", "/a/2.mp4"], batch.CENTRADA,
-                              batch.Options()) == "Salen 1 foto y 1 video."
+                              batch.Options()) == "Va a crear 1 foto y 1 video."
         text = batch.describe(["/a/1.jpg", "/a/2.mp4", "/a/3.jpg"], batch.DOBLE, batch.Options())
-        assert text == "Salen 1 foto y 1 video (la última queda sola)."
+        assert text == "Va a crear 1 video y 1 foto (la última queda sola)." or \
+            text == "Va a crear 1 foto y 1 video (la última queda sola)."
+        # Dos videos: la diferencia entre "1 por pantalla" y "2 por pantalla" se lee
+        dos = ["/a/1.mp4", "/a/2.mp4"]
+        assert batch.describe(dos, batch.CENTRADA, batch.Options()) == "Va a crear 2 videos."
+        assert batch.describe(dos, batch.DOBLE, batch.Options()) == "Va a crear 1 video."
         assert batch.describe(["/a/1.jpg"], batch.FONDO, batch.Options()) == "Falta elegir el fondo."
 
 
@@ -197,7 +202,7 @@ class TestConvertTab:
         for it in tab._items():
             it.setSelected(True)
         tab._refresh_panel()
-        assert tab.btn_convert.text() == "Convertir 1"
+        assert tab.btn_convert.text() == "Crear 1 foto"
         assert "1 no se puede convertir" in tab.lbl_summary.text()
 
     def test_convert_batch_end_to_end(self, app, tab, media, tmp_path):
@@ -207,9 +212,8 @@ class TestConvertTab:
         _wait(app, lambda: items[1].data(STATE_ROLE) is None)
         for it in items:
             it.setSelected(True)
-        tab._mode_buttons[batch.DOBLE].click()
-        tab._refresh_panel()
-        assert tab.lbl_summary.text() == "Sale 1 video."
+        tab.set_por_pantalla(2)
+        assert tab.btn_convert.text() == "Crear 1 video"
         jobs = batch.plan(tab._selected_paths(), tab._mode, tab._batch_options())
         tab.start_jobs(jobs, str(tmp_path), tab._batch_options())
         assert tab.btn_cancel.isVisible() and not tab.btn_convert.isVisible()
@@ -354,3 +358,100 @@ class TestDobleClic:
         assert abiertos == [str(f)]
         t.close()
         t.deleteLater()
+
+
+# ---------------------------------------------------------------- ubicación (vertical y horizontal)
+from convertir3x4.convert import layout as L
+
+
+@pytest.mark.parametrize("w, h", [(896, 1008), (1008, 1008), (1920, 1080), (2560, 640), (720, 1280)])
+@pytest.mark.parametrize("a, b", [((1920, 1080), (1080, 1920)), ((800, 600), (800, 600)),
+                                  ((300, 2000), (2000, 300))])
+def test_dos_por_pantalla_entra_y_respeta_el_orden(w, h, a, b):
+    (x1, y1, w1, h1), (x2, y2, w2, h2) = L.dos_por_pantalla(a, b, w, h)
+    for x, y, ww, hh in ((x1, y1, w1, h1), (x2, y2, w2, h2)):
+        assert x >= 0 and y >= 0 and x + ww <= w and y + hh <= h
+        assert ww % 2 == 0 and hh % 2 == 0
+    if w > h:      # horizontal: lado a lado, el primero a la izquierda
+        assert x1 + w1 <= x2
+    else:          # vertical o cuadrada: uno arriba del otro, el primero arriba
+        assert y1 + h1 <= y2
+
+
+def test_sobre_fondo_deja_lugar_para_texto():
+    x, y, w, h = L.sobre_fondo((1920, 1080), 896, 1008)
+    assert y + h <= 1008 // 2                  # vertical: abajo queda libre
+    x, y, w, h = L.sobre_fondo((1080, 1920), 2560, 640)
+    assert x + w <= 2560 // 2                  # horizontal: la derecha queda libre
+
+
+def test_foto_doble_horizontal_sale_lado_a_lado(tmp_path):
+    from convertir3x4.convert.images import convert_double
+    a, b, out = tmp_path / "a.jpg", tmp_path / "b.jpg", tmp_path / "out.jpg"
+    Image.new("RGB", (800, 600), (220, 30, 30)).save(a)     # roja
+    Image.new("RGB", (800, 600), (30, 30, 220)).save(b)     # azul
+    convert_double([str(a), str(b)], str(out), aspect=(21, 9))
+    img = Image.open(out).convert("RGB")
+    assert abs(img.width / img.height - 21 / 9) < 0.01
+    izq = img.getpixel((img.width // 4, img.height // 2))
+    der = img.getpixel((img.width * 3 // 4, img.height // 2))
+    assert izq[0] > 150 and izq[2] < 100         # la primera (roja) a la izquierda
+    assert der[2] > 150 and der[0] < 100         # la segunda (azul) a la derecha
+
+
+class TestPanelPorPantalla:
+    def _cargar(self, app, tab, media, *paths):
+        from convertir3x4.ui.widgets.media_grid import STATE_ROLE
+        tab._add_paths(list(paths))
+        _wait(app, lambda: all(it.data(STATE_ROLE) is None for it in tab._items()))
+        for it in tab._items():
+            it.setSelected(True)
+        app.processEvents()
+
+    def test_dos_videos_uno_o_dos_por_pantalla(self, app, tab, media, tmp_path):
+        v2 = str(tmp_path / "otro.mp4")
+        shutil.copy(media["video"], v2)
+        self._cargar(app, tab, media, media["video"], v2)
+        tab.set_por_pantalla(1)
+        assert tab.btn_convert.text() == "Crear 2 videos"
+        tab.set_por_pantalla(2)
+        assert tab.btn_convert.text() == "Crear 1 video"
+        assert "invertir" in tab.lbl_summary.text()
+
+    def test_tocar_la_vista_previa_invierte_el_par(self, app, tab, media):
+        from PyQt6.QtCore import Qt
+        from PyQt6.QtTest import QTest
+        self._cargar(app, tab, media, media["photo"], media["video"])
+        tab.set_por_pantalla(2)
+        tab.resize(1200, 760)
+        app.processEvents()
+        antes = tab._paths()
+        centro = tab.vista_previa._celda(0).center().toPoint()
+        QTest.mouseClick(tab.vista_previa, Qt.MouseButton.LeftButton, pos=centro)
+        app.processEvents()
+        assert tab._paths() == list(reversed(antes))
+
+    def test_dos_por_pantalla_no_admite_fondo_elegido(self, app, tab, media):
+        self._cargar(app, tab, media, media["photo"])
+        tab.set_por_pantalla(1, fondo_elegido=True)
+        assert tab._mode == batch.FONDO and "Falta elegir el fondo" in tab.lbl_summary.text()
+        assert not tab.btn_convert.isEnabled()
+        tab.set_por_pantalla(2)
+        assert not tab._btn_fondo["elegido"].isEnabled()
+        assert tab._mode == batch.DOBLE
+
+    def test_iconos_toman_la_forma_de_la_salida(self, app):
+        from convertir3x4.ui.style import T
+        from convertir3x4.ui.widgets.vista_previa import icono_pantalla
+
+        def caja(px):
+            img = px.toImage()
+            xs = [x for x in range(img.width()) for y in range(img.height())
+                  if img.pixelColor(x, y).alpha() > 200]
+            ys = [y for x in range(img.width()) for y in range(img.height())
+                  if img.pixelColor(x, y).alpha() > 200]
+            return max(xs) - min(xs), max(ys) - min(ys)
+        w, h = caja(icono_pantalla(1, (8, 9), 44, T.text))
+        assert h > w                                   # vertical
+        w, h = caja(icono_pantalla(1, (32, 9), 44, T.text))
+        assert w > 2 * h                               # horizontal alargada

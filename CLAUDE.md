@@ -55,6 +55,9 @@ convertir3x4/
                          background; audio to -16 LUFS / -1 dBTP with automatic limiter redo;
                          hover storyboard. All via imageio-ffmpeg subprocess (NO ffprobe).
                          See docs/convertir-fotos-y-videos.md
+    layout.py            where each photo/video goes (Qt-free): 2 per screen stacked in vertical,
+                         side by side in horizontal; first in grid goes top/left. Used by photos,
+                         videos AND the Convertir preview, so the preview is exactly the output
     batch.py             Convertir jobs (Qt-free): plan() picks function + numbered output name
                          (0001_…) per mode centrada/doble/fondo; any video in a group -> MP4; run()
                          with progress/cancel, errors returned in operator words

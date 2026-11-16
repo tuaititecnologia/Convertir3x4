@@ -40,8 +40,13 @@ HELP = [
     ("Convertir", [
         ("Agregar", "Agregá fotos o videos de la PC o del NAS, o pegá un link de "
                     "YouTube o Facebook para bajarlo."),
-        ("Convertir", "Seleccioná en la grilla, elegí cómo armarla y tocá Convertir. "
-                      "Si hay un video en la selección, sale un video."),
+        ("Convertir", "Seleccioná en la grilla y elegí cuántos van en cada pantalla: uno, "
+                      "o dos juntos. Abajo ves cada pantalla que se va a crear; el botón "
+                      "dice cuántas fotos y videos salen."),
+        ("Dos en la misma pantalla", "Van en el orden de la grilla: el primero arriba (o a "
+                                     "la izquierda en una pantalla horizontal). Tocá la "
+                                     "pantalla en la vista previa para invertirlos. Si uno "
+                                     "es video, sale un video."),
         ("Empezar de nuevo", "La lista se guarda sola y vuelve al abrir la app. Para "
                              "arrancar otra, tocá Vaciar: los archivos no se borran."),
         ("Audio", "Los videos salen con el volumen nivelado: en la consola el fader "

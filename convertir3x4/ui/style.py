@@ -372,6 +372,18 @@ QLabel#nonstandard_title {{ color: {T.warn}; font-weight: 600; }}
 QLabel#nonstandard_text {{ color: {T.warn}; }}
 QFrame#nonstandard QPushButton#btn_link {{ color: {T.warn}; }}
 
+/* "¿Cuántos en cada pantalla?" (Convertir): dos tarjetas con el dibujo */
+QToolButton#por_pantalla {{
+    background: transparent; border: 1px solid {T.border_strong}; border-radius: 10px;
+    color: {T.text_2}; padding: 10px 6px 8px 6px; font-weight: 600;
+}}
+QToolButton#por_pantalla:hover {{ background-color: {T.hover}; }}
+QToolButton#por_pantalla:checked {{
+    background-color: {T.accent_soft}; border: 2px solid {T.accent_text}; color: {T.text};
+}}
+QToolButton#por_pantalla:focus {{ border-color: {T.accent_text}; }}
+QToolButton#por_pantalla:disabled {{ color: {T.text_disabled}; border-color: {T.border}; }}
+
 /* ---------- campos ---------- */
 QLineEdit {{
     background-color: {T.raised}; color: {T.text}; border: 1px solid {T.field_border};

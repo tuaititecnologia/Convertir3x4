@@ -85,6 +85,18 @@ def plan(paths: list[str], mode: str, opts: Options) -> list[Job]:
     return jobs
 
 
+def que_crea(jobs: list["Job"]) -> str:
+    """'1 foto', '2 videos', '3 fotos y 1 video': lo que sale, no lo que entra."""
+    n_video = sum(j.is_video for j in jobs)
+    n_photo = len(jobs) - n_video
+    parts = []
+    if n_photo:
+        parts.append("1 foto" if n_photo == 1 else f"{n_photo} fotos")
+    if n_video:
+        parts.append("1 video" if n_video == 1 else f"{n_video} videos")
+    return " y ".join(parts)
+
+
 def describe(paths: list[str], mode: str, opts: Options) -> str:
     """Qué va a salir, en palabras del operador (para el panel de acciones)."""
     if not paths:
@@ -93,15 +105,7 @@ def describe(paths: list[str], mode: str, opts: Options) -> str:
         jobs = plan(paths, mode, opts)
     except ValueError as e:
         return str(e)
-    n_video = sum(j.is_video for j in jobs)
-    n_photo = len(jobs) - n_video
-    parts = []
-    if n_photo:
-        parts.append("1 foto" if n_photo == 1 else f"{n_photo} fotos")
-    if n_video:
-        parts.append("1 video" if n_video == 1 else f"{n_video} videos")
-    text = "Sale " if len(jobs) == 1 else "Salen "
-    text += " y ".join(parts)
+    text = f"Va a crear {que_crea(jobs)}"
     if mode == DOBLE and len(paths) % 2:
         text += " (la última queda sola)"
     return text + "."

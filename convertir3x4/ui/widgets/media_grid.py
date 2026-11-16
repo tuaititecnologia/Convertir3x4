@@ -29,6 +29,7 @@ STATE_ROLE = Qt.ItemDataRole.UserRole + 6       # ver STATES
 PROGRESS_ROLE = Qt.ItemDataRole.UserRole + 7    # 0..1 mientras STATE_ROLE == "working"
 STORYBOARD_ROLE = Qt.ItemDataRole.UserRole + 8  # ruta de la tira de cuadros (vista previa)
 PREVIEW_ROLE = Qt.ItemDataRole.UserRole + 9     # QPixmap del cuadro de vista previa actual
+SIZE_ROLE = Qt.ItemDataRole.UserRole + 10       # (ancho, alto) del original (vista previa de Convertir)
 
 # Estados que se dibujan sobre la miniatura. Sin estado: normal.
 #   loading  todavía no hay miniatura      working  convirtiendo/bajando (con %)
