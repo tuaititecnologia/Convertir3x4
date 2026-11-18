@@ -3,8 +3,10 @@
 ; NUNCA subir catalogo.ini al repositorio: tiene la contraseña de la base.
 
 [catalogo]
-; Servidor PostgreSQL del catálogo (la App de TrueNAS)
-servidor = truenas
+; Servidor PostgreSQL del catálogo (la App «catalogo» de TrueNAS). Por IP: el
+; nombre del NAS no siempre resuelve (sin mDNS) y para la base da lo mismo.
+; Desde afuera de la iglesia, por Netbird: 100.118.161.236.
+servidor = 192.168.1.224
 puerto = 5432
 base = catalogo
 usuario = catalogo

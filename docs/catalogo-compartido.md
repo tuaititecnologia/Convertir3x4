@@ -1,6 +1,6 @@
 # Catálogo compartido en el NAS
 
-**Estado:** diseño acordado el 26/09/2026. La app quedó en PostgreSQL el 18/11/2026 (SQLite se eliminó). Falta instalar la base en el NAS (ver «Decisiones del 18/11/2026») y el catalogado nocturno.
+**Estado:** diseño acordado el 26/09/2026. Desde el 18/11/2026 la app usa PostgreSQL (SQLite se eliminó) y la base está instalada en el NAS: App «catalogo» de TrueNAS, con respaldo diario y snapshots (manual en el repo CDLM-Freenas, `Catalogo-PostgreSQL.md`). Falta copiar `catalogo.ini` a las dos PCs, el primer catalogado y el catalogado nocturno.
 
 Este documento explica cómo pasa el catálogo de medios de la app (pestañas Buscar y Catalogar) de funcionar en una sola PC a funcionar en dos, con la base en el NAS de la Catedral de los Milagros.
 
