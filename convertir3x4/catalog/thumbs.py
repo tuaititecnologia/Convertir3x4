@@ -1,38 +1,33 @@
-"""Generación de miniaturas pre-cacheadas (PIL, sin Qt → apto para hilos worker).
+"""Miniaturas del catálogo (PIL, sin Qt → apto para hilos worker).
 
-Las miniaturas se guardan como JPEG en un directorio de caché, nombradas por el
-sha256 del medio para deduplicar también las miniaturas. La UI solo carga el
-archivo resultante.
+Se generan en memoria como JPEG y se guardan en la base (tabla `thumbnail`),
+para que todas las PCs las vean aunque el archivo original falte o el NAS no
+responda. Cada PC las guarda además en su caché local (`cache_miniaturas.py`).
 """
 
-import os
+import io
 
 import imageio
-from PIL import Image
+from PIL import Image, ImageOps
 
 THUMB_MAX = 320  # lado mayor de la miniatura, en px
 
 
-def thumb_path_for(cache_dir: str, sha: str) -> str:
-    return os.path.join(cache_dir, f"{sha}.jpg")
-
-
-def make_thumb(src_path: str, kind: str, sha: str, cache_dir: str) -> str | None:
-    """Genera (si no existe) la miniatura y devuelve su ruta, o None si falla."""
-    os.makedirs(cache_dir, exist_ok=True)
-    out = thumb_path_for(cache_dir, sha)
-    if os.path.exists(out):
-        return out
+def make_thumb(src_path: str, kind: str) -> bytes | None:
+    """JPEG de la miniatura, o None si el archivo no se puede leer."""
     try:
         if kind == "video":
             img = _first_frame(src_path)
         else:
-            img = Image.open(src_path).convert("RGB")
+            with Image.open(src_path) as im:
+                im.draft("RGB", (THUMB_MAX * 2, THUMB_MAX * 2))  # JPEG: decodifica achicado
+                img = ImageOps.exif_transpose(im).convert("RGB")
         if img is None:
             return None
         img.thumbnail((THUMB_MAX, THUMB_MAX), Image.LANCZOS)
+        out = io.BytesIO()
         img.save(out, "JPEG", quality=80)
-        return out
+        return out.getvalue()
     except Exception:
         return None
 

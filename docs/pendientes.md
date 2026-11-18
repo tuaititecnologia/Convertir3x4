@@ -4,7 +4,8 @@ Ideas y tareas que van surgiendo mientras se prueba la app. Se anotan acá para 
 
 ## Por hacer
 
-- **Lo próximo: migrar el catálogo al NAS (PostgreSQL)**, según `docs/catalogo-compartido.md`. Hoy el catálogo es una base local de cada PC. Después de la migración la app depende por completo del NAS: es para lo que fue creada (decisión del 15/11/2026). Conviene hacerlo junto con «darse cuenta sola cuando se desconecta el NAS», porque sin NAS la app no tiene catálogo.
+- **Lo próximo: instalar el catálogo en el NAS** (la app ya está lista desde el 18/11/2026). Falta: la App de TrueNAS con `postgres:18.7-trixie` y los datos en un dataset del pool, el `pg_dump` diario por Cron Job, el `catalogo.ini` de cada PC (ver `catalogo.ini.ejemplo`) y la prueba con el .exe de Windows en las dos PCs a la vez. Se documenta en el repo CDLM-Freenas. Actualizar PostgreSQL en cada versión menor (feb, may, ago, nov); la 19 se evalúa cuando salga la 19.1.
+- **Catalogado nocturno** en la PC de edición (tarea programada) con la misma lista de carpetas de `catalogo.ini`, y el «sigo vivo» a Zabbix.
 
 - **Receta de audio para videos muy desparejos** (15/11/2026): armar un tratamiento propio para estos casos (comprimir, limitar; el detalle se define después). Caso de referencia: un video de teléfono (`20261113_110825.mp4`: −28,8 LUFS, pico −0,1, rango 27 LU) queda en −20,9 en lugar de −16 y la grilla muestra «! Revisar». El nivelado lineal no puede subirlo sin pasarse de pico y el arreglo con limitador (el de HISTORIA 37) no lo mueve. Probado: loudnorm dinámico + limitador llega a −17,1, pero el pico después del AAC salta entre −1,8 y +4,7 según el ajuste: no es confiable así. Validarla con varios videos reales de la iglesia y con el agente de ProPresenter antes de cambiar la receta actual. Mientras tanto, el aviso dice que quedó bajo y que puede necesitar más volumen en la consola.
 - **Revisar al abrir la app si están los modelos de la IA de Catalogar y ofrecer bajarlos** (pedido del 15/11/2026). Lo del programa para bajar videos ya está hecho (ver «Hecho»); falta lo mismo para los modelos.
@@ -24,6 +25,8 @@ Ideas y tareas que van surgiendo mientras se prueba la app. Se anotan acá para 
 - **Cambiar la contraseña de root del NAS** si sigue siendo la que estaba escrita en `Diagnostico-FreeNAS-Catedral.md`.
 
 ## Hecho
+
+- 18/11/2026: el catálogo pasó a PostgreSQL (`docs/catalogo-compartido.md`). Rutas relativas a `\\truenas\multimedia`; lista de carpetas a catalogar en `catalogo.ini`; miniaturas en la base con copia local en cada PC; lo que falta se ve en gris y conserva sus etiquetas si reaparece en otra carpeta; Buscar y Catalogar avisan si el NAS no responde y vuelven solos. Ya no se catalogan carpetas sueltas de la PC.
 
 - 15/11/2026: Todos los textos de la app pasan a un registro serio, con trato de usted y vocabulario formal («descargar», «enviar», «enlace», «etiqueta», «puntero»; nada de «tocá», «bajar», «mandar», «la app»). Una prueba (`TestRegistroDeLosTextos`) avisa si vuelve el voseo o una palabra coloquial. De paso: el panel de Convertir se desplaza cuando no entra (se encimaba con muchos elementos) y la ayuda ya no corta los párrafos.
 - 15/11/2026: Buscar tiene «Enviar a Convertir» (botón, menú del botón derecho y Ctrl+Enter): lo elegido pasa a la grilla de Convertir ya seleccionado; lo que no está disponible no se envía y se avisa.

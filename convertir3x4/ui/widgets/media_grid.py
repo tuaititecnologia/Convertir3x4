@@ -10,7 +10,7 @@
 import os
 
 from PyQt6.QtCore import Qt, QPoint, QRect, QRectF, QSize, QTimer, QUrl, QMimeData, pyqtSignal
-from PyQt6.QtGui import QPainter, QPainterPath, QPen, QColor, QDrag, QFont, QFontMetrics, QIcon, QPixmap
+from PyQt6.QtGui import QPainter, QPainterPath, QPen, QColor, QDrag, QFont, QFontMetrics, QIcon, QImage, QPixmap
 from PyQt6.QtWidgets import (
     QApplication, QListWidget, QListWidgetItem, QAbstractItemView,
     QStyledItemDelegate, QStyle,
@@ -123,7 +123,13 @@ class ThumbDelegate(QStyledItemDelegate):
             clip = QPainterPath()
             clip.addRoundedRect(target, 4, 4)
             painter.setClipPath(clip)
-            if state in ("error", "missing", "offline"):
+            if state in ("missing", "offline"):
+                # El archivo no está (se movió, se borró o el NAS no responde):
+                # la miniatura va en gris, para que se note de un vistazo que no
+                # se puede usar en ProPresenter.
+                pm = _en_gris(pm)
+                painter.setOpacity(0.6)
+            elif state == "error":
                 painter.setOpacity(0.35)
             painter.drawPixmap(target, pm, QRectF(pm.rect()))
             painter.setOpacity(1.0)
@@ -555,3 +561,20 @@ class ReorderListWidget(_HoverPreview, QListWidget):
         painter.drawEllipse(QPoint(x, y_top), 3, 3)
         painter.drawEllipse(QPoint(x, y_bottom), 3, 3)
         painter.end()
+
+
+_GRISES: dict[int, QPixmap] = {}
+
+
+def _en_gris(pm: QPixmap) -> QPixmap:
+    """La misma miniatura en escala de grises (se convierte una vez y se guarda)."""
+    clave = pm.cacheKey()
+    gris = _GRISES.get(clave)
+    if gris is None:
+        if len(_GRISES) > 2000:
+            _GRISES.clear()
+        img = pm.toImage().convertToFormat(QImage.Format.Format_Grayscale8)
+        gris = QPixmap.fromImage(img)
+        gris.setDevicePixelRatio(pm.devicePixelRatio())
+        _GRISES[clave] = gris
+    return gris

@@ -312,13 +312,13 @@ class TestAvailability:
         assert not any(result.values())
         assert calls == ["\\\\NAS\\fotos"]
 
-    def test_missing_originals_are_marked_in_buscar(self, app, tmp_path):
+    def test_missing_originals_are_marked_in_buscar(self, app, tmp_path, sin_catalogo):
         from convertir3x4.ui.tabs.tab_buscar import BuscarTab
         from convertir3x4.catalog.models import Media
         from convertir3x4.ui.widgets.media_grid import STATE_ROLE
         real = tmp_path / "esta.jpg"
         real.write_bytes(b"x")
-        tab = BuscarTab()
+        tab = BuscarTab(srv=sin_catalogo)
         tab._populate([Media(path=str(real), filename="esta.jpg", kind="image", id=1),
                        Media(path="/Volumes/NO_EXISTE/a.jpg", filename="a.jpg", kind="image", id=2)])
         states = [tab.grid.item(i).data(STATE_ROLE) for i in range(2)]
@@ -370,47 +370,119 @@ class TestHelp:
         w.deleteLater()
 
 
+def _esperar(app, cond, segundos=20):
+    import time
+    t = time.time()
+    while not cond() and time.time() - t < segundos:
+        app.processEvents()
+        time.sleep(0.02)
+    app.processEvents()
+    return cond()
+
+
 class TestLimpiarCatalogo:
-    def test_buscar_y_quitar_de_punta_a_punta(self, app, tmp_path):
-        import time
-        from convertir3x4.catalog.db import connect
+    def test_ver_y_quitar_faltantes(self, app, pg_cfg, tmp_path):
+        from convertir3x4.catalog.db import conectar
         from convertir3x4.catalog.models import Media
         from convertir3x4.catalog.repo import Repo
         from convertir3x4.ui.widgets.catalogo_avanzado import CatalogoAvanzado
-        db = str(tmp_path / "catalogo.db")
-        esta = tmp_path / "esta.jpg"
-        esta.write_bytes(b"x")
-        conn = connect(db)
-        r = Repo(conn)
-        for p in (str(esta), str(tmp_path / "se_borro.jpg"), "/Volumes/NO_ESTA/x.jpg"):
-            r.upsert_media(Media(path=p, filename=os.path.basename(p), kind="image"))
-        conn.close()
 
-        dlg = CatalogoAvanzado(ruta_db=db)
+        def abrir():
+            return Repo(conectar(pg_cfg), str(tmp_path))
+
+        with abrir() as r:
+            for nombre in ("esta.jpg", "se_movio.jpg"):
+                r.upsert_media(Media(path=str(tmp_path / nombre), filename=nombre, kind="image"))
+            r.marcar_faltantes([r.get_media_by_path(str(tmp_path / "se_movio.jpg")).id])
+
+        dlg = CatalogoAvanzado(abrir=abrir)
         cambios = []
         dlg.catalogChanged.connect(lambda: cambios.append(1))
-
-        def esperar():
-            t = time.time()
-            while dlg._worker is not None and time.time() - t < 20:
-                app.processEvents()
-                time.sleep(0.02)
-            app.processEvents()
-
         dlg.buscar()
-        esperar()
-        texto = dlg.lbl_resultado.text()
-        assert "Hay 1 foto o video cuyo archivo ya no existe" in texto
-        assert "el disco «NO_ESTA» no está conectado" in texto
+        assert _esperar(app, lambda: dlg._worker is None)
+        assert "Hay 1 foto o video cuyo archivo ya no está en su carpeta" in dlg.lbl_resultado.text()
         assert dlg.btn_quitar.isVisibleTo(dlg) and dlg.btn_quitar.text() == "Quitar 1 del catálogo…"
         dlg.quitar()                        # (la confirmación se prueba a mano)
-        esperar()
+        assert _esperar(app, lambda: dlg._worker is None)
         assert cambios == [1]
-        conn = connect(db)
-        quedan = sorted(m.filename for m in Repo(conn).all_media())
-        conn.close()
-        assert quedan == ["esta.jpg", "x.jpg"]      # el del disco desconectado se conserva
+        with abrir() as r:
+            assert [m.filename for m in r.all_media()] == ["esta.jpg"]
         dlg.deleteLater()
+
+
+class TestBuscarConCatalogo:
+    def _servicio(self, pg_cfg, raiz):
+        from convertir3x4.catalog.db import conectar
+        from convertir3x4.catalog.repo import Repo
+        from convertir3x4.ui.servicio_catalogo import ServicioCatalogo
+        return ServicioCatalogo(abrir=lambda: Repo(conectar(pg_cfg), raiz))
+
+    def test_busca_baja_miniaturas_y_pone_en_gris_lo_que_falta(self, app, pg_cfg, tmp_path,
+                                                                 monkeypatch):
+        import io
+        from PIL import Image
+        from convertir3x4.catalog.db import conectar
+        from convertir3x4.catalog.models import Media
+        from convertir3x4.catalog.repo import Repo
+        from convertir3x4.ui.tabs import tab_buscar
+        from convertir3x4.ui.widgets.media_grid import STATE_ROLE
+
+        cache = tmp_path / "cache"
+        monkeypatch.setattr(tab_buscar, "catalog_thumb_dir", lambda: str(cache))
+        nas = tmp_path / "nas"
+        nas.mkdir()
+        (nas / "culto_rojo.jpg").write_bytes(b"x")       # el archivo está
+        buf = io.BytesIO()
+        Image.new("RGB", (64, 48), (220, 30, 30)).save(buf, "JPEG")
+        with Repo(conectar(pg_cfg), str(nas)) as r:
+            for nombre in ("culto_rojo.jpg", "culto_movido.jpg"):
+                r.upsert_media(Media(path=str(nas / nombre), filename=nombre, kind="image"),
+                               miniatura=buf.getvalue())
+            r.marcar_faltantes([r.get_media_by_path(str(nas / "culto_movido.jpg")).id])
+
+        srv = self._servicio(pg_cfg, str(nas))
+        t = tab_buscar.BuscarTab(srv=srv)
+        t.resize(900, 600)
+        t.show()
+        t.txt_query.setText("culto")
+        t._do_search()
+        assert _esperar(app, lambda: t.grid.count() == 2 and all(
+            not t.grid.item(i).icon().isNull() for i in range(2)))
+        assert not t.conn_box.isVisible()
+        nombres = [t.grid.item(i).text() for i in range(2)]
+        assert nombres == ["culto_rojo.jpg", "culto_movido.jpg"]   # lo que falta, al final
+        assert [t.grid.item(i).data(STATE_ROLE) for i in range(2)] == [None, "missing"]
+        assert len(list(cache.glob("*.jpg"))) == 2                  # quedaron en la caché
+
+        # La celda del que falta se dibuja en gris; la otra, en color.
+        img = t.grid.viewport().grab().toImage()
+        def saturacion(i):
+            rect = t.grid.visualItemRect(t.grid.item(i))
+            c = img.pixelColor(rect.center().x(), rect.top() + rect.height() // 3)
+            return c.hsvSaturation()
+        assert saturacion(0) > 100 and saturacion(1) < 20
+        t.close()
+        t.deleteLater()
+        srv.cerrar()
+
+    def test_sin_servidor_avisa_y_no_congela(self, app):
+        import time
+        from convertir3x4.catalog.db import ConfigCatalogo, conectar
+        from convertir3x4.catalog.repo import Repo
+        from convertir3x4.ui.servicio_catalogo import ServicioCatalogo
+        from convertir3x4.ui.tabs.tab_buscar import BuscarTab
+        cfg = ConfigCatalogo(servidor="127.0.0.1", puerto=1, clave="x")
+        srv = ServicioCatalogo(abrir=lambda: Repo(conectar(cfg), "/"))
+        inicio = time.monotonic()
+        t = BuscarTab(srv=srv)
+        assert time.monotonic() - inicio < 0.5          # crear la pestaña no espera a la red
+        t.show()
+        assert _esperar(app, lambda: t.conn_box.estado == "error", 10)
+        assert "el NAS no responde" in t.conn_box.lbl.text()
+        assert t.conn_box.btn_retry.isVisibleTo(t)
+        t.close()
+        t.deleteLater()
+        srv.cerrar()
 
 
 def test_confirmaciones_nombran_la_accion():

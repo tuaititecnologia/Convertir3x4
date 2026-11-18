@@ -7,9 +7,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **Convertir a 3:4 — CDLM** is a Python GUI desktop app for the Catedral de los Milagros church. It started as a photo aspect-ratio converter (default 8:9, matching the LED screen) and is evolving into an AI-powered media manager (catalog, search, tagging, drag-out to ProPresenter). The aspect-ratio converter remains as one tool ("Convertir" tab). Uses PyQt6 for the interface and Pillow for image processing. Distributed as a single `.exe` via GitHub Actions.
 
 The original evolution plan (`/Users/alejandro/.claude/plans/necesito-que-dise-es-un-tranquil-crystal.md`) no longer exists.
-The current design for the catalog lives in `docs/catalogo-compartido.md`: moving the local SQLite catalog to a
-PostgreSQL database on the church NAS, shared by the editing PC and the ProPresenter PC over SMB. Read it before
-touching `catalog/`, `engine/` or `appdata.py`.
+The catalog lives in a PostgreSQL database on the church NAS (TrueNAS App), shared by the editing PC and the
+ProPresenter PC, which read the media over SMB from `\\truenas\multimedia`. SQLite is gone (18/11/2026).
+Design and decisions: `docs/catalogo-compartido.md`. Read it before touching `catalog/`, `engine/` or `appdata.py`.
 
 ## Commands
 
@@ -24,9 +24,18 @@ python -m venv venv && source venv/bin/activate && pip install -r requirements.t
 ./venv/bin/python -m pytest tests.py tests_catalog.py tests_ai.py tests_clips.py tests_ui.py tests_convertir.py tests_discos.py -v
 # tests_discos.py also runs the real panel-copias.py (fake lsblk/systemctl) when ~/Documents/Agents/CDLM-Freenas is present
 # tests_ai.py also runs real-model tests when CDLM_MODELS points to a folder with the downloaded models
+# Catalog tests (tests_catalog/tests_ai/tests_ui) need the dev PostgreSQL; fixtures in conftest.py create a
+# throwaway DB per test and skip without the server (CDLM_TEST_PG overrides). Same image as the NAS:
+docker run -d --name cdlm-catalogo-dev --restart unless-stopped -p 127.0.0.1:55432:5432 \
+  -e POSTGRES_USER=catalogo -e POSTGRES_PASSWORD=catalogo-dev -e POSTGRES_DB=catalogo \
+  -v cdlm-catalogo-dev:/var/lib/postgresql postgres:18.7-trixie
 
-# Build executable
-pyinstaller Convertir3x4.spec
+# Run against the dev catalog (instead of a catalogo.ini next to the .exe):
+CDLM_CATALOGO_SERVIDOR=127.0.0.1 CDLM_CATALOGO_PUERTO=55432 CDLM_CATALOGO_CLAVE=catalogo-dev \
+  CDLM_CATALOGO_RAIZ=/Volumes/multimedia CDLM_CATALOGO_CARPETAS="Entrada;Publicar" ./venv/bin/python Convertir3x4.py
+
+# Build executable (venv/bin/pip has a stale shebang: use python -m)
+./venv/bin/python -m PyInstaller Convertir3x4.spec
 ```
 
 ## Architecture
@@ -93,29 +102,44 @@ convertir3x4/
     widgets/advanced_dialog.py, widgets/help_panel.py (overlay help, first run + F1)
 ```
 
-**Media-manager layers (Fase 2, present):**
+**Media-manager layers (catalog on the NAS):**
 
 ```
 convertir3x4/
-  appdata.py             resolves per-user data dir (catalog.db + thumbs/) via QStandardPaths
-  workers.py             EngineWorker(QThread): runs fn(progress_cb) off the UI thread
-  catalog/               the truth — SQLite (Qt-free):
-    db.py                connect()/schema/migrations; FTS5 table media_fts (rowid = media.id)
-    models.py            Media, ProbeResult dataclasses
-    repo.py              Repo: all SQL lives here (upsert_media, dedup, tags, search). Keeps FTS in sync.
-    thumbs.py            PIL thumbnail generation (no Qt → safe in worker threads)
+  appdata.py             per-user data dir + catalog config: config_catalogo() reads CDLM_CATALOGO_* (dev) or
+                         catalogo.ini next to the .exe / in the data dir (see catalogo.ini.ejemplo; never commit
+                         catalogo.ini). abrir_repo() = conectar + Repo; catalog_thumb_dir() = local thumb cache
+  workers.py             EngineWorker(QThread): runs fn(progress_cb) off the UI thread; `fallo` carries the exception
+  catalog/               the truth — PostgreSQL (Qt-free):
+    db.py                ConfigCatalogo (servidor, clave, raiz, carpetas), conectar() (autocommit, 3 s timeout,
+                         CatalogoNoDisponible / CatalogoIncompatible / CatalogoNoConfigurado), numbered MIGRACIONES
+                         as text. Search: tsvector `search_doc` (config `catalogo` = simple+unaccent, palabras())
+                         + pg_trgm index on texto_nombre(). Thumbnails in `thumbnail` (bytea + sello md5)
+    repo.py              Repo(conn, raiz): ALL SQL lives here. Paths stored as rel_path (relative to raiz, "/");
+                         Media.path = full path on this PC. Missing files get missing_since (never auto-deleted);
+                         mover() keeps tags. tomar_carpeta(): advisory lock per folder
+    rutas.py             a_relativa / a_completa (UNC, drive letters, posix)
+    cache_miniaturas.py  local copy of DB thumbnails as <id>-<sello>.jpg; Buscar reads from disk
+    thumbs.py            PIL thumbnail -> JPEG bytes (no Qt → safe in worker threads)
+    ubicacion.py         storage_root / availability: one exists() per root, never per file (offline NAS)
   engine/                the engine — cheap→expensive cascade (Qt-free):
-    inventory.py         scan() folders for media; kind_for(); folder_origin()
+    inventory.py         scan() folders for media (reports unreadable dirs); kind_for()
     probe.py             technical metadata: PIL for images, imageio (bundled ffmpeg, NO ffprobe) for video.
                          Computes quality_flag (ok/low_res/corrupt) inline — no separate quality module.
     dedup.py             sha256 (hashlib) + dHash (numpy, NO imagehash/scipy) + hamming()
-    pipeline.py          run_stage0(): inventory→probe→hash→thumb→upsert. Idempotent (skips unchanged).
+    pipeline.py          catalogar(repo, carpetas): lock each folder → scan ALL + mark missing (only if the folder
+                         was read whole) → per file skip/move/probe+thumb+upsert → sha256 ONLY for same-size files.
+                         Idempotent. run_stage0(repo, root) = one folder. CatalogoOcupado if another PC has it
     ai_models.py         model files (pinned HF revision + sha256), downloaded once to appdata.models_dir()
     vocab.py             church scene vocabulary: Spanish tag -> English CLIP prompts. Bump VOCAB_VERSION on change
     vision.py            SceneClassifier: CLIP ViT-B/32 on ONNX Runtime (CPU). Proposes a tag only if prob >= 0.60
     faces.py             FaceEngine: YuNet + SFace (OpenCV). Recognizes ONLY people in the `person` list
                          (cosine >= 0.42); other faces are discarded, never stored or clustered
-    ai_pipeline.py       run_ai(): scene + faces over the catalog. Idempotent via ai_result.model / people_sig
+    ai_pipeline.py       run_ai(): scene + faces over the catalog (videos via their DB thumbnail). Idempotent
+  ui/servicio_catalogo.py  ServicioCatalogo: ONE thread + connection for the UI; pedir(fn(repo), ok, error);
+                         reconnects alone; estado_cambiado("conectando"/"ok"/"error", text). servicio() = app-wide
+  ui/widgets/caja_conexion.py  connection banner (same look as Grabadora); catalogo_avanzado.py = ⚙ of Catalogar
+                         (catalog one subfolder, remove missing)
 ```
 
 **AI tags (Fase 5, present):** everything the AI proposes is `media_tag.source='ia', confirmed=0`
@@ -124,10 +148,11 @@ never re-adds one a person removed (`tag_rejection`). Face recognition is whitel
 decision (pastors, guests) — do not add clustering of unknown faces or store their embeddings.
 Validated on real photos with `spikes/spike_vision.py`.
 
-Tabs wired in `app.py`: **Buscar** (search catalog), **Catalogar** (run Stage 0 via MotorTab),
-**Convertir**. SQLite rule: never share a connection across threads — each worker opens its own
-inside `fn`; WAL lets the worker write while the UI reads. No new runtime deps were added
-(ffprobe avoided via imageio; perceptual hash done in numpy).
+Tabs wired in `app.py`: **Buscar** (search catalog), **Catalogar** (MotorTab: the configured NAS folders),
+**Convertir**. Connection rules: the UI thread NEVER touches the DB or the NAS (an offline NAS can block for
+seconds) — short queries go through `servicio_catalogo`, long passes through EngineWorker with their own
+`with abrir_repo() as repo:`; never share a connection across threads. Missing/offline media are drawn in
+grayscale (`media_grid._en_gris`). Runtime dep: psycopg[binary] (in the .spec hiddenimports).
 
 Future phases add quarantine and optional local embeddings (`search/`). **When extending, keep the shim's re-exports in sync** so
 the tests and `.spec` entry point don't break.

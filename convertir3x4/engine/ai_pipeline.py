@@ -8,6 +8,7 @@ Todo lo que propone queda como tag `source='ia'` sin confirmar, y nunca pisa
 ni repone un tag que una persona puso o sacó.
 """
 
+import io
 import json
 import os
 from dataclasses import dataclass
@@ -32,7 +33,8 @@ class AIStats:
     errors: int = 0
 
 
-def load_for_ai(path: str) -> Image.Image:
+def load_for_ai(path) -> Image.Image:
+    """`path`: ruta o archivo en memoria (BytesIO)."""
     img = Image.open(path)
     img.draft("RGB", (_DECODE_SIDE, _DECODE_SIDE))   # JPEG: decodifica ya achicado
     img = ImageOps.exif_transpose(img)
@@ -61,9 +63,13 @@ def run_ai(repo: Repo, models_dir: str, progress_cb=None, threads: int = 4) -> A
     face_engine = faces_mod.FaceEngine(models_dir) if refs else None
 
     for i, (m, need_scene) in enumerate(todo, 1):
-        # Video: se analiza su miniatura.
-        src = m.thumb_path if m.kind == "video" else m.path
-        if not src or not os.path.exists(src):
+        # Video: se analiza su miniatura (la de la base).
+        if m.kind == "video":
+            jpeg = repo.miniatura(m.id)
+            src = io.BytesIO(jpeg) if jpeg else None
+        else:
+            src = m.path if os.path.exists(m.path) else None
+        if src is None:
             stats.missing_files += 1      # sin guardar: se reintenta en la próxima
             _progress(progress_cb, i, total, m.path)
             continue

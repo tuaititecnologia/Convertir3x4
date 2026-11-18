@@ -1,7 +1,9 @@
-"""Pestaña 'Buscar': busca en el catálogo (FTS5 + substring), muestra miniaturas,
-permite taggear por lote y arrastrar a ProPresenter (drag-out como link).
+"""Pestaña 'Buscar': busca en el catálogo (palabras + fragmentos), muestra
+miniaturas, permite taggear por lote y arrastrar a ProPresenter (como enlace).
 
-Lee/escribe el catálogo en el hilo de UI con su propia conexión.
+Nunca toca la base desde el hilo de la interfaz: todo pasa por el servicio del
+catálogo (`ui/servicio_catalogo.py`). Las miniaturas salen de la caché local de
+esta PC y, si faltan, se bajan de la base en segundo plano.
 """
 
 import ntpath
@@ -16,10 +18,11 @@ from PyQt6.QtWidgets import (
     QListWidgetItem, QFrame, QPushButton, QButtonGroup, QMessageBox,
 )
 
-from ...appdata import db_path
-from ...catalog.db import connect
-from ...catalog.repo import Repo
+from ...appdata import catalog_thumb_dir
+from ...catalog.cache_miniaturas import CacheMiniaturas
 from ...catalog.ubicacion import availability, friendly_root, storage_root  # noqa: F401
+from ..servicio_catalogo import servicio, texto_para
+from ..widgets.caja_conexion import CajaConexion
 from ..widgets.media_grid import (
     DragOutListWidget, PATH_ROLE, MEDIA_ID_ROLE, KIND_ROLE, DURATION_ROLE, STATE_ROLE,
 )
@@ -56,14 +59,23 @@ class BuscarTab(QWidget):
     # Rutas elegidas en el catálogo para convertir (MainWindow las pasa a Convertir)
     enviarAConvertir = pyqtSignal(list)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, srv=None):
         super().__init__(parent)
-        self._conn = None
+        self._srv = srv or servicio()
+        self._cache = CacheMiniaturas(catalog_thumb_dir())
+        self._busqueda = 0          # solo se muestra la respuesta de la última búsqueda
+        self._seleccion = 0         # idem para los tags de la selección
         self._debounce = QTimer(self)
         self._debounce.setSingleShot(True)
         self._debounce.setInterval(200)
         self._debounce.timeout.connect(self._do_search)
         self._build_ui()
+        self._srv.estado_cambiado.connect(self._estado_catalogo)
+        # Sin catálogo, se reintenta solo cada 20 s mientras la pestaña se ve.
+        self._reintento = QTimer(self)
+        self._reintento.setInterval(20000)
+        self._reintento.timeout.connect(self._reintentar_si_hace_falta)
+        self._reintento.start()
         self.refresh()
 
     def _build_ui(self):
@@ -118,6 +130,13 @@ class BuscarTab(QWidget):
         row.addWidget(self.lbl_count)
         layout.addLayout(row)
 
+        # Estado de la conexión con el catálogo (no se ve si está todo bien)
+        self.conn_box = CajaConexion()
+        self.conn_box.reintentar.connect(self.refresh)
+        self.conn_box.set_estado(self._srv.estado if self._srv.estado != "ok" else "conectando",
+                                 self._srv.texto)
+        layout.addWidget(self.conn_box)
+
         # Un solo aviso con la causa, en vez de repetirla en cada miniatura
         self.offline_box = QFrame()
         self.offline_box.setObjectName("nonstandard")
@@ -168,67 +187,119 @@ class BuscarTab(QWidget):
         layout.addWidget(panel)
 
     # ------------------------------------------------------------- datos
-    def _repo(self) -> Repo | None:
-        if self._conn is None:
-            try:
-                self._conn = connect(db_path())
-            except Exception:
-                return None
-        return Repo(self._conn)
-
     def refresh(self):
-        """Reabre la conexión (para ver lo recién catalogado) y re-busca."""
-        if self._conn is not None:
-            self._conn.close()
-            self._conn = None
+        """Vuelve a buscar (p. ej. para ver lo recién catalogado)."""
         self._do_search()
         self._reload_known_tags()
 
-    def _do_search(self):
-        repo = self._repo()
-        if repo is None:
-            self.lbl_count.setText("")
+    def _estado_catalogo(self, estado: str, texto: str):
+        self.conn_box.set_estado(estado, texto)
+        if estado == "error":
+            self._results = []
             self.grid.clear()
-            self.grid.set_empty_text("Todavía no hay catálogo.\nVaya a Catalogar y elija una carpeta con fotos y videos.")
+            self.lbl_count.setText("")
+            self.offline_box.setVisible(False)
+            self.grid.set_empty_text("Mientras tanto, los archivos pueden abrirse desde la "
+                                     "carpeta del NAS en el Explorador.")
             self.tag_bar.set_enabled(False)
-            return
-        self._results = repo.search(self.txt_query.text(),
-                                    pending_only=self.chk_pending.isChecked())
+            self._actualizar_seleccion()
+
+    def _reintentar_si_hace_falta(self):
+        if self._srv.estado == "error" and self.isVisible():
+            self.refresh()
+
+    def _do_search(self):
+        self._busqueda += 1
+        n = self._busqueda
+        query, pend = self.txt_query.text(), self.chk_pending.isChecked()
+        cache = self._cache
+
+        def buscar(repo):
+            # Todo lo que puede tardar (base, NAS por SMB) pasa en el hilo del catálogo.
+            results = repo.search(query, pending_only=pend)
+            minis, faltan = cache.locales(repo, [m.id for m in results])
+            paths = [m.path for m in results]
+            presentes = availability(paths)
+            raices = {r: os.path.exists(r) for r in {storage_root(p) for p in paths}}
+            return results, minis, faltan, presentes, raices
+
+        self._srv.pedir(buscar, ok=lambda r: self._mostrar_busqueda(n, *r))
+
+    def _mostrar_busqueda(self, n, results, minis, faltan, presentes, raices):
+        if n != self._busqueda:
+            return                      # llegó tarde: ya se escribió otra cosa
+        self._results = results
+        self._minis = minis
+        self._bajando = set(faltan)
+        self._presentes = presentes
+        self._raices = raices
         self._apply_kind_filter()
+        if faltan:
+            cache = self._cache
+            self._srv.pedir(lambda repo: cache.bajar(repo, faltan),
+                            ok=lambda nuevas: self._llegaron_miniaturas(n, nuevas))
+
+    def _llegaron_miniaturas(self, n, nuevas: dict):
+        if n != self._busqueda or not nuevas:
+            return
+        self._minis.update(nuevas)
+        self._bajando -= nuevas.keys()
+        for i in range(self.grid.count()):
+            it = self.grid.item(i)
+            ruta = nuevas.get(it.data(MEDIA_ID_ROLE))
+            if ruta:
+                icon = _icono(ruta)
+                if icon:
+                    it.setIcon(icon)
+                if it.data(STATE_ROLE) == "loading":
+                    it.setData(STATE_ROLE, None)
 
     def _apply_kind_filter(self):
         btn = self._kind_group.checkedButton()
         kind = btn.property("kind") if btn else None
         results = [m for m in getattr(self, "_results", []) if kind is None or m.kind == kind]
-        self._populate(results)
+        self._populate(results, getattr(self, "_minis", None),
+                       getattr(self, "_presentes", None), getattr(self, "_raices", None),
+                       getattr(self, "_bajando", None))
 
-    def _populate(self, results):
+    def _populate(self, results, minis: dict | None = None, present: dict | None = None,
+                  raices: dict | None = None, bajando: set | None = None):
+        """Llena la grilla. `minis` {id: miniatura local}; `present` {ruta: existe} y
+        `raices` {raíz: conectada} vienen calculados del hilo del catálogo (si
+        faltan, se calculan acá: solo en las pruebas)."""
         self.grid.clear()
-        present = availability([m.path for m in results])
-        roots_ok: dict[str, bool] = {}
-        self._show_offline([m.path for m in results if not present[m.path]])
+        minis = minis or {}
+        if present is None:
+            present = availability([m.path for m in results])
+        roots_ok: dict[str, bool] = dict(raices or {})
+        for p in {storage_root(m.path) for m in results} - roots_ok.keys():
+            roots_ok[p] = os.path.exists(p)
+        self._show_offline([m.path for m in results
+                            if not present[m.path] or m.missing], roots_ok)
         for m in results:
             item = QListWidgetItem(m.filename)
             item.setData(PATH_ROLE, m.path)
             item.setData(MEDIA_ID_ROLE, m.id)
             item.setData(KIND_ROLE, m.kind)
             item.setData(DURATION_ROLE, m.duration)
-            if not present[m.path]:
-                # No se puede arrastrar a ProPresenter. Si falta el disco/NAS
-                # entero, el aviso de arriba lo explica una vez: solo se atenúa.
-                # Si el disco está y el archivo no, la insignia va en la celda.
-                root_ok = roots_ok.setdefault(storage_root(m.path),
-                                              os.path.exists(storage_root(m.path)))
-                item.setData(STATE_ROLE, "missing" if root_ok else "offline")
-            icon = self._icon_for(m)
+            disponible = present[m.path] and not m.missing
+            if not disponible:
+                # No se puede arrastrar a ProPresenter: la miniatura va en gris.
+                # Si falta el disco/NAS entero, el aviso de arriba lo explica una
+                # vez. Si el disco está y el archivo no, la insignia va en la celda.
+                item.setData(STATE_ROLE, "missing" if roots_ok[storage_root(m.path)]
+                             else "offline")
+            icon = _icono(minis.get(m.id))
             if icon:
                 item.setIcon(icon)
+            elif disponible and m.id in (bajando or ()):
+                item.setData(STATE_ROLE, "loading")     # se está bajando de la base
             tip = m.folder_origin or ""
             if m.width and m.height:
                 tip += f"\n{m.width}×{m.height}"
             if m.quality_flag and m.quality_flag != "ok":
                 tip += "\n" + _QUALITY.get(m.quality_flag, "")
-            if not present[m.path]:
+            if not disponible:
                 tip = (f"No se encuentra el original:\n{m.path}\n"
                        "Verifique que el NAS o el disco estén conectados. Mientras tanto, no "
                        "puede usarse en ProPresenter.")
@@ -244,9 +315,13 @@ class BuscarTab(QWidget):
             else:
                 self.grid.set_empty_text("No hay nada que coincida con la búsqueda.\n"
                                          "Pruebe con otra palabra o con parte del nombre.")
-        else:
+        elif self._kind_group.checkedButton() is not None and \
+                self._kind_group.checkedButton().property("kind"):
             self.grid.set_empty_text("No hay nada de este tipo en el catálogo.\n"
                                      "Elija «Todo» arriba para ver el resto.")
+        else:
+            self.grid.set_empty_text("Todavía no hay nada en el catálogo.\n"
+                                     "Vaya a Catalogar para agregar las carpetas del NAS.")
         self._on_selection_changed()
 
     def _open_item(self, item):
@@ -258,11 +333,11 @@ class BuscarTab(QWidget):
                 f"No se encuentra {os.path.basename(path)}.\n"
                 "Verifique que el NAS o el disco donde está guardado estén conectados.")
 
-    def _show_offline(self, missing: list[str]):
+    def _show_offline(self, missing: list[str], roots_ok: dict[str, bool]):
         if not missing:
             self.offline_box.setVisible(False)
             return
-        roots = sorted({storage_root(p) for p in missing if not os.path.exists(storage_root(p))})
+        roots = sorted({storage_root(p) for p in missing if not roots_ok[storage_root(p)]})
         n = len(missing)
         cuantos = "1 resultado" if n == 1 else f"{n} resultados"
         if roots:
@@ -276,22 +351,6 @@ class BuscarTab(QWidget):
                     "Pase el puntero sobre cada elemento para ver su ubicación anterior.")
         self.lbl_offline.setText(text)
         self.offline_box.setVisible(True)
-
-    def _icon_for(self, media) -> QIcon | None:
-        thumb = media.thumb_path
-        if thumb and os.path.exists(thumb):
-            px = QPixmap(thumb)
-            if not px.isNull():
-                return QIcon(px)
-        # Fallback: la imagen original (si existe)
-        if media.kind == "image" and os.path.exists(media.path):
-            px = QPixmap(media.path)
-            if not px.isNull():
-                return QIcon(px.scaled(
-                    _GRID_THUMB, _GRID_THUMB,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation))
-        return None
 
     # ------------------------------------------------------------- tags
     def _selected_ids(self) -> list[int]:
@@ -359,43 +418,54 @@ class BuscarTab(QWidget):
     def _on_selection_changed(self):
         self._actualizar_seleccion()
         ids = self._selected_ids()
-        repo = self._repo()
-        self.tag_bar.set_enabled(bool(ids))
-        if not ids or repo is None:
+        self.tag_bar.set_enabled(bool(ids) and self._srv.estado == "ok")
+        self._seleccion += 1
+        n = self._seleccion
+        if not ids:
             self.tag_bar.set_chips([], 0)
             return
-        self.tag_bar.set_chips(repo.tag_counts(ids), len(ids),
-                               repo.pending_tag_counts(ids))
+        self._srv.pedir(lambda repo: (repo.tag_counts(ids), repo.pending_tag_counts(ids)),
+                        ok=lambda r: self._mostrar_tags(n, len(ids), *r))
+
+    def _mostrar_tags(self, n, cuantos, counts, pendientes):
+        if n == self._seleccion:
+            self.tag_bar.set_chips(counts, cuantos, pendientes)
+
+    def _cambiar_tags(self, accion, name: str):
+        """Pone, saca o confirma un tag en toda la selección. Si no se puede
+        guardar (NAS caído), se avisa: no queda en cola para después."""
+        ids = self._selected_ids()
+        if not ids:
+            return
+
+        def hacer(repo):
+            for mid in ids:
+                getattr(repo, accion)(mid, name)
+
+        def listo(_):
+            self._reload_known_tags()
+            self._on_selection_changed()
+
+        def fallo(e):
+            self.lbl_seleccion.setText("No se pudo guardar la etiqueta. " + texto_para(e))
+
+        self._srv.pedir(hacer, ok=listo, error=fallo)
 
     def _apply_tag_to_selection(self, name: str):
-        repo = self._repo()
-        ids = self._selected_ids()
-        if repo is None or not ids:
-            return
-        for mid in ids:
-            repo.apply_tag(mid, name)
-        self._reload_known_tags()
-        self._on_selection_changed()
+        self._cambiar_tags("apply_tag", name)
 
     def _remove_tag_from_selection(self, name: str):
-        repo = self._repo()
-        ids = self._selected_ids()
-        if repo is None or not ids:
-            return
-        for mid in ids:
-            repo.remove_tag(mid, name)
-        self._on_selection_changed()
+        self._cambiar_tags("remove_tag", name)
 
     def _confirm_tag_on_selection(self, name: str):
-        repo = self._repo()
-        ids = self._selected_ids()
-        if repo is None or not ids:
-            return
-        for mid in ids:
-            repo.confirm_tag(mid, name)
-        self._on_selection_changed()
+        self._cambiar_tags("confirm_tag", name)
 
     def _reload_known_tags(self):
-        repo = self._repo()
-        if repo is not None:
-            self.tag_bar.set_known_tags(repo.all_tag_names())
+        self._srv.pedir(lambda repo: repo.all_tag_names(), ok=self.tag_bar.set_known_tags)
+
+
+def _icono(ruta: str | None) -> QIcon | None:
+    if not ruta:
+        return None
+    px = QPixmap(ruta)
+    return None if px.isNull() else QIcon(px)

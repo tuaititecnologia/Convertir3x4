@@ -1,0 +1,22 @@
+; Configuración del catálogo para una PC. Copiar como "catalogo.ini" junto a
+; Convertir3x4.exe (o en la carpeta de datos de la app) y completar la clave.
+; NUNCA subir catalogo.ini al repositorio: tiene la contraseña de la base.
+
+[catalogo]
+; Servidor PostgreSQL del catálogo (la App de TrueNAS)
+servidor = truenas
+puerto = 5432
+base = catalogo
+usuario = catalogo
+clave =
+
+; Raíz del recurso compartido. Siempre por nombre, no por IP ni letra de
+; unidad: ProPresenter guarda la ruta completa que recibe al arrastrar.
+raiz = \\truenas\multimedia
+
+; Carpetas que se catalogan, relativas a la raíz, una por línea (con sangría).
+; No pueden salir de la raíz ni estar una dentro de otra.
+carpetas =
+    Entrada
+    Publicar
+    Historial

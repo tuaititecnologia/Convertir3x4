@@ -1,29 +1,22 @@
-"""Tests de la capa de IA: tags sugeridos, personas, migración v2 y la pasada run_ai.
+"""Tests de la capa de IA: tags sugeridos, personas y la pasada run_ai.
 
 La lógica se prueba con clasificador y caras falsos (no hacen falta los modelos).
+El catálogo es el PostgreSQL de prueba (fixture `repo` de conftest.py).
 Los tests que usan los modelos reales corren solo si CDLM_MODELS apunta a una
 carpeta con ellos (p.ej. la de datos de la app).
 """
 
+import io
 import os
-import sqlite3
 import tempfile
 
 import numpy as np
 import pytest
 from PIL import Image
 
-from convertir3x4.catalog.db import connect, SCHEMA_VERSION
 from convertir3x4.catalog.models import Media
 from convertir3x4.catalog.repo import Repo
 from convertir3x4.engine import ai_pipeline, ai_models, faces as faces_mod
-
-
-@pytest.fixture
-def repo():
-    c = connect(":memory:")
-    yield Repo(c)
-    c.close()
 
 
 @pytest.fixture
@@ -32,37 +25,19 @@ def temp_dir():
         yield d
 
 
-def _add(repo, path, kind="image", quality="ok", thumb=None) -> int:
+def _add(repo, path, kind="image", quality="ok", thumb: bytes | None = None) -> int:
     return repo.upsert_media(Media(path=path, filename=os.path.basename(path),
-                                   kind=kind, quality_flag=quality, thumb_path=thumb))
+                                   kind=kind, quality_flag=quality), miniatura=thumb)
+
+
+def _jpeg(color="red") -> bytes:
+    out = io.BytesIO()
+    Image.new("RGB", (320, 240), color=color).save(out, "JPEG")
+    return out.getvalue()
 
 
 def _img(path, color="red"):
     Image.new("RGB", (400, 300), color=color).save(path, "JPEG")
-
-
-# --------------------------------------------------------------- migración
-class TestMigration:
-    def test_v1_db_gets_people_sig_column(self, temp_dir):
-        p = os.path.join(temp_dir, "old.db")
-        c = sqlite3.connect(p)
-        c.executescript("""
-            CREATE TABLE schema_version (version INTEGER NOT NULL);
-            INSERT INTO schema_version VALUES (1);
-            CREATE TABLE ai_result (id INTEGER PRIMARY KEY, media_id INTEGER NOT NULL,
-                model TEXT, description TEXT, synonyms TEXT, media_type TEXT,
-                ocr_text TEXT, mood TEXT, color TEXT, energy TEXT, people TEXT,
-                scene TEXT, flags TEXT, is_ephemeral_score REAL, raw_json TEXT,
-                created_at INTEGER, UNIQUE(media_id));
-        """)
-        c.close()
-        conn = connect(p)
-        cols = {r["name"] for r in conn.execute("PRAGMA table_info(ai_result)")}
-        assert "people_sig" in cols
-        assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION
-        conn.execute("SELECT * FROM person_reference").fetchall()
-        conn.execute("SELECT * FROM tag_rejection").fetchall()
-        conn.close()
 
 
 # --------------------------------------------------------------- tags IA
@@ -217,11 +192,11 @@ class TestRunAI:
 
     def test_corrupt_and_video_without_thumb(self, repo, temp_dir, fake_models):
         _add(repo, os.path.join(temp_dir, "x.jpg"), quality="corrupt")
-        thumb = os.path.join(temp_dir, "t.jpg")
-        _img(thumb, "red")
-        vid = _add(repo, os.path.join(temp_dir, "v.mp4"), kind="video", thumb=thumb)
+        vid = _add(repo, os.path.join(temp_dir, "v.mp4"), kind="video", thumb=_jpeg("red"))
+        _add(repo, os.path.join(temp_dir, "sin_mini.mp4"), kind="video")
         st = ai_pipeline.run_ai(repo, "unused")
         assert st.analyzed == 1                # el corrupto ni se intenta
+        assert st.missing_files == 1           # video sin miniatura: se reintenta después
         assert repo.tags_for(vid) == ["bautismo"]   # el video se analiza por su miniatura
 
 

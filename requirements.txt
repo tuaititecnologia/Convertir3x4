@@ -8,3 +8,4 @@ imageio-ffmpeg
 onnxruntime
 opencv-python-headless
 tokenizers
+psycopg[binary]
