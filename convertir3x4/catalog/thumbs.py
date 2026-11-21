@@ -36,3 +36,19 @@ def make_thumb(src_path: str, kind: str) -> bytes | None:
 def _first_frame(path: str) -> Image.Image | None:
     _, frame = video_ffmpeg.leer(path, cuadro=True)
     return Image.fromarray(frame).convert("RGB")
+
+
+REFERENCIA_MAX = 1600  # lado mayor de una foto de referencia de una persona (lo que mira el NAS)
+
+
+def foto_de_referencia(src_path: str) -> bytes:
+    """La foto de una persona, achicada, para subirla a la base: el NAS calcula
+    ahí su firma (faces.reference_feature trabaja sobre 1600 px). Lanza la
+    excepción de PIL si el archivo no es una imagen."""
+    with Image.open(src_path) as im:
+        im.draft("RGB", (REFERENCIA_MAX, REFERENCIA_MAX))
+        img = ImageOps.exif_transpose(im).convert("RGB")
+    img.thumbnail((REFERENCIA_MAX, REFERENCIA_MAX), Image.LANCZOS)
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", quality=90)
+    return buf.getvalue()

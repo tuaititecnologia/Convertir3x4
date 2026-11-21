@@ -406,10 +406,31 @@ CREATE TRIGGER tag_aviso AFTER INSERT OR DELETE ON tag
     FOR EACH ROW EXECUTE FUNCTION avisar_cambio_catalogo();
 """
 
+# Las firmas de las personas las calcula el NAS: la PC sube la foto (achicada)
+# como pendiente y el catalogador la procesa. La foto queda guardada para poder
+# recalcular la firma si cambia el modelo de caras, sin pedir las fotos de nuevo.
+_V4 = r"""
+ALTER TABLE person_reference
+    ALTER COLUMN embedding DROP NOT NULL,
+    ADD COLUMN foto bytea,
+    ADD COLUMN estado text NOT NULL DEFAULT 'lista'
+        CHECK (estado IN ('pendiente', 'lista', 'sin_cara', 'ilegible'));
+CREATE INDEX person_reference_pendiente ON person_reference (id) WHERE estado = 'pendiente';
+
+CREATE TRIGGER person_aviso AFTER INSERT OR DELETE ON person
+    FOR EACH ROW EXECUTE FUNCTION avisar_cambio_catalogo();
+CREATE TRIGGER person_reference_aviso AFTER INSERT OR DELETE ON person_reference
+    FOR EACH ROW EXECUTE FUNCTION avisar_cambio_catalogo();
+CREATE TRIGGER person_reference_aviso_cambio AFTER UPDATE ON person_reference
+    FOR EACH ROW WHEN (OLD.estado IS DISTINCT FROM NEW.estado)
+    EXECUTE FUNCTION avisar_cambio_catalogo();
+"""
+
 MIGRACIONES: list[tuple[int, str]] = [
     (1, _V1),
     (2, _V2),
     (3, _V3),
+    (4, _V4),
 ]
 CANAL_CAMBIOS = "catalogo"
 VERSION_ESQUEMA = MIGRACIONES[-1][0]

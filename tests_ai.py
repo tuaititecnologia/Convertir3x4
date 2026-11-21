@@ -91,7 +91,8 @@ class TestPersons:
     def test_people_signature_changes_with_references(self, repo):
         assert repo.people_signature() == ""
         pid = repo.add_person("Juan Carlos  Bazán")
-        assert repo.list_persons() == [(pid, "Juan Carlos Bazán", 0)]
+        assert repo.list_persons() == [{"id": pid, "name": "Juan Carlos Bazán", "listas": 0,
+                                         "pendientes": 0, "sin_cara": []}]
         repo.add_person_reference(pid, "/r/1.jpg", faces_mod.to_blob(np.ones(128)))
         s1 = repo.people_signature()
         repo.add_person_reference(pid, "/r/2.jpg", faces_mod.to_blob(np.ones(128)))

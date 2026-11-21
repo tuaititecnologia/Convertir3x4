@@ -163,7 +163,9 @@ decision (pastors, guests) — do not add clustering of unknown faces or store t
 Validated on real photos with `spikes/spike_vision.py`.
 
 Tabs wired in `app.py`: **Buscar** (search catalog), **Catalogar** (MotorTab: since v0.7.0 the PCs do NOT catalog;
-it asks the NAS «Catalogar ahora» and shows catalogado_estado, polling every 3 s while visible; people list stays here),
+it asks the NAS «Catalogar ahora» and shows catalogado_estado, polling every 3 s while visible; people list stays here:
+since v0.7.2 the PC only uploads reduced reference photos (schema v4, person_reference.estado 'pendiente') and the NAS
+catalogador computes the face signatures — the PC never downloads or loads AI models, and the .spec excludes onnxruntime/cv2/tokenizers),
 **Convertir**. Connection rules: the UI thread NEVER touches the DB or the NAS (an offline NAS can block for
 seconds) — short queries go through `servicio_catalogo`, long passes through EngineWorker with their own
 `with abrir_repo() as repo:`; never share a connection across threads. Missing/offline media are drawn in

@@ -209,3 +209,98 @@ def test_horas_con_zona(repo_nas, cfg):
     est = repo_nas.estado_catalogado()
     assert abs((est["ultima_fin"] - antes).total_seconds()) < 30
     assert abs((est["ultima_inicio"] - antes).total_seconds()) < 30
+
+
+class _CarasFalsas:
+    """FaceEngine de mentira: hay cara si la foto es azul."""
+    def __init__(self, *a, **k):
+        pass
+
+    def reference_feature(self, img):
+        import numpy as np
+        r, g, b = img.getpixel((0, 0))
+        return np.ones(128, dtype=np.float32) if b > 200 else None
+
+
+def _jpeg(color, lado=2400):
+    import io
+    buf = io.BytesIO()
+    Image.new("RGB", (lado, lado // 2), color).save(buf, "JPEG")
+    return buf.getvalue()
+
+
+class TestFotosDePersonas:
+    """La PC sube las fotos; el NAS calcula las firmas (la PC no usa modelos)."""
+
+    @pytest.fixture(autouse=True)
+    def _sin_modelos(self, monkeypatch):
+        from convertir3x4.engine import ai_models, ai_pipeline, faces
+        monkeypatch.setattr(ai_models, "ensure", lambda *a, **k: None)
+        monkeypatch.setattr(faces, "FaceEngine", _CarasFalsas)
+        monkeypatch.setattr(ai_pipeline, "run_ai", lambda *a, **k: ai_pipeline.AIStats())
+
+    @pytest.fixture
+    def cfg_ia(self, cfg):
+        return dataclasses.replace(cfg, ia=True)
+
+    def _subir(self, repo, tmp_path):
+        from convertir3x4.catalog.thumbs import foto_de_referencia
+        rutas = []
+        for nombre, color in (("con_cara.jpg", "blue"), ("de_espaldas.jpg", "red")):
+            ruta = tmp_path / nombre
+            ruta.write_bytes(_jpeg(color))
+            rutas.append(str(ruta))
+        fotos = [(r, foto_de_referencia(r)) for r in rutas]
+        fotos.append((str(tmp_path / "rota.jpg"), b"no es una imagen"))
+        return repo.subir_fotos_de_referencia("Juan Carlos Bazán", fotos)
+
+    def test_la_pc_sube_achicado_y_despierta_al_nas(self, repo_nas, cfg, tmp_path, pg_cfg):
+        import io
+        oyente = catdb.conectar(cfg.catalogo)
+        oyente.execute("LISTEN catalogado")
+        try:
+            self._subir(repo_nas, tmp_path)
+            assert any(True for _ in oyente.notifies(timeout=1, stop_after=1))
+        finally:
+            oyente.close()
+        (_, foto), *_ = repo_nas.referencias_pendientes()
+        assert max(Image.open(io.BytesIO(foto)).size) == 1600
+        # mientras el NAS no la procesa, la persona no cuenta para el reconocimiento
+        assert repo_nas.people_signature() == ""
+        assert repo_nas.list_persons()[0]["pendientes"] == 3
+
+    def test_el_nas_calcula_las_firmas_en_la_vuelta(self, repo_nas, cfg_ia, tmp_path):
+        self._subir(repo_nas, tmp_path)
+        assert cat.ciclo(repo_nas, cfg_ia, ahora=D(2026, 11, 22, 15, 0))   # hizo algo
+        assert repo_nas.referencias_pendientes() == []
+        (p,) = repo_nas.list_persons()
+        assert p["listas"] == 1 and p["pendientes"] == 0
+        assert p["sin_cara"] == ["de_espaldas.jpg", "rota.jpg"]
+        assert len(repo_nas.person_reference_blobs()["Juan Carlos Bazán"]) == 1
+        assert repo_nas.people_signature() != ""
+        assert repo_nas.count_media() == 0            # no catalogó nada por esto
+
+    def test_en_medio_de_una_pasada_larga(self, repo_nas, cfg_ia, tmp_path, monkeypatch):
+        monkeypatch.setattr(cat, "REVISAR_REFERENCIAS", 0)
+        llamadas = []
+        real = cat.procesar_referencias
+        monkeypatch.setattr(cat, "procesar_referencias",
+                            lambda *a: (llamadas.append(repo_nas.count_media()), real(*a))[1])
+        repo_nas.pedir_catalogado()
+        # suben las fotos cuando la pasada ya empezó (antes del primer archivo)
+        orig = cat._Avance.__call__
+
+        def avance(self, *a, **k):
+            if not llamadas and not repo_nas.referencias_pendientes():
+                TestFotosDePersonas._subir(None, repo_nas, tmp_path)
+            return orig(self, *a, **k)
+        monkeypatch.setattr(cat._Avance, "__call__", avance)
+        cat.ciclo(repo_nas, cfg_ia)
+        assert repo_nas.referencias_pendientes() == []
+        assert llamadas and llamadas[0] < 2           # se atendió con la pasada en curso
+        assert repo_nas.pedido(1)["terminado"]
+
+    def test_con_la_ia_apagada_no_se_tocan(self, repo_nas, cfg, tmp_path):
+        self._subir(repo_nas, tmp_path)
+        cat.ciclo(repo_nas, dataclasses.replace(cfg, ia=False), ahora=D(2026, 11, 22, 15, 0))
+        assert len(repo_nas.referencias_pendientes()) == 3
