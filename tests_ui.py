@@ -314,28 +314,17 @@ class TestAvailability:
         assert not any(result.values())
         assert calls == ["\\\\NAS\\fotos"]
 
-    def test_lee_cada_carpeta_una_vez_y_no_archivo_por_archivo(self, monkeypatch, tmp_path):
-        # Por Netbird cada consulta al NAS tarda ~80 ms: 500 resultados en 24
-        # carpetas tienen que ser 24 lecturas, no 500.
-        import unicodedata
+    def test_no_pregunta_al_nas_por_cada_archivo(self, monkeypatch, tmp_path):
+        # Por Netbird cada consulta al NAS tarda ~80 ms: 500 resultados no pueden
+        # ser 500 consultas. Lo que falta lo marca el NAS (missing_since).
         from convertir3x4.catalog import ubicacion
-        for carpeta in ("a", "b"):
-            (tmp_path / carpeta).mkdir()
-        (tmp_path / "a" / "1.jpg").write_bytes(b"x")
-        # macOS (SMB) devuelve los acentos descompuestos; la base los tiene compuestos
-        (tmp_path / "b" / unicodedata.normalize("NFD", "Niños.mp4")).write_bytes(b"x")
-        leidas = []
-        real = ubicacion.os.listdir
-        monkeypatch.setattr(ubicacion.os, "listdir", lambda d: (leidas.append(d), real(d))[1])
+        preguntas = []
         monkeypatch.setattr(ubicacion.os.path, "exists",
-                            lambda p: pytest.fail(f"preguntó por {p}") if p.endswith((".jpg", ".mp4"))
-                            else True)
-        paths = ([str(tmp_path / "a" / "1.jpg"), str(tmp_path / "a" / "2.jpg")]
-                 + [str(tmp_path / "b" / unicodedata.normalize("NFC", "Niños.mp4"))]
-                 + [str(tmp_path / "c" / "no.jpg")])          # carpeta que ya no está
-        res = ubicacion.availability(paths)
-        assert list(res.values()) == [True, False, True, False]
-        assert sorted(leidas) == sorted(str(tmp_path / c) for c in "abc")
+                            lambda p: preguntas.append(p) or True)
+        monkeypatch.setattr(ubicacion.os, "listdir", lambda d: pytest.fail("listó " + d))
+        paths = [f"/Volumes/multimedia/evento{i % 24}/{i}.jpg" for i in range(500)]
+        assert all(ubicacion.availability(paths).values())
+        assert preguntas == ["/Volumes/multimedia"]
 
     def test_missing_originals_are_marked_in_buscar(self, app, tmp_path, sin_catalogo):
         from convertir3x4.ui.tabs.tab_buscar import BuscarTab
@@ -508,6 +497,49 @@ class TestBuscarConCatalogo:
         t.close()
         t.deleteLater()
         srv.cerrar()
+
+
+class TestBuscarCargando:
+    """Mientras se trae la búsqueda del NAS se ve que está trabajando."""
+
+    def test_muestra_que_busca_solo_si_tarda(self, app, monkeypatch):
+        from convertir3x4.ui.tabs import tab_buscar
+
+        class Lento:            # el NAS contesta cuando la prueba quiere
+            estado, texto = "ok", ""
+
+            class _S:
+                def connect(self, *_a):
+                    pass
+            estado_cambiado = _S()
+
+            def __init__(self):
+                self.pendientes = []
+
+            def pedir(self, fn, ok=None, error=None):
+                self.pendientes.append((fn, ok))
+                return len(self.pendientes)
+
+        monkeypatch.setattr(tab_buscar, "_CARGANDO_MS", 50)
+        srv = Lento()
+        t = tab_buscar.BuscarTab(srv=srv)
+        t.resize(900, 600)
+        t.show()
+        t.txt_query.setText("culto")
+        t._do_search()
+        assert not t.barra_cargando.isVisible()          # rápido: no parpadea
+        assert _esperar(app, lambda: t.barra_cargando.isVisible(), 2)
+        assert t.lbl_count.text() == "Buscando…"
+        assert "Buscando en el catálogo" in t.grid._empty_text
+        altura = t.grid.geometry().top()
+        # llega la respuesta de la última búsqueda
+        fn, ok = srv.pendientes[-1]
+        ok(([], {}, [], {}, {}))
+        assert not t.barra_cargando.isVisible()
+        assert t.lbl_count.text() == "0 resultados"
+        assert t.grid.geometry().top() == altura          # la grilla no salta
+        t.close()
+        t.deleteLater()
 
 
 class TestBuscarEnVivo:

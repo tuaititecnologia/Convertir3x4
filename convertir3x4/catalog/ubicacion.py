@@ -8,8 +8,6 @@ aunque su disco o su NAS sí estén conectados (se movió o se borró).
 import ntpath
 import os
 import re
-import unicodedata
-from concurrent.futures import ThreadPoolExecutor
 
 
 def storage_root(path: str) -> str:
@@ -41,32 +39,13 @@ def friendly_root(root: str) -> str:
 
 
 def availability(paths: list[str]) -> dict[str, bool]:
-    """Qué archivos están, sin congelar la app si el NAS está desconectado ni
-    tardar con el NAS lejos.
+    """Qué archivos se pueden usar desde esta PC: los que están en una raíz
+    conectada (el NAS montado, el disco enchufado).
 
-    En Windows, preguntar por un archivo de una carpeta de red caída puede
-    tardar segundos POR ARCHIVO: se pregunta una vez por cada raíz. Y por
-    Netbird cada pregunta al NAS tarda unos 80 ms: en vez de preguntar archivo
-    por archivo, se lee una vez cada carpeta (varias a la vez) y se busca ahí.
+    No se pregunta archivo por archivo: por Netbird cada consulta al NAS tarda
+    ~80 ms, y en Windows con el NAS caído, segundos. Se pregunta una vez por
+    raíz. Si un archivo se borró o se movió lo sabe el NAS, que lo marca en
+    cada pasada (`missing_since`, viene con la búsqueda).
     """
     roots = {r: os.path.exists(r) for r in {storage_root(p) for p in paths}}
-    carpetas = {os.path.dirname(p) for p in paths if roots[storage_root(p)]}
-
-    def leer(carpeta):
-        try:
-            # macOS devuelve los acentos descompuestos (NFD): se compara en NFC
-            return carpeta, {_nfc(n) for n in os.listdir(carpeta)}
-        except OSError:
-            return carpeta, set()
-
-    contenido: dict[str, set[str]] = {}
-    if carpetas:
-        with ThreadPoolExecutor(max_workers=min(16, len(carpetas))) as ex:
-            contenido = dict(ex.map(leer, carpetas))
-    return {p: roots[storage_root(p)]
-            and _nfc(os.path.basename(p)) in contenido.get(os.path.dirname(p), ())
-            for p in paths}
-
-
-def _nfc(nombre: str) -> str:
-    return unicodedata.normalize("NFC", nombre)
+    return {p: roots[storage_root(p)] for p in paths}

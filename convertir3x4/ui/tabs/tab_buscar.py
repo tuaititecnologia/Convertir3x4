@@ -13,7 +13,7 @@ import re
 from PyQt6.QtCore import Qt, QElapsedTimer, QPoint, QSize, QTimer, pyqtSignal
 from PyQt6.QtGui import QIcon, QPixmap
 from PyQt6.QtWidgets import (
-    QAbstractItemView, QApplication, QSizePolicy,
+    QAbstractItemView, QApplication, QProgressBar, QSizePolicy,
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QListWidgetItem, QFrame, QPushButton, QButtonGroup, QMessageBox,
 )
@@ -37,6 +37,9 @@ _GRID_THUMB = 150
 # revisa los archivos en el NAS, y las etiquetas que se pongan esperan detrás.
 _VIVO_ESPERA_MS = 1500
 _VIVO_MINIMO_MS = 20000
+# Si una búsqueda tarda más que esto, se muestra que se están trayendo datos del NAS
+# (antes no: una respuesta rápida no tiene que hacer parpadear nada).
+_CARGANDO_MS = 300
 
 
 _QUALITY = {"low_res": "Baja resolución: puede verse borrosa en la pantalla.",
@@ -88,6 +91,9 @@ class BuscarTab(QWidget):
         self._vivo_ultima = None            # QElapsedTimer de la última puesta al día
         self._desactualizada = False
         self._restaurando = False
+        self._cargando = QTimer(self)
+        self._cargando.setSingleShot(True)
+        self._cargando.timeout.connect(self._mostrar_cargando)
         self.refresh()
 
     def _build_ui(self):
@@ -141,6 +147,18 @@ class BuscarTab(QWidget):
         self.lbl_count.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         row.addWidget(self.lbl_count)
         layout.addLayout(row)
+
+        # Se está trayendo la búsqueda del NAS. Su lugar queda reservado aunque
+        # no se vea, para que la grilla no salte cada vez que aparece.
+        self.barra_cargando = QProgressBar()
+        self.barra_cargando.setRange(0, 0)              # sin porcentaje: solo "trabajando"
+        self.barra_cargando.setTextVisible(False)
+        self.barra_cargando.setAccessibleName("Buscando en el catálogo")
+        pol = self.barra_cargando.sizePolicy()
+        pol.setRetainSizeWhenHidden(True)
+        self.barra_cargando.setSizePolicy(pol)
+        self.barra_cargando.setVisible(False)
+        layout.addWidget(self.barra_cargando)
 
         # Estado de la conexión con el catálogo (no se ve si está todo bien)
         self.conn_box = CajaConexion()
@@ -207,6 +225,7 @@ class BuscarTab(QWidget):
     def _estado_catalogo(self, estado: str, texto: str):
         self.conn_box.set_estado(estado, texto)
         if estado == "error":
+            self._fin_carga()
             self._results = []
             self.grid.clear()
             self.lbl_count.setText("")
@@ -305,12 +324,26 @@ class BuscarTab(QWidget):
             raices = {r: os.path.exists(r) for r in {storage_root(p) for p in paths}}
             return results, minis, faltan, presentes, raices
 
-        self._srv.pedir(buscar, ok=lambda r: self._mostrar_busqueda(n, *r, conservar=conservar))
+        if not conservar:
+            self._cargando.start(_CARGANDO_MS)
+        self._srv.pedir(buscar, ok=lambda r: self._mostrar_busqueda(n, *r, conservar=conservar),
+                        error=lambda _e: self._fin_carga() if n == self._busqueda else None)
+
+    def _mostrar_cargando(self):
+        self.barra_cargando.setVisible(True)
+        self.lbl_count.setText("Buscando…")
+        if self.grid.count() == 0:
+            self.grid.set_empty_text("Buscando en el catálogo…")
+
+    def _fin_carga(self):
+        self._cargando.stop()
+        self.barra_cargando.setVisible(False)
 
     def _mostrar_busqueda(self, n, results, minis, faltan, presentes, raices,
                           conservar: bool = False):
         if n != self._busqueda:
             return                      # llegó tarde: ya se escribió otra cosa
+        self._fin_carga()
         if conservar and _iguales(getattr(self, "_results", None), results) \
                 and presentes == getattr(self, "_presentes", None):
             # Cambió algo que no se ve en la grilla (p. ej. una etiqueta)
@@ -469,7 +502,9 @@ class BuscarTab(QWidget):
             p = it.data(PATH_ROLE)
             if not p:
                 continue
-            if it.data(STATE_ROLE) in ("missing", "offline") or not os.path.exists(p):
+            # Lo decidió la búsqueda (raíz conectada + lo que marcó el NAS): acá
+            # no se pregunta al NAS, que desde el hilo de la interfaz la congela.
+            if it.data(STATE_ROLE) in ("missing", "offline"):
                 faltan += 1
             else:
                 paths.append(p)

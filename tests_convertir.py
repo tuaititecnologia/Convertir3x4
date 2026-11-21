@@ -4,6 +4,7 @@ Los videos de prueba los genera el ffmpeg de la app. Nada baja de internet: la
 descarga real se probó a mano (ver docs/convertir-fotos-y-videos.md).
 """
 
+import datetime
 import os
 import sys
 
@@ -762,7 +763,9 @@ class TestDeBuscarAConvertir:
         perdido = str(tmp_path / "no_esta.jpg")
         t._populate([Media(path=media["photo"], filename="foto.jpg", kind="image", id=1),
                      Media(path=media["video"], filename="video.mp4", kind="video", id=2),
-                     Media(path=perdido, filename="no_esta.jpg", kind="image", id=3)])
+                     # el NAS lo marcó como faltante en su última pasada
+                     Media(path=perdido, filename="no_esta.jpg", kind="image", id=3,
+                           missing_since=datetime.datetime(2026, 11, 20).astimezone())])
         app.processEvents()
         return t
 
