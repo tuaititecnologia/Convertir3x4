@@ -314,6 +314,29 @@ class TestAvailability:
         assert not any(result.values())
         assert calls == ["\\\\NAS\\fotos"]
 
+    def test_lee_cada_carpeta_una_vez_y_no_archivo_por_archivo(self, monkeypatch, tmp_path):
+        # Por Netbird cada consulta al NAS tarda ~80 ms: 500 resultados en 24
+        # carpetas tienen que ser 24 lecturas, no 500.
+        import unicodedata
+        from convertir3x4.catalog import ubicacion
+        for carpeta in ("a", "b"):
+            (tmp_path / carpeta).mkdir()
+        (tmp_path / "a" / "1.jpg").write_bytes(b"x")
+        # macOS (SMB) devuelve los acentos descompuestos; la base los tiene compuestos
+        (tmp_path / "b" / unicodedata.normalize("NFD", "Niños.mp4")).write_bytes(b"x")
+        leidas = []
+        real = ubicacion.os.listdir
+        monkeypatch.setattr(ubicacion.os, "listdir", lambda d: (leidas.append(d), real(d))[1])
+        monkeypatch.setattr(ubicacion.os.path, "exists",
+                            lambda p: pytest.fail(f"preguntó por {p}") if p.endswith((".jpg", ".mp4"))
+                            else True)
+        paths = ([str(tmp_path / "a" / "1.jpg"), str(tmp_path / "a" / "2.jpg")]
+                 + [str(tmp_path / "b" / unicodedata.normalize("NFC", "Niños.mp4"))]
+                 + [str(tmp_path / "c" / "no.jpg")])          # carpeta que ya no está
+        res = ubicacion.availability(paths)
+        assert list(res.values()) == [True, False, True, False]
+        assert sorted(leidas) == sorted(str(tmp_path / c) for c in "abc")
+
     def test_missing_originals_are_marked_in_buscar(self, app, tmp_path, sin_catalogo):
         from convertir3x4.ui.tabs.tab_buscar import BuscarTab
         from convertir3x4.catalog.models import Media
