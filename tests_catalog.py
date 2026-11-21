@@ -580,3 +580,41 @@ class TestAvisosDeCambio:
             assert self._recibidos(oyente) == []
         finally:
             oyente.close()
+
+
+class TestBuscarPorPaginas:
+    """Buscar trae de a páginas: cada una sigue a la anterior, sin repetir ni saltear."""
+
+    def _cargar(self, repo):
+        from convertir3x4.catalog.models import Media
+        ids = {}
+        for i in range(7):
+            ids[f"culto_{i}.jpg"] = repo.upsert_media(
+                Media(path=f"/n/culto_{i}.jpg", filename=f"culto_{i}.jpg", kind="image"))
+        ids["culto_video.mp4"] = repo.upsert_media(
+            Media(path="/n/culto_video.mp4", filename="culto_video.mp4", kind="video"))
+        ids["FB_IMG_culto9.jpg"] = repo.upsert_media(       # solo por fragmento
+            Media(path="/n/FB_IMG_xculto9.jpg", filename="FB_IMG_xculto9.jpg", kind="image"))
+        repo.marcar_faltantes([ids["culto_0.jpg"]])
+        return ids
+
+    def test_las_paginas_dan_lo_mismo_que_todo_junto(self, repo):
+        self._cargar(repo)
+        for q in ("", "culto", "ulto"):
+            todo, total = repo.buscar(q, cuantos=100)
+            paginas = []
+            for desde in range(0, total, 3):
+                pag, t = repo.buscar(q, desde=desde, cuantos=3)
+                assert t == total
+                paginas += pag
+            assert [m.id for m in paginas] == [m.id for m in todo], q
+            assert todo[-1].filename == "culto_0.jpg"        # el que falta, al final
+            assert [m.id for m in todo] == [m.id for m in repo.search(q)]
+        assert repo.buscar("culto", desde=50)[1] is None
+
+    def test_filtra_por_tipo_en_la_base(self, repo):
+        self._cargar(repo)
+        videos, total = repo.buscar("culto", kind="video", cuantos=2)
+        assert [m.filename for m in videos] == ["culto_video.mp4"] and total == 1
+        fotos, total = repo.buscar("", kind="image", cuantos=2)
+        assert len(fotos) == 2 and total == 8

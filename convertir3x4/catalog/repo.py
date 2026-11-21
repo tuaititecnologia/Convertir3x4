@@ -540,6 +540,50 @@ class Repo:
             (media_id, model, people_sig, media_type, ", ".join(people), raw_json))
 
     # ------------------------------------------------------------- búsqueda
+    def buscar(self, query: str, *, kind: str | None = None, pending_only: bool = False,
+               desde: int = 0, cuantos: int = 120) -> tuple[list[Media], int | None]:
+        """Una página de la búsqueda de Buscar, y cuántos hay en total.
+
+        Mismas reglas que `_search` (palabras primero, por relevancia; después
+        los fragmentos; los que faltan de su ruta al final), pero en UNA consulta
+        con el orden resuelto en la base, así cada página sigue a la anterior sin
+        repetir ni saltear. `kind` ('image'/'video') filtra en la base. No trae
+        `search_doc` (el índice de texto: ~40 % de cada fila). El total es None
+        si se pidió una página después del final.
+        """
+        where, params = [], []
+        terms = [t for t in (query or "").split() if t]
+        tsq = _to_tsquery(query) if terms else None
+        if terms:
+            conds = []
+            if tsq:
+                conds.append("m.search_doc @@ to_tsquery('catalogo', %s)")
+                params.append(tsq)
+            conds.append("(" + " AND ".join(
+                "texto_nombre(m.filename, m.folder_origin) LIKE sin_acentos(lower(%s))"
+                for _ in terms) + ")")
+            params += [f"%{_escape_like(t)}%" for t in terms]
+            where.append("(" + " OR ".join(conds) + ")")
+        if kind:
+            where.append("m.kind = %s")
+            params.append(kind)
+        if pending_only:
+            where.append("EXISTS (SELECT 1 FROM media_tag mt "
+                         "WHERE mt.media_id = m.id AND NOT mt.confirmed)")
+        orden = "m.missing_since IS NOT NULL"
+        if tsq:
+            orden += (", (m.search_doc @@ to_tsquery('catalogo', %s)) DESC, "
+                      "ts_rank(m.search_doc, to_tsquery('catalogo', %s)) DESC")
+            params += [tsq, tsq]
+        orden += ", m.filename, m.id"
+        rows = self._q(
+            f"SELECT {_COLUMNAS_MEDIA}, count(*) OVER () AS total FROM media m "
+            + ("WHERE " + " AND ".join(where) + " " if where else "")
+            + f"ORDER BY {orden} LIMIT %s OFFSET %s",
+            params + [cuantos, desde]).fetchall()
+        total = rows[0]["total"] if rows else (0 if desde == 0 else None)
+        return [self._media(r) for r in rows], total
+
     def search(self, query: str, limit: int = 500,
                pending_only: bool = False) -> list[Media]:
         """Ver `_search`. Con `pending_only`, solo medios con tags de la IA sin confirmar."""
@@ -611,6 +655,13 @@ class Repo:
 def sello_de(jpeg: bytes) -> str:
     """Identifica una miniatura por su contenido (para la caché de cada PC)."""
     return hashlib.md5(jpeg).hexdigest()
+
+
+# Todas las columnas de `media` que lee _row_to_media (sin search_doc).
+_COLUMNAS_MEDIA = ", ".join("m." + c for c in (
+    "id", "rel_path", "filename", "folder_origin", "kind", "width", "height", "aspect",
+    "duration", "codec", "size_bytes", "file_mtime", "sha256", "phash", "status",
+    "quality_flag", "missing_since"))
 
 
 def _row_to_media(row, raiz: str) -> Media:

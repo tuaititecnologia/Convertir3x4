@@ -542,6 +542,44 @@ class TestBuscarCargando:
         t.deleteLater()
 
 
+class TestBuscarPorPaginas:
+    def test_trae_de_a_paginas_al_bajar(self, app, pg_cfg, tmp_path, monkeypatch):
+        from convertir3x4.catalog.db import conectar
+        from convertir3x4.catalog.models import Media
+        from convertir3x4.catalog.repo import Repo
+        from convertir3x4.ui.servicio_catalogo import ServicioCatalogo
+        from convertir3x4.ui.tabs import tab_buscar
+
+        monkeypatch.setattr(tab_buscar, "catalog_thumb_dir", lambda: str(tmp_path / "cache"))
+        monkeypatch.setattr(tab_buscar, "_PAGINA", 40)
+        abrir = lambda: Repo(conectar(pg_cfg), str(tmp_path))      # noqa: E731
+        with abrir() as r:
+            for i in range(100):
+                r.upsert_media(Media(path=str(tmp_path / f"f{i:03}.jpg"), filename=f"f{i:03}.jpg",
+                                     kind="video" if i % 10 == 0 else "image"))
+        srv = ServicioCatalogo(abrir=abrir)
+        t = tab_buscar.BuscarTab(srv=srv)
+        try:
+            t.resize(700, 500)
+            t.show()
+            assert _esperar(app, lambda: t.grid.count() == 40)
+            assert t.lbl_count.text() == "40 de 100"
+            t.grid.verticalScrollBar().setValue(t.grid.verticalScrollBar().maximum())
+            assert _esperar(app, lambda: t.grid.count() >= 80)
+            nombres = [t.grid.item(i).text() for i in range(t.grid.count())]
+            assert nombres == [f"f{i:03}.jpg" for i in range(len(nombres))]   # en orden, sin repetir
+            t.grid.verticalScrollBar().setValue(t.grid.verticalScrollBar().maximum())
+            assert _esperar(app, lambda: t.grid.count() == 100)
+            assert t.lbl_count.text() == "100 resultados"
+            # el filtro va a la base: están los 10 videos, no solo los de la 1.ª página
+            next(b for b in t._kind_group.buttons() if b.property("kind") == "video").click()
+            assert _esperar(app, lambda: t.lbl_count.text() == "10 resultados")
+        finally:
+            t.close()
+            t.deleteLater()
+            srv.cerrar()
+
+
 class TestBuscarEnVivo:
     """Cliente-servidor: lo que cataloga el NAS aparece en Buscar sin tocar nada."""
 
