@@ -215,6 +215,74 @@ def resumir(copia: dict | None, tarea: dict | None = None, disco: dict | None = 
 
 
 # ------------------------------------------------------------------ contenido del disco
+_AVISAR = "Si vuelve a pasar, avise al responsable del NAS."
+
+# Qué escribe copiar-disco.py (CDLM-Freenas) en `error`, y cómo se lo explica al
+# operador: (fragmento del texto técnico, qué pasó, qué hacer). El primero que
+# coincide gana. Los textos del NAS no llevan tildes.
+_ERRORES = (
+    ("se desconecto",
+     "El disco se desconectó en medio de la copia.",
+     "Vuelva a conectarlo y haga clic en «Copiar…»: sigue desde donde quedó."),
+    ("no hay lugar",
+     "En el NAS no queda lugar para esta copia. No se copió nada más.",
+     "Avise al responsable del NAS para que libere espacio. El disco no se toca."),
+    ("solo lectura",
+     "El NAS no pudo abrir el disco de forma segura, así que no lo copió para no "
+     "arriesgar lo grabado.",
+     "Desconéctelo y vuelva a conectarlo. " + _AVISAR),
+    ("no se pudo montar",
+     "El NAS no pudo abrir el disco.",
+     "Desconéctelo, vuelva a conectarlo y pruebe de nuevo. Si sigue igual, el disco puede "
+     "estar dañado: avise al responsable del NAS."),
+    ("no coinciden",
+     "Al comparar el disco con lo copiado, hay archivos que no coinciden. Por eso el disco "
+     "no se vació.",
+     "Haga clic en «Copiar…» para copiarlo de nuevo y después vuelva a verificar. " + _AVISAR),
+    ("no se pudieron copiar",
+     "Algunos archivos del disco no se pudieron leer. El resto está en el NAS.",
+     "Pruebe «Volver a intentar lo que falló…». El disco no se borra hasta que esté todo "
+     "copiado. " + _AVISAR),
+    ("detenida a mano",
+     "Alguien detuvo la copia.",
+     "Haga clic en «Copiar…» para continuar desde donde se detuvo."),
+)
+_NO_SE_FORMATEO = (
+    ("verificacion fallo",
+     "al compararlo con lo copiado, algunos archivos no coincidieron"),
+    ("copia corriendo", "todavía había una copia en marcha"),
+    ("esta montado", "otro programa lo estaba usando"),
+    ("se monto mientras", "otro programa empezó a usarlo"),
+    ("ya no es el disco", "se cambió el disco mientras tanto"),
+    ("no es un disco usb", "no está conectado por USB"),
+)
+
+
+def explicar(copia: dict | None) -> tuple[str, str] | None:
+    """(qué pasó, qué hacer) para una copia con error, en palabras del operador.
+    None si la copia no tuvo problemas. Lo que no se reconoce se explica en
+    general y remite al detalle técnico."""
+    if not copia:
+        return None
+    fase = copia.get("fase") or ""
+    error = (copia.get("error") or "").lower()
+    if fase == "TERMINADO" and error.startswith("no se formateo"):
+        motivo = next((m for clave, m in _NO_SE_FORMATEO if clave in error), None)
+        return ("La copia está completa, pero el disco no se vació para volver a grabar"
+                + (f": {motivo}." if motivo else "."),
+                "Pruebe «Verificar» y después «Formatear…». Mientras tanto, lo grabado está "
+                "en el disco y en el NAS.")
+    if fase not in ("ERROR", "CON_ERRORES", "VERIFICACION_FALLIDA", "DETENIDA") and not error:
+        return None
+    for clave, que, hacer in _ERRORES:
+        if clave in error:
+            return que, hacer
+    if fase == "DETENIDA":
+        return _ERRORES[-1][1], _ERRORES[-1][2]
+    return ("La copia se interrumpió por un problema en el NAS.",
+            "Pruebe de nuevo con «Copiar…». " + _AVISAR + " Muéstrele el detalle técnico.")
+
+
 def _dia(ts) -> str:
     import time as _t
     lt = _t.localtime(ts)

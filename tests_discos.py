@@ -440,3 +440,60 @@ def test_sin_conexion_se_ve_y_se_puede_reintentar(tab_discos):
     assert t._estado_conexion == "ok" and t.body.isEnabled()
     assert not t.btn_retry.isVisibleTo(t)
     assert t.lbl_sin_discos.isVisibleTo(t)
+
+
+# ---------------------------------------------------------------- errores explicados
+@pytest.mark.parametrize("copia, que, hacer", [
+    ({"fase": "ERROR", "error": "el disco se desconecto (/dev/sdh2 ya no existe)"},
+     "se desconectó", "«Copiar…»"),
+    ({"fase": "ERROR", "error": "faltan copiar 123 bytes y no hay lugar en /mnt/tank/x"},
+     "no queda lugar", "responsable del NAS"),
+    ({"fase": "ERROR", "error": "no se pudo montar /dev/sdb1"}, "no pudo abrir", "vuelva a conectarlo"),
+    ({"fase": "VERIFICACION_FALLIDA", "error": "3 archivos no coinciden con el pool; ver copia.log"},
+     "no coinciden", "verificar"),
+    ({"fase": "CON_ERRORES", "errores": 2,
+      "error": "2 archivos no se pudieron copiar; ver errores.jsonl"}, "no se pudieron leer",
+     "Volver a intentar"),
+    ({"fase": "DETENIDA", "error": "detenida a mano"}, "detuvo", "continuar"),
+    ({"fase": "TERMINADO", "error": "no se formateo: /dev/sdb1 esta montado; desmontarlo primero"},
+     "otro programa", "Formatear"),
+    ({"fase": "ERROR", "error": "algo que nadie previó: errno 5"}, "problema en el NAS",
+     "detalle técnico"),
+])
+def test_explica_los_errores_en_palabras_del_operador(copia, que, hacer):
+    from convertir3x4.nas.copias import explicar
+    q, h = explicar(copia)
+    assert que in q and hacer in h
+    for palabra in ("pool", "/dev/", "/mnt/", "montar", "montado", "errores.jsonl", "copia.log",
+                    "uuid", "errno"):
+        assert palabra not in (q + " " + h).lower(), palabra
+
+
+@pytest.mark.parametrize("copia", [
+    None, {"fase": "TERMINADO"}, {"fase": "FORMATEADO"}, {"fase": "COPIANDO", "corriendo": True}])
+def test_sin_problemas_no_hay_explicacion(copia):
+    from convertir3x4.nas.copias import explicar
+    assert explicar(copia) is None
+
+
+def test_historial_explica_el_error_con_el_mouse_y_al_elegirlo():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PyQt6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    from convertir3x4.ui.tabs.tab_discos import DiscosTab
+    t = DiscosTab()
+    t._timer.stop()
+    t._llenar_historial([
+        {"uuid": "135E-0818", "modelo": "Disco 1", "fase": "ERROR",
+         "error": "el disco se desconecto (/dev/sdh2 ya no existe)", "actualizado": "2026-09-28"},
+        {"uuid": "17AA-1F10", "modelo": "Disco 2", "fase": "FORMATEADO"}])
+    it = t.tree.topLevelItem(0)
+    for col in range(4):
+        assert "se desconectó en medio de la copia" in it.toolTip(col)
+    assert "/dev/" not in it.toolTip(0)
+    assert not t.lbl_explicacion.isVisibleTo(t)
+    it.setSelected(True)
+    app.processEvents()
+    assert t.lbl_explicacion.isVisibleTo(t)
+    assert "Qué hacer:" in t.lbl_explicacion.text() and "<b>Error</b>" in t.lbl_explicacion.text()
+    t.deleteLater()

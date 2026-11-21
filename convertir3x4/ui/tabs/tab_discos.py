@@ -9,6 +9,7 @@ Consulta el estado cada pocos segundos, y solo mientras la pestaña está visibl
 Toda llamada de red corre en un EngineWorker para no trabar la UI.
 """
 
+import html
 import os
 
 from PyQt6.QtCore import QSettings, Qt, QTimer, pyqtSignal
@@ -20,8 +21,8 @@ from PyQt6.QtWidgets import (
 )
 
 from ...nas.copias import (
-    URLS_POR_DEFECTO, PanelClient, acciones_para, fecha, lineas_contenido, nota_operador,
-    resumir, resumir_contenido, tipo_disco,
+    URLS_POR_DEFECTO, PanelClient, acciones_para, explicar, fecha, lineas_contenido,
+    nota_operador, resumir, resumir_contenido, tipo_disco,
 )
 from ...workers import EngineWorker
 from .. import icons
@@ -39,6 +40,16 @@ _TONOS = {"activo": "accent_text", "ok": "ok", "aviso": "warn", "error": "danger
 def _tono(tono: str) -> str:
     return getattr(T, _TONOS.get(tono, "text_3"))
 _UUID_ROLE = Qt.ItemDataRole.UserRole
+_EXPLICACION_ROLE = Qt.ItemDataRole.UserRole + 1
+
+
+def texto_copia(titulo: str, detalle: str, explicacion: tuple[str, str] | None) -> str:
+    """Lo que se lee de una copia del historial (aviso del mouse y debajo de la lista):
+    el estado y, si hubo un problema, qué pasó y qué hacer."""
+    if explicacion:
+        que, hacer = explicacion
+        return f"{titulo}\n{que}\nQué hacer: {hacer}"
+    return f"{titulo}\n{detalle}" if detalle else titulo
 
 
 def _cliente_desde(settings: QSettings) -> PanelClient:
@@ -154,6 +165,14 @@ class DiscosTab(QWidget):
             self.tree.setColumnWidth(col, ancho)
         self.tree.itemSelectionChanged.connect(self._on_historial_sel)
         blay.addWidget(self.tree, 2)
+
+        # La copia elegida, explicada: qué pasó y qué hacer (sin jerga del NAS)
+        self.lbl_explicacion = QLabel("")
+        self.lbl_explicacion.setWordWrap(True)
+        self.lbl_explicacion.setTextFormat(Qt.TextFormat.RichText)
+        self.lbl_explicacion.setAccessibleName("Qué pasó con la copia elegida")
+        self.lbl_explicacion.setVisible(False)
+        blay.addWidget(self.lbl_explicacion)
 
         # El registro del NAS es técnico: le sirve a quien administra el NAS, no al
         # operador. Queda escondido detrás de un botón.
@@ -365,7 +384,10 @@ class DiscosTab(QWidget):
             it = QTreeWidgetItem([disco, r.titulo, self._carpeta(c.get("destino")),
                                   fecha(c.get("actualizado"))])
             it.setData(0, _UUID_ROLE, c["uuid"])
-            it.setToolTip(1, r.detalle)
+            texto = texto_copia(r.titulo, r.detalle, explicar(c))
+            it.setData(0, _EXPLICACION_ROLE, texto)
+            for col in range(4):        # sobre cualquier columna de la fila
+                it.setToolTip(col, texto)
             it.setForeground(1, _color(r.tono))
             self.tree.addTopLevelItem(it)
             if c["uuid"] == sel:
@@ -382,7 +404,14 @@ class DiscosTab(QWidget):
     def _on_historial_sel(self):
         items = self.tree.selectedItems()
         if not items:
+            self.lbl_explicacion.setVisible(False)
             return
+        texto = items[0].data(0, _EXPLICACION_ROLE) or ""
+        lineas = [html.escape(x) for x in texto.split("\n")]
+        if lineas:
+            lineas[0] = f"<b>{lineas[0]}</b>"
+        self.lbl_explicacion.setText("<br>".join(lineas))
+        self.lbl_explicacion.setVisible(bool(texto))
         uuid = items[0].data(0, _UUID_ROLE)
         self._log_uuid = uuid
         self.txt_log.setPlainText("Cargando…")
