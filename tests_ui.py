@@ -6,6 +6,7 @@ vuelva a romperse sin que nadie lo note.
 
 import datetime
 import os
+import time
 import re
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -484,6 +485,95 @@ class TestBuscarConCatalogo:
         t.close()
         t.deleteLater()
         srv.cerrar()
+
+
+class TestBuscarEnVivo:
+    """Cliente-servidor: lo que cataloga el NAS aparece en Buscar sin tocar nada."""
+
+    def test_lo_nuevo_aparece_solo_y_se_conserva_la_seleccion(self, app, pg_cfg, tmp_path,
+                                                             monkeypatch):
+        from convertir3x4.catalog.db import conectar
+        from convertir3x4.catalog.models import Media
+        from convertir3x4.catalog.repo import Repo
+        from convertir3x4.ui import avisos_catalogo
+        from convertir3x4.ui.servicio_catalogo import ServicioCatalogo
+        from convertir3x4.ui.tabs import tab_buscar
+        from convertir3x4.ui.widgets.media_grid import MEDIA_ID_ROLE
+
+        monkeypatch.setattr(tab_buscar, "catalog_thumb_dir", lambda: str(tmp_path / "cache"))
+        monkeypatch.setattr(tab_buscar, "_VIVO_ESPERA_MS", 50)
+        monkeypatch.setattr(tab_buscar, "_VIVO_MINIMO_MS", 50)
+        nas = tmp_path / "nas"
+        nas.mkdir()
+        abrir = lambda: Repo(conectar(pg_cfg), str(nas))      # noqa: E731
+
+        def catalogar(nombre):          # lo que hace el catalogador del NAS
+            (nas / nombre).write_bytes(b"x")
+            with abrir() as r:
+                return r.upsert_media(Media(path=str(nas / nombre), filename=nombre,
+                                            kind="image"))
+
+        b_id = catalogar("b.jpg")
+        srv = ServicioCatalogo(abrir=abrir)
+        avisos = avisos_catalogo.AvisosCatalogo(abrir=abrir)
+        t = tab_buscar.BuscarTab(srv=srv)
+        avisos.cambio.connect(t.cambio_en_el_catalogo)
+        avisos.start()
+        try:
+            t.resize(900, 600)
+            t.show()
+            assert _esperar(app, lambda: t.grid.count() == 1)
+            t.grid.item(0).setSelected(True)
+            time.sleep(0.3)                 # el oyente ya está escuchando
+            catalogar("a.jpg")
+            assert _esperar(app, lambda: t.grid.count() == 2, 10)
+            assert [t.grid.item(i).text() for i in range(2)] == ["a.jpg", "b.jpg"]
+            assert [it.data(MEDIA_ID_ROLE) for it in t.grid.selectedItems()] == [b_id]
+            assert t.lbl_seleccion.text() == "1 seleccionado"
+
+            # Con la pestaña escondida no consulta; al volver a verla, se pone al día.
+            t.hide()
+            catalogar("c.jpg")
+            time.sleep(1.5)
+            app.processEvents()
+            assert t.grid.count() == 2
+            t.show()
+            assert _esperar(app, lambda: t.grid.count() == 3, 10)
+        finally:
+            avisos.detener()
+            t.close()
+            t.deleteLater()
+            srv.cerrar()
+
+    def test_el_oyente_vuelve_solo_si_se_corta(self, app, pg_cfg, monkeypatch):
+        from convertir3x4.catalog.db import ConfigCatalogo, conectar
+        from convertir3x4.catalog.repo import Repo
+        from convertir3x4.ui import avisos_catalogo
+        monkeypatch.setattr(avisos_catalogo, "REINTENTO", 0.2)
+        intentos = []
+
+        def abrir():
+            intentos.append(1)
+            if len(intentos) == 2:      # la segunda vez el NAS no responde
+                raise ConnectionError("sin red")
+            return Repo(conectar(pg_cfg), "/")
+
+        avisos = avisos_catalogo.AvisosCatalogo(abrir=abrir)
+        cambios = []
+        avisos.cambio.connect(lambda: cambios.append(1))
+        avisos.start()
+        try:
+            assert _esperar(app, lambda: intentos == [1])
+            time.sleep(0.3)
+            # se corta la conexión del oyente desde el servidor
+            with Repo(conectar(pg_cfg), "/") as r:
+                r.conn.execute("SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                               "WHERE query = 'LISTEN catalogo'")
+            # vuelve (al tercer intento) y avisa, por si se perdió algo
+            assert _esperar(app, lambda: len(intentos) >= 3 and cambios, 10)
+        finally:
+            avisos.detener()
+        assert not avisos.isRunning()
 
 
 def test_confirmaciones_nombran_la_accion():

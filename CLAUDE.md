@@ -145,6 +145,11 @@ convertir3x4/
     faces.py             FaceEngine: YuNet + SFace (OpenCV). Recognizes ONLY people in the `person` list
                          (cosine >= 0.42); other faces are discarded, never stored or clustered
     ai_pipeline.py       run_ai(): scene + faces over the catalog (videos via their DB thumbnail). Idempotent
+  ui/avisos_catalogo.py  AvisosCatalogo(QThread): own connection, LISTEN catalogo (schema v3 triggers on media,
+                         media_tag, tag) → `cambio`; reconnects alone and emits on reconnect. Started by __main__
+                         (MainWindow.iniciar_avisos), not by tests. BuscarTab.cambio_en_el_catalogo re-queries keeping
+                         selection + scroll, waits while dragging/selecting/menu open, catches up when shown again.
+                         The app is client-server: the NAS pushes changes, PCs never poll the catalog for them
   ui/servicio_catalogo.py  ServicioCatalogo: ONE thread + connection for the UI; pedir(fn(repo), ok, error);
                          reconnects alone; estado_cambiado("conectando"/"ok"/"error", text). servicio() = app-wide
   ui/widgets/caja_conexion.py  connection banner (same look as Grabadora); catalogo_avanzado.py = ⚙ of Catalogar

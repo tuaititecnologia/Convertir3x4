@@ -61,6 +61,7 @@ class NavButton(QToolButton):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        self._avisos = None
         self.setWindowTitle(APP_TITLE)
         self.resize(1200, 760)
         self.setMinimumSize(900, 520)
@@ -227,11 +228,21 @@ class MainWindow(QMainWindow):
         if geom:
             self.restoreGeometry(geom)
 
+    def iniciar_avisos(self):
+        """Escucha los avisos del NAS para que Buscar muestre sola lo que cambia.
+        Lo llama __main__ (no las pruebas, que no tienen NAS)."""
+        from .ui.avisos_catalogo import AvisosCatalogo
+        self._avisos = AvisosCatalogo(parent=self)
+        self._avisos.cambio.connect(self.buscar_tab.cambio_en_el_catalogo)
+        self._avisos.start()
+
     def closeEvent(self, event):
         if not self.convert_tab.confirm_close():
             event.ignore()
             return
         self.convert_tab.shutdown()
+        if self._avisos is not None:
+            self._avisos.detener()
         self.convert_tab.save_state()
         self.settings.setValue("geometry", self.saveGeometry())
         super().closeEvent(event)

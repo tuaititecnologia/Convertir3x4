@@ -10,10 +10,10 @@ import ntpath
 import os
 import re
 
-from PyQt6.QtCore import Qt, QSize, QTimer, pyqtSignal
+from PyQt6.QtCore import Qt, QElapsedTimer, QPoint, QSize, QTimer, pyqtSignal
 from PyQt6.QtGui import QIcon, QPixmap
 from PyQt6.QtWidgets import (
-    QSizePolicy,
+    QAbstractItemView, QApplication, QSizePolicy,
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QListWidgetItem, QFrame, QPushButton, QButtonGroup, QMessageBox,
 )
@@ -32,6 +32,9 @@ from .. import icons
 from ..style import T
 
 _GRID_THUMB = 150
+# Cambios que avisa el NAS: se juntan y se muestran a lo sumo cada tantos ms.
+_VIVO_ESPERA_MS = 1500
+_VIVO_MINIMO_MS = 5000
 
 
 _QUALITY = {"low_res": "Baja resolución: puede verse borrosa en la pantalla.",
@@ -76,6 +79,13 @@ class BuscarTab(QWidget):
         self._reintento.setInterval(20000)
         self._reintento.timeout.connect(self._reintentar_si_hace_falta)
         self._reintento.start()
+        # Lo que cambia en el catálogo aparece solo (ver cambio_en_el_catalogo)
+        self._vivo = QTimer(self)
+        self._vivo.setSingleShot(True)
+        self._vivo.timeout.connect(self._actualizar_en_vivo)
+        self._vivo_ultima = None            # QElapsedTimer de la última puesta al día
+        self._desactualizada = False
+        self._restaurando = False
         self.refresh()
 
     def _build_ui(self):
@@ -208,7 +218,77 @@ class BuscarTab(QWidget):
         if self._srv.estado == "error" and self.isVisible():
             self.refresh()
 
-    def _do_search(self):
+    # ------------------------------------------------------------- en vivo
+    def cambio_en_el_catalogo(self):
+        """Llegó un aviso del NAS (algo se catalogó, otra PC etiquetó…). Se juntan
+        los avisos seguidos y se pone al día sin que el operador haga nada."""
+        if not self.isVisible():
+            self._desactualizada = True     # se pone al día cuando se vuelva a ver
+            return
+        if self._vivo.isActive():
+            return
+        espera = _VIVO_ESPERA_MS
+        if self._vivo_ultima is not None:
+            espera = max(espera, _VIVO_MINIMO_MS - self._vivo_ultima.elapsed())
+        self._vivo.start(espera)
+
+    def _ocupado(self) -> bool:
+        """El operador está arrastrando, eligiendo con el mouse o con un menú
+        abierto: rearmar la grilla en ese momento le movería todo."""
+        return (QApplication.mouseButtons() != Qt.MouseButton.NoButton
+                or QApplication.activePopupWidget() is not None
+                or self.grid.state() == QAbstractItemView.State.DraggingState)
+
+    def _actualizar_en_vivo(self):
+        if not self.isVisible():
+            self._desactualizada = True
+            return
+        if self._ocupado():
+            self._vivo.start(1000)
+            return
+        self._vivo_ultima = QElapsedTimer()
+        self._vivo_ultima.start()
+        self._do_search(conservar=True)
+        self._reload_known_tags()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._desactualizada:
+            self._desactualizada = False
+            self.cambio_en_el_catalogo()
+
+    def _vista(self) -> dict:
+        """Lo que el operador tiene elegido y dónde está mirando."""
+        sel = {it.data(MEDIA_ID_ROLE) for it in self.grid.selectedItems()}
+        actual = self.grid.currentItem()
+        arriba = self.grid.itemAt(QPoint(8, 8))
+        return {"sel": sel,
+                "actual": actual.data(MEDIA_ID_ROLE) if actual else None,
+                "arriba": arriba.data(MEDIA_ID_ROLE) if arriba else None,
+                "scroll": self.grid.verticalScrollBar().value()}
+
+    def _volver_a(self, vista: dict):
+        g = self.grid
+        g.blockSignals(True)
+        try:
+            ancla = None
+            for i in range(g.count()):
+                it = g.item(i)
+                mid = it.data(MEDIA_ID_ROLE)
+                if mid == vista["actual"]:
+                    g.setCurrentItem(it, g.selectionModel().SelectionFlag.NoUpdate)
+                if mid in vista["sel"]:
+                    it.setSelected(True)
+                if mid == vista["arriba"]:
+                    ancla = it
+        finally:
+            g.blockSignals(False)
+        if ancla is not None:
+            g.scrollToItem(ancla, QAbstractItemView.ScrollHint.PositionAtTop)
+        else:
+            g.verticalScrollBar().setValue(vista["scroll"])
+
+    def _do_search(self, conservar: bool = False):
         self._busqueda += 1
         n = self._busqueda
         query, pend = self.txt_query.text(), self.chk_pending.isChecked()
@@ -223,17 +303,34 @@ class BuscarTab(QWidget):
             raices = {r: os.path.exists(r) for r in {storage_root(p) for p in paths}}
             return results, minis, faltan, presentes, raices
 
-        self._srv.pedir(buscar, ok=lambda r: self._mostrar_busqueda(n, *r))
+        self._srv.pedir(buscar, ok=lambda r: self._mostrar_busqueda(n, *r, conservar=conservar))
 
-    def _mostrar_busqueda(self, n, results, minis, faltan, presentes, raices):
+    def _mostrar_busqueda(self, n, results, minis, faltan, presentes, raices,
+                          conservar: bool = False):
         if n != self._busqueda:
             return                      # llegó tarde: ya se escribió otra cosa
+        if conservar and _iguales(getattr(self, "_results", None), results) \
+                and presentes == getattr(self, "_presentes", None):
+            # Cambió algo que no se ve en la grilla (p. ej. una etiqueta)
+            self._on_selection_changed()
+            return
+        vista = self._vista() if conservar else None
         self._results = results
         self._minis = minis
         self._bajando = set(faltan)
         self._presentes = presentes
         self._raices = raices
-        self._apply_kind_filter()
+        if vista is not None:
+            self.grid._stop_preview()
+            self._restaurando = True
+            try:
+                self._apply_kind_filter()
+            finally:
+                self._restaurando = False
+            self._volver_a(vista)
+            self._on_selection_changed()
+        else:
+            self._apply_kind_filter()
         if faltan:
             cache = self._cache
             self._srv.pedir(lambda repo: cache.bajar(repo, faltan),
@@ -416,6 +513,8 @@ class BuscarTab(QWidget):
         super().keyPressEvent(event)
 
     def _on_selection_changed(self):
+        if self._restaurando:
+            return                      # se está rearmando la grilla: se avisa al final
         self._actualizar_seleccion()
         ids = self._selected_ids()
         self.tag_bar.set_enabled(bool(ids) and self._srv.estado == "ok")
@@ -462,6 +561,14 @@ class BuscarTab(QWidget):
 
     def _reload_known_tags(self):
         self._srv.pedir(lambda repo: repo.all_tag_names(), ok=self.tag_bar.set_known_tags)
+
+
+def _iguales(antes, ahora) -> bool:
+    """Misma grilla: mismos elementos, en el mismo orden y en el mismo estado."""
+    if antes is None:
+        return False
+    clave = lambda m: (m.id, m.path, m.missing_since, m.quality_flag, m.width, m.height)  # noqa: E731
+    return [clave(m) for m in antes] == [clave(m) for m in ahora]
 
 
 def _icono(ruta: str | None) -> QIcon | None:

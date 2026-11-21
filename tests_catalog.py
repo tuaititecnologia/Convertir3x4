@@ -553,3 +553,30 @@ class TestVideosDeCamara:
         pr = probe.probe_video(dst)
         assert pr.quality_flag != "corrupt" and pr.width == 160 and pr.duration > 0
         assert thumbs.make_thumb(dst, "video")[:2] == b"\xff\xd8"
+
+
+class TestAvisosDeCambio:
+    """Migración 3: cada cambio del catálogo avisa por el canal `catalogo`."""
+
+    def _avisos(self, pg_cfg):
+        from convertir3x4.catalog.db import conectar
+        oyente = conectar(pg_cfg)
+        oyente.execute("LISTEN catalogo")
+        return oyente
+
+    def _recibidos(self, oyente):
+        return [n.payload for n in oyente.notifies(timeout=0.5)]
+
+    def test_avisa_altas_etiquetas_y_no_los_cambios_vacios(self, repo, pg_cfg):
+        from convertir3x4.catalog.models import Media
+        oyente = self._avisos(pg_cfg)
+        try:
+            mid = repo.upsert_media(Media(path="/a.jpg", filename="a.jpg", kind="image"))
+            assert "media" in self._recibidos(oyente)
+            repo.apply_tag(mid, "bautismo")
+            assert {"tag", "media_tag"} <= set(self._recibidos(oyente))
+            # un UPDATE que no cambia nada (p. ej. confirmar lo ya confirmado) no avisa
+            repo.confirm_tag(mid, "bautismo")
+            assert self._recibidos(oyente) == []
+        finally:
+            oyente.close()

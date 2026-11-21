@@ -1,6 +1,6 @@
 # Catalogado en el NAS
 
-**Estado:** implementado el 21/11/2026 en la rama `catalogado-nas` (v0.7.0), falta instalarlo en el NAS (manual en CDLM-Freenas, `Catalogo-PostgreSQL.md`, "Catalogador"). Cambia una decisión de `catalogo-compartido.md`: el catalogado y el análisis con IA pasan de las PCs al NAS. Lo demás de ese documento sigue vigente (base PostgreSQL, rutas relativas, miniaturas en la base, faltantes, arrastre a ProPresenter).
+**Estado:** implementado en la v0.7.0 e instalado en el NAS el 21/11/2026 (manual en CDLM-Freenas, `Catalogo-PostgreSQL.md`, "Catalogador"). La v0.7.1 agrega los cambios en vivo. Cambia una decisión de `catalogo-compartido.md`: el catalogado y el análisis con IA pasan de las PCs al NAS. Lo demás de ese documento sigue vigente (base PostgreSQL, rutas relativas, miniaturas en la base, faltantes, arrastre a ProPresenter).
 
 ## Por qué
 
@@ -78,6 +78,15 @@ Dos tablas nuevas, con su migración numerada en `catalog/db.py`:
 - **Lista de carpetas:** la define el catalogador (`CDLM_CATALOGO_CARPETAS` en el compose) y la publica en `catalogado_estado.carpetas`, de donde la leen las PCs. Así hay una sola lista. `catalogo.ini` se queda con la conexión y la raíz.
 - **Personas para reconocer:** se siguen cargando desde la app. La firma de la foto de referencia la calcula la PC y la guarda en la base, como hoy. Los modelos son los mismos en la PC y en el NAS (versión fija en `ai_models.py`).
 - **Zabbix:** el «sigo vivo» lo manda el NAS al terminar cada pasada, no la PC de edición. Pendiente: la primera versión no lo manda todavía; mientras tanto, el latido y `ultima_fin` en `catalogado_estado` muestran si corre.
+
+### Cambios en vivo (v0.7.1)
+
+La app es cliente de un servidor: lo que cataloga el NAS y las etiquetas que pone una PC aparecen en Buscar de la otra sin que el operador haga nada.
+
+- **En la base:** la migración 3 agrega disparadores en `media`, `media_tag` y `tag` que avisan por el canal `catalogo` (`NOTIFY`). Avisan los cambios de cualquiera, el NAS o una PC. Un `UPDATE` que no cambia nada no avisa, y los avisos de una misma transacción llegan como uno solo.
+- **En la PC:** un hilo con su propia conexión escucha el canal (`ui/avisos_catalogo.py`). Si se corta, reintenta cada 10 s, y al volver avisa igual por si se perdió algo.
+- **En Buscar:** junta los avisos y vuelve a consultar a lo sumo cada 5 s, con la misma búsqueda. Conserva lo seleccionado y el lugar de la grilla. Si el operador está arrastrando, eligiendo con el mouse o tiene un menú abierto, espera a que termine. Con la pestaña escondida no consulta; se pone al día al volver a verla.
+- **Sin consultas periódicas:** las PCs no le preguntan a la base cada tantos segundos si hay algo nuevo. Eso cargaría la red, sobre todo por Netbird.
 
 ### Versiones
 
