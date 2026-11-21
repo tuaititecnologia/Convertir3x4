@@ -1,6 +1,6 @@
 # Catálogo compartido en el NAS
 
-**Estado:** diseño acordado el 26/09/2026. Desde el 18/11/2026 la app usa PostgreSQL (SQLite se eliminó) y la base está instalada en el NAS: App «catalogo» de TrueNAS, con respaldo diario y snapshots (manual en el repo CDLM-Freenas, `Catalogo-PostgreSQL.md`). Falta copiar `catalogo.ini` a las dos PCs, el primer catalogado y el catalogado nocturno.
+**Estado:** diseño acordado el 26/09/2026. Desde el 18/11/2026 la app usa PostgreSQL (SQLite se eliminó) y la base está instalada en el NAS: App «catalogo» de TrueNAS, con respaldo diario y snapshots (manual en el repo CDLM-Freenas, `Catalogo-PostgreSQL.md`). Falta copiar `catalogo.ini` a las dos PCs y el primer catalogado. **Propuesta del 21/11/2026:** el catalogado y la IA pasan al NAS (`catalogado-en-el-nas.md`); donde este documento dice que cataloga la PC de edición, vale esa propuesta.
 
 Este documento explica cómo pasa el catálogo de medios de la app (pestañas Buscar y Catalogar) de funcionar en una sola PC a funcionar en dos, con la base en el NAS de la Catedral de los Milagros.
 
@@ -13,7 +13,7 @@ El entorno donde va a correr es otro:
 - **El archivo vive en el NAS** (TrueNAS, RAIDZ2, IP fija 192.168.1.224), y la red local entra por **SMB**. Nada de lo que se use a diario puede depender de Nextcloud.
 - **Nextcloud es secundario:** acceso remoto puntual y subida de archivos grandes.
 - **La app corre en dos PCs:** la de edición y la de ProPresenter.
-- **El NAS tiene poco procesador:** un AMD A4-4000 de 2 núcleos y 8 GB de RAM. El trabajo pesado no puede correr ahí.
+- **El NAS tiene poco procesador:** un AMD A4-4000 de 2 núcleos y 8 GB de RAM. Se pensaba que el trabajo pesado no podía correr ahí; la medición del 21/11/2026 mostró que el catalogado completo, IA incluida, sí entra (`catalogado-en-el-nas.md`).
 
 ## Decisiones
 
@@ -22,7 +22,7 @@ El entorno donde va a correr es otro:
 | Se sigue con esta app | Ya tiene catálogo, búsqueda, tags y arrastre a ProPresenter, y todo funciona |
 | La base pasa a **PostgreSQL** en el NAS | Soporta varias PCs que escriben a la vez y trae búsqueda de texto y de fragmentos con índice. Nextcloud puede usar la misma instancia |
 | Cualquier PC con la app hace todas las tareas | Es la misma app en todas. Catalogar, analizar, buscar, etiquetar y arrastrar no dependen de la PC |
-| El catalogado nocturno se programa en la PC de edición | Tiene un Ryzen 5 8600G y puede quedar prendida de noche. Es una tarea programada, no una restricción: cualquier PC puede catalogar a mano cuando quiera |
+| El catalogado nocturno se programa en la PC de edición | Tiene un Ryzen 5 8600G y puede quedar prendida de noche. Es una tarea programada, no una restricción: cualquier PC puede catalogar a mano cuando quiera. **Reemplazada por la propuesta del 21/11/2026:** cataloga el NAS (`catalogado-en-el-nas.md`) |
 | Nextcloud no participa de la búsqueda | El acceso diario es por SMB, y quien entra por el Explorador no vería nada guardado en Nextcloud |
 
 ### Alternativas descartadas
@@ -46,7 +46,7 @@ El entorno donde va a correr es otro:
                                    └────────────────────────┘
 ```
 
-Las dos PCs leen los archivos por SMB, comparten la misma base y pueden hacer todo lo que hace la app. La única diferencia es que la PC de edición tiene programado el catalogado nocturno.
+Las dos PCs leen los archivos por SMB, comparten la misma base y pueden hacer todo lo que hace la app. La única diferencia es que la PC de edición tiene programado el catalogado nocturno. (Con la propuesta del 21/11/2026, el catalogado lo hace un contenedor en el NAS y las PCs solo lo piden y lo miran: ver el esquema en `catalogado-en-el-nas.md`.)
 
 ## Cambios en el código
 
@@ -124,7 +124,7 @@ Como cualquier PC puede catalogar, dos pasadas pueden coincidir. Por ejemplo, al
 - **Si la base no responde,** la app avisa en pocos segundos que el catálogo no está disponible y sigue abierta, sin colgarse. Un domingo, el operador siempre puede ir a la carpeta del NAS por el Explorador. El catálogo es un atajo, no el único camino. Ver "Si el NAS se cae".
 - **Respaldo:** `pg_dump` diario hacia el pool del NAS, más los snapshots de ZFS. Si la base se rompe, se pierden como mucho los tags de un día.
 - **Seguridad:** PostgreSQL escucha solo en la red local, con un usuario sin privilegios de administración. El acceso remoto de Alejandro es por Netbird, como con el resto de los equipos.
-- **Monitoreo:** la PC que corre el catalogado nocturno manda un "sigo vivo" a Zabbix al terminar. Si pasan tres días sin señal, llega una alerta.
+- **Monitoreo:** quien corre el catalogado nocturno (el NAS, según la propuesta del 21/11/2026) manda un "sigo vivo" a Zabbix al terminar. Si pasan tres días sin señal, llega una alerta.
 - **Memoria del NAS:** PostgreSQL necesita del orden de 100 a 200 MB para un catálogo de este tamaño. Si Nextcloud usa la misma instancia, hay un solo servicio de base en los 8 GB.
 
 ## Decisiones del 16/11/2026
@@ -187,7 +187,7 @@ Alternativa sin probar: que las PC usen una letra de unidad (por ejemplo `M:` = 
 
 Implementado el 31/10/2026 sobre la SQLite local (`engine/vision.py`, `engine/faces.py`, `engine/ai_pipeline.py`). Al migrar, las tablas `person`, `person_reference` y `tag_rejection` pasan a PostgreSQL como el resto. Lo que se decidió:
 
-- **Dónde corre:** en cualquier PC con la app. El catalogado nocturno de la PC de edición lo incluye, y en otra PC funciona igual, con la velocidad que dé su procesador. El 8600G no tiene CUDA, y ROCm en Windows no soporta oficialmente la Radeon 760M, así que el camino es ONNX Runtime en CPU, con DirectML como extra. La NPU del 8600G queda para más adelante.
+- **Dónde corre:** propuesta del 21/11/2026: en el NAS, junto con el catalogado (medido: 1 h 48 min para todas las fotos; ver `catalogado-en-el-nas.md`). Lo decidido antes: en cualquier PC con la app. El catalogado nocturno de la PC de edición lo incluye, y en otra PC funciona igual, con la velocidad que dé su procesador. El 8600G no tiene CUDA, y ROCm en Windows no soporta oficialmente la Radeon 760M, así que el camino es ONNX Runtime en CPU, con DirectML como extra. La NPU del 8600G queda para más adelante.
 - **Qué hace:** CLIP compara cada imagen contra un vocabulario propio de la iglesia (bautismo, alabanza, fondo, logo…). Reemplaza los tags genéricos en inglés que dan herramientas como Recognize. Pone un tag solo cuando está muy seguro, porque un tag equivocado hace perder confianza en el buscador.
 - **Dónde guarda:** en `ai_result` y en los tags con `source = 'ia'`, que ya están en el esquema.
 - **Qué aporta:** poco en el archivo histórico, que ya está ordenado en carpetas por evento y fecha. Mucho en el material nuevo con nombres opacos (`FB_IMG_…`, `WhatsApp Image…`).
