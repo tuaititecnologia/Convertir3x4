@@ -1,0 +1,10 @@
+# Catalogador del NAS (Dockerfile.catalogador). Versiones fijas: se suben a mano,
+# junto con requirements.txt, y se prueban con tests_catalogador.py.
+pillow==12.2.0
+numpy==2.4.4
+imageio==2.37.3
+imageio-ffmpeg==0.6.0
+onnxruntime==1.31.1
+opencv-python-headless==5.0.0.93
+tokenizers==0.23.3
+psycopg[binary]==3.3.9

@@ -1,29 +1,29 @@
-"""Pestaña 'Catalogar' (el motor).
+"""Pestaña 'Catalogar'.
 
-1. Catalogar: recorre las carpetas del NAS de la configuración (`catalogo.ini`)
-   y llena el catálogo (metadata, hashes, miniaturas).
-2. Análisis con IA: propone tags de escena y reconoce a las personas de la lista.
-3. Personas reconocibles: la lista de quiénes se reconocen (y nadie más).
+El catalogado y el análisis con IA corren en el NAS (convertir3x4/catalogador.py,
+docs/catalogado-en-el-nas.md): todas las noches y cuando alguien lo pide desde
+acá. Esta pestaña solo pide («Catalogar ahora», o una subcarpeta desde el ⚙) y
+muestra lo que el NAS informa en la base. Mientras se ve, consulta cada 3 s.
 
-Todo el trabajo pesado corre en un EngineWorker con su propia conexión; las
-consultas cortas (cantidades, personas) van por el servicio del catálogo.
-Emite `catalogChanged` al terminar para que la pestaña Buscar se refresque.
+También administra la lista de personas reconocibles: la firma de cada foto de
+referencia se calcula en esta PC y se guarda en la base.
 """
 
+import datetime
 import os
+import socket
 
-from PyQt6.QtCore import Qt, QSettings, pyqtSignal
+from PyQt6.QtCore import Qt, QSettings, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QFileDialog, QProgressBar, QListWidget,
-    QListWidgetItem, QInputDialog, QMessageBox,
+    QListWidgetItem, QInputDialog,
 )
 
 from ...appdata import abrir_repo, config_catalogo, models_dir
 from ...catalog import rutas
 from ...catalog.db import CatalogoNoConfigurado
 from ...engine import ai_models
-from ...engine.pipeline import CatalogoOcupado, catalogar
 from ...workers import EngineWorker
 from ..servicio_catalogo import servicio, texto_para
 from ..widgets.caja_conexion import CajaConexion
@@ -35,44 +35,103 @@ _PERSON_ID_ROLE = Qt.ItemDataRole.UserRole
 _IMAGE_FILTER = "Imágenes (*.jpg *.jpeg *.png *.webp *.bmp)"
 _CONTENT_MAX_W = 760
 _SECTION_GAP = 22
+_POLL_MS = 3000
+SIN_LATIDO = 60      # segundos: más que esto y el NAS no está catalogando
+_RESPONSABLE = "Comuníquese con el responsable de la aplicación."
 
 
-def _resumen_catalogo(stats) -> str:
-    """El resultado de catalogar en una frase, solo con lo que importa."""
-    def n(k, uno, varios):
-        return uno if k == 1 else f"{k} {varios}"
+def _n(k, uno, varios):
+    return uno if k == 1 else f"{k} {varios}"
+
+
+def resumen_pasada(resumen: dict | None) -> str:
+    """Lo que hizo una pasada del NAS, en una o dos frases."""
+    st = (resumen or {}).get("catalogado") or {}
+    g = lambda k: st.get(k) or 0          # noqa: E731
     partes = []
-    if stats.added:
-        partes.append(n(stats.added, "1 nuevo", "nuevos"))
-    if stats.updated:
-        partes.append(n(stats.updated, "1 actualizado", "actualizados"))
-    if stats.moved:
-        partes.append(n(stats.moved, "1 cambiado de carpeta", "cambiados de carpeta"))
-    texto = "Catalogación terminada: " + (" y ".join(partes) if partes else "no había elementos nuevos") + "."
-    if stats.skipped and partes:
-        texto += f" {n(stats.skipped, '1 ya estaba', 'ya estaban')}."
-    if stats.duplicates:
-        texto += f" {n(stats.duplicates, '1 está repetido', 'están repetidos')}."
-    if stats.corrupt:
-        texto += (" 1 está dañado y no se pudo abrir." if stats.corrupt == 1 else
-                  f" {stats.corrupt} están dañados y no se pudieron abrir.")
-    if stats.missing:
-        texto += (" 1 ya no está en su carpeta." if stats.missing == 1 else
-                  f" {stats.missing} ya no están en su carpeta.")
+    if g("added"):
+        partes.append(_n(g("added"), "1 nuevo", "nuevos"))
+    if g("updated"):
+        partes.append(_n(g("updated"), "1 actualizado", "actualizados"))
+    if g("moved"):
+        partes.append(_n(g("moved"), "1 cambiado de carpeta", "cambiados de carpeta"))
+    texto = (" y ".join(partes) if partes else "No había elementos nuevos") + "."
+    texto = texto[0].upper() + texto[1:]
+    if g("duplicates"):
+        texto += f" {_n(g('duplicates'), '1 está repetido', 'están repetidos')}."
+    if g("corrupt"):
+        texto += (" 1 está dañado y no se pudo abrir." if g("corrupt") == 1 else
+                  f" {g('corrupt')} están dañados y no se pudieron abrir.")
+    if g("missing"):
+        texto += (" 1 ya no está en su carpeta." if g("missing") == 1 else
+                  f" {g('missing')} ya no están en su carpeta.")
         texto += " Siguen en el catálogo, con sus etiquetas, por si aparecen en otra."
-    if stats.ocupadas:
-        texto += (f" No se revisó {_lista(stats.ocupadas)} porque otra PC la estaba "
-                  "catalogando." if len(stats.ocupadas) == 1 else
-                  f" No se revisaron {_lista(stats.ocupadas)} porque otra PC las estaba "
-                  "catalogando.")
-    if stats.inexistentes:
-        texto += (f" La carpeta {_lista(stats.inexistentes)} no existe en el NAS."
-                  if len(stats.inexistentes) == 1 else
-                  f" Las carpetas {_lista(stats.inexistentes)} no existen en el NAS.")
-    if stats.incompletas:
-        texto += (f" {_lista(stats.incompletas)} no se pudo leer completa; se revisa de "
+    if st.get("inexistentes"):
+        texto += (f" La carpeta {_lista(st['inexistentes'])} no existe en el NAS."
+                  if len(st["inexistentes"]) == 1 else
+                  f" Las carpetas {_lista(st['inexistentes'])} no existen en el NAS.")
+    if st.get("incompletas"):
+        texto += (f" {_lista(st['incompletas'])} no se pudo leer completa; se revisa de "
                   "nuevo la próxima vez.")
+    ia = (resumen or {}).get("ia") or {}
+    sugeridas = (ia.get("scene_tags") or 0) + (ia.get("people_tags") or 0)
+    if sugeridas:
+        texto += (" La IA sugirió 1 etiqueta para revisar en Buscar." if sugeridas == 1 else
+                  f" La IA sugirió {sugeridas} etiquetas para revisar en Buscar.")
     return texto
+
+
+def _cuando(t: datetime.datetime | None, ahora: datetime.datetime | None = None) -> str:
+    """«hoy a las 02:10», «ayer a las 23:40», «el 19/11 a las 02:10»."""
+    if t is None:
+        return ""
+    t = t.astimezone()
+    ahora = (ahora or datetime.datetime.now().astimezone()).astimezone()
+    hora = t.strftime("%H:%M")
+    dias = (ahora.date() - t.date()).days
+    if dias == 0:
+        return f"hoy a las {hora}"
+    if dias == 1:
+        return f"ayer a las {hora}"
+    return f"el {t.strftime('%d/%m')} a las {hora}"
+
+
+def texto_estado(est: dict | None, pedidos: list, ahora=None) -> tuple[str, bool]:
+    """(texto para el operador, ¿el NAS está trabajando ahora?)."""
+    if est is None:
+        return "", False
+    sin_latido = est.get("segundos_sin_latido")
+    fase = est.get("fase")
+    if sin_latido is None:
+        return ("El NAS todavía no está preparado para catalogar. " + _RESPONSABLE), False
+    if fase == "detenido":
+        return ("El NAS dejó de catalogar porque tiene una versión anterior de la "
+                "aplicación. " + _RESPONSABLE), False
+    if sin_latido > SIN_LATIDO:
+        texto = ("El NAS no está catalogando: la última señal fue "
+                 f"{_cuando(est.get('latido'), ahora)}. " + _RESPONSABLE)
+        if pedidos:
+            texto += " Su pedido queda en espera."
+        return texto, False
+    hechos, total = est.get("hechos"), est.get("total")
+    avance = f": {hechos} de {total}" if total else ""
+    if fase == "catalogando":
+        return f"El NAS está revisando las carpetas{avance}.", True
+    if fase == "preparando_ia":
+        return "El NAS está preparando el análisis con IA.", True
+    if fase == "analizando":
+        return f"El NAS está analizando con IA{avance}.", True
+    if fase == "esperando_copia":
+        return ("El NAS está copiando un disco de la grabadora. Va a catalogar cuando "
+                "termine la copia."), False
+    if pedidos:
+        return "El NAS va a empezar a catalogar en unos segundos.", True
+    if est.get("ultima_fin") is None:
+        return "El NAS todavía no catalogó las carpetas.", False
+    cuando = _cuando(est.get("ultima_fin"), ahora)
+    if est.get("ultima_error"):
+        return (f"La última revisión, {cuando}, no pudo terminar. " + _RESPONSABLE), False
+    return f"Última revisión: {cuando}. " + resumen_pasada(est.get("ultima_resumen")), False
 
 
 def _lista(carpetas) -> str:
@@ -83,15 +142,24 @@ def _lista(carpetas) -> str:
 class MotorTab(QWidget):
     catalogChanged = pyqtSignal()
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, srv=None):
         super().__init__(parent)
         self.settings = QSettings("CDLM", "Convertir3x4")
         self._worker: EngineWorker | None = None
         self._on_done_cb = None
-        self._srv = servicio()
+        self._srv = srv or servicio()
+        self._carpetas: tuple[str, ...] = ()
+        self._raiz = ""
+        self._ultima_fin = None
+        self._trabajando = False
+        self._pedidos: list = []
+        self._consultando = False
         self._build_ui()
+        self._timer = QTimer(self)
+        self._timer.setInterval(_POLL_MS)
+        self._timer.timeout.connect(self.refresh)
         self._srv.estado_cambiado.connect(self._estado_catalogo)
-        self._refresh_count()
+        self.refresh()
         self._refresh_people()
 
     # ------------------------------------------------------------- UI
@@ -109,9 +177,9 @@ class MotorTab(QWidget):
         layout.setSpacing(10)
 
         cab = QHBoxLayout()
-        cab.addWidget(self._title("Agregar fotos y videos al catálogo"))
+        cab.addWidget(self._title("Catálogo de fotos y videos"))
         cab.addStretch()
-        # Lo que casi nunca se usa (limpiar el catálogo) va escondido en el ⚙
+        # Lo que casi nunca se usa (una subcarpeta, limpiar) va escondido en el ⚙
         self.btn_avanzado = QPushButton()
         self.btn_avanzado.setObjectName("btn_icon")
         icons.set_icon(self.btn_avanzado, "settings", 16, "text_2")
@@ -127,22 +195,22 @@ class MotorTab(QWidget):
                                  self._srv.texto)
         layout.addWidget(self.conn_box)
         layout.addWidget(self._text(
-            "La aplicación agrega al catálogo todas las fotos y videos de las carpetas del "
-            "NAS que figuran abajo, para encontrarlos luego en Buscar. Puede repetirse en "
-            "cualquier momento: solo se agrega lo nuevo y se actualiza lo que cambió."))
+            "El NAS revisa todas las noches las carpetas que figuran abajo y agrega al "
+            "catálogo las fotos y videos nuevos, para encontrarlos luego en Buscar. También "
+            "sugiere etiquetas (bautismo, alabanza, placa, flyer…) y reconoce a las personas "
+            "de la lista; las sugerencias se confirman en Buscar. Si necesita antes algo "
+            "recién copiado, use «Catalogar ahora»."))
         self.lbl_carpetas = QLabel()
         self.lbl_carpetas.setWordWrap(True)
         self.lbl_carpetas.setTextFormat(Qt.TextFormat.PlainText)
         layout.addWidget(self.lbl_carpetas)
-        self._carpetas: tuple[str, ...] = ()
-        self._cargar_carpetas()
 
         self.btn_run = QPushButton("Catalogar ahora")
         self.btn_run.setObjectName("btn_primary")
-        self.btn_run.clicked.connect(self._run_stage0)
+        self.btn_run.clicked.connect(self._pedir_todo)
         layout.addLayout(self._left(self.btn_run))
 
-        # Estado del trabajo en curso, pegado a las acciones que lo disparan
+        # Lo que informa el NAS, pegado a la acción que lo dispara
         self.progress = QProgressBar()
         self.progress.setVisible(False)
         layout.addWidget(self.progress)
@@ -153,19 +221,6 @@ class MotorTab(QWidget):
         self.lbl_count = QLabel("")
         self.lbl_count.setObjectName("muted")
         layout.addWidget(self.lbl_count)
-
-        # --- IA
-        layout.addSpacing(_SECTION_GAP)
-        layout.addWidget(self._title("Análisis con IA"))
-        layout.addWidget(self._text(
-            "Sugiere etiquetas (bautismo, alabanza, placa, flyer…) y reconoce a las "
-            "personas de la lista de abajo. Todo queda como sugerencia hasta que se "
-            "confirma en Buscar. Funciona sin internet; solo la primera vez necesita "
-            "descargar aprox. 650 MB."))
-        self.btn_ai = QPushButton("Analizar con IA")
-        icons.set_icon(self.btn_ai, "sparkles", 15, "text")
-        self.btn_ai.clicked.connect(self._run_ai)
-        layout.addLayout(self._left(self.btn_ai))
 
         # --- Personas
         layout.addSpacing(_SECTION_GAP)
@@ -192,6 +247,10 @@ class MotorTab(QWidget):
             prow.addWidget(b)
         prow.addStretch()
         layout.addLayout(prow)
+        self.lbl_people_status = QLabel("")
+        self.lbl_people_status.setWordWrap(True)
+        self.lbl_people_status.setVisible(False)
+        layout.addWidget(self.lbl_people_status)
         layout.addStretch()
         self._update_buttons()
 
@@ -199,13 +258,17 @@ class MotorTab(QWidget):
         from ..widgets.catalogo_avanzado import CatalogoAvanzado
         dlg = CatalogoAvanzado(self, carpetas=self._carpetas)
         dlg.catalogarCarpeta.connect(self.catalogar_una_carpeta)
-        dlg.catalogChanged.connect(self._refresh_count)
+        dlg.catalogChanged.connect(self.refresh)
         dlg.catalogChanged.connect(self.catalogChanged.emit)
         dlg.exec()
 
     def _set_status(self, text: str):
         self.lbl_status.setText(text)
         self.lbl_status.setVisible(bool(text))
+
+    def _set_people_status(self, text: str):
+        self.lbl_people_status.setText(text)
+        self.lbl_people_status.setVisible(bool(text))
 
     @staticmethod
     def _left(widget) -> QHBoxLayout:
@@ -227,52 +290,84 @@ class MotorTab(QWidget):
         lbl.setWordWrap(True)
         return lbl
 
-    # ------------------------------------------------------------- estado
-    def _cargar_carpetas(self):
-        """Lee de la configuración qué carpetas del NAS se catalogan."""
-        try:
-            cfg = config_catalogo()
-        except CatalogoNoConfigurado as e:
-            self._carpetas, self._raiz = (), ""
-            self.lbl_carpetas.setText(e.MENSAJE)
-            return
-        self._carpetas, self._raiz = cfg.carpetas, cfg.raiz
-        if not cfg.carpetas:
-            self.lbl_carpetas.setText(
-                "Todavía no hay carpetas del NAS para catalogar en esta PC. Comuníquese "
-                "con el responsable de la aplicación.")
-            return
-        sep = "\\" if cfg.raiz.startswith("\\") or cfg.raiz[1:2] == ":" else "/"
-        nombres = [c.replace("/", sep) for c in cfg.carpetas]
-        self.lbl_carpetas.setText("Carpetas del NAS que se catalogan: " + ", ".join(nombres) + ".")
+    # ------------------------------------------------------------- ciclo
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.refresh()
+        self._timer.start()
 
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self._timer.stop()
+
+    # ------------------------------------------------------------- estado
     def _estado_catalogo(self, estado: str, texto: str):
         self.conn_box.set_estado(estado, texto)
         if estado == "error":
             self.lbl_count.setText("")
+            self._set_status("")
+            self.progress.setVisible(False)
         self._update_buttons()
 
     def _reintentar(self):
-        self._cargar_carpetas()
-        self._refresh_count()
+        self.refresh()
         self._refresh_people()
 
-    def _refresh_count(self):
-        def contar(repo):
-            return repo.count_media(), repo.count_pending_tags(), len(repo.faltantes())
+    def refresh(self):
+        """Estado del NAS, pedidos en espera y cantidades (una sola consulta)."""
+        if self._consultando:
+            return
+        self._consultando = True
+
+        def leer(repo):
+            return (repo.estado_catalogado(), repo.pedidos_abiertos(), repo.count_media(),
+                    repo.count_pending_tags(), len(repo.faltantes()))
+
+        def listo(_r=None):
+            self._consultando = False
 
         def mostrar(r):
-            n, pend, faltan = r
-            txt = ("1 foto o video en el catálogo" if n == 1 else
-                   f"{n} fotos y videos en el catálogo")
-            if faltan:
-                txt += " · 1 ya no está en su carpeta" if faltan == 1 else \
-                    f" · {faltan} ya no están en su carpeta"
-            if pend:
-                txt += f" · {pend} con sugerencias de la IA sin revisar"
-            self.lbl_count.setText(txt)
+            listo()
+            self._mostrar(*r)
 
-        self._srv.pedir(contar, ok=mostrar)
+        self._srv.pedir(leer, ok=mostrar, error=listo)
+
+    def _mostrar(self, est, pedidos, n, pend, faltan):
+        self._pedidos = pedidos
+        self._carpetas = tuple(est.get("carpetas") or ())
+        try:
+            self._raiz = config_catalogo().raiz
+        except CatalogoNoConfigurado:
+            self._raiz = ""
+        if self._carpetas:
+            sep = "\\" if self._raiz.startswith("\\") or self._raiz[1:2] == ":" else "/"
+            nombres = [c.replace("/", sep) for c in self._carpetas]
+            self.lbl_carpetas.setText("Carpetas del NAS que se catalogan: " + ", ".join(nombres) + ".")
+        else:
+            self.lbl_carpetas.setText("")
+        texto, self._trabajando = texto_estado(est, pedidos)
+        self._set_status(texto)
+        total = est.get("total")
+        en_curso = est.get("fase") in ("catalogando", "analizando", "preparando_ia") and self._trabajando
+        self.progress.setVisible(en_curso)
+        if en_curso:
+            self.progress.setMaximum(total or 0)     # sin total: barra en movimiento
+            self.progress.setValue(est.get("hechos") or 0)
+        txt = ("1 foto o video en el catálogo" if n == 1 else
+               f"{n} fotos y videos en el catálogo")
+        if faltan:
+            txt += " · 1 ya no está en su carpeta" if faltan == 1 else \
+                f" · {faltan} ya no están en su carpeta"
+        if pend:
+            txt += f" · {pend} con sugerencias de la IA sin revisar"
+        self.lbl_count.setText(txt)
+        # Terminó una pasada (de esta PC o de la noche): que Buscar se entere.
+        fin = est.get("ultima_fin")
+        if fin != self._ultima_fin:
+            if self._ultima_fin is not None:
+                self.catalogChanged.emit()
+            self._ultima_fin = fin
+        self._update_buttons()
 
     def _refresh_people(self):
         self._srv.pedir(lambda repo: repo.list_persons(), ok=self._mostrar_personas,
@@ -299,18 +394,40 @@ class MotorTab(QWidget):
     def _update_buttons(self):
         busy = self._worker is not None and self._worker.isRunning()
         sin_catalogo = self._srv.estado == "error"
-        self.btn_run.setEnabled(not busy and not sin_catalogo and bool(self._carpetas))
-        for w in (self.btn_ai, self.btn_add_person):
-            w.setEnabled(not busy and not sin_catalogo)
+        self.btn_run.setEnabled(not sin_catalogo and bool(self._carpetas)
+                                and not self._trabajando and not self._pedidos)
+        self.btn_add_person.setEnabled(not busy and not sin_catalogo)
         has_sel = self._selected_person() is not None
         self.btn_add_photos.setEnabled(not busy and not sin_catalogo and has_sel)
         self.btn_del_person.setEnabled(not busy and not sin_catalogo and has_sel)
-        self.progress.setVisible(busy)
 
-    # ------------------------------------------------------------- jobs
+    # ------------------------------------------------------------- pedidos al NAS
+    def _pedir_todo(self):
+        self._pedir(None)
+
+    def catalogar_una_carpeta(self, ruta: str):
+        """Una subcarpeta (p. ej. un evento recién copiado). Tiene que estar dentro
+        de alguna de la lista; el NAS toma el bloqueo de esa carpeta."""
+        rel = rutas.a_relativa(ruta, self._raiz) if self._raiz else None
+        madre = next((c for c in self._carpetas if rel is not None and rutas.dentro_de(rel, c)),
+                     None)
+        if madre is None:
+            self._set_status("Esa carpeta no está entre las que se catalogan. Elija una "
+                             "carpeta dentro de: " + _lista(self._carpetas) + ".")
+            return
+        self._pedir(rel)
+
+    def _pedir(self, carpeta: str | None):
+        quien = socket.gethostname()
+        self._pedidos = [{"carpeta": carpeta}]          # el botón se apaga ya
+        self._update_buttons()
+        self._srv.pedir(lambda repo: repo.pedir_catalogado(carpeta, quien),
+                        ok=lambda _id: self.refresh(),
+                        error=lambda e: (self._set_status(texto_para(e)), self.refresh()))
+
+    # ------------------------------------------------------------- trabajos de la PC
     def _start(self, fn, on_done, status: str):
-        self._set_status(status)
-        self.progress.setValue(0)
+        self._set_people_status(status)
         self._worker = EngineWorker(fn)
         self._worker.progress.connect(self._on_progress)
         self._on_done_cb = on_done
@@ -326,92 +443,23 @@ class MotorTab(QWidget):
         self._on_done_cb(result)
 
     def _on_progress(self, done, total, msg):
-        self.progress.setMaximum(total or 1)
-        self.progress.setValue(done)
         if msg.startswith("⬇"):
-            self._set_status(msg)
-        else:
-            self._set_status(f"Procesando {done} de {total}…")
+            self._set_people_status(msg)
 
     def _on_failed(self, err):
         self._worker.wait()
         self._worker = None
         self._update_buttons()
-        # El detalle técnico no le sirve al operador.
-        if isinstance(err, CatalogoOcupado):
-            self._set_status(err.MENSAJE)
-        else:
-            self._set_status(texto_para(err))
+        self._set_people_status(texto_para(err))
 
     @staticmethod
     def _ensure_models(mdir, progress_cb):
         def cb(done, total, name):
             mb = 1024 * 1024
             progress_cb(done // mb, total // mb,
-                        f"⬇ Preparando el análisis (solo la primera vez): "
+                        f"⬇ Preparando el reconocimiento (solo la primera vez): "
                         f"{done // mb} de {total // mb} MB…")
         ai_models.ensure(mdir, cb)
-
-    # ------------------------------------------------------------- catalogar
-    def _run_stage0(self):
-        self._catalogar(list(self._carpetas))
-
-    def catalogar_una_carpeta(self, ruta: str):
-        """A mano, una carpeta (p. ej. un evento recién subido). Tiene que estar
-        dentro de alguna de la lista; toma el bloqueo de esa carpeta."""
-        rel = rutas.a_relativa(ruta, self._raiz) if self._raiz else None
-        madre = next((c for c in self._carpetas if rel is not None and rutas.dentro_de(rel, c)),
-                     None)
-        if madre is None:
-            self._set_status("Esa carpeta no está entre las que se catalogan. Elija una "
-                             "carpeta dentro de: " + _lista(self._carpetas) + ".")
-            return
-        self._catalogar([rel], bloqueo=madre)
-
-    def _catalogar(self, carpetas: list[str], bloqueo: str | None = None):
-        if not carpetas:
-            return
-
-        def job(progress_cb):
-            with abrir_repo() as repo:
-                return catalogar(repo, carpetas, progress_cb=progress_cb, bloqueo=bloqueo)
-
-        def done(stats):
-            self._set_status(_resumen_catalogo(stats))
-            self._refresh_count()
-            self.catalogChanged.emit()
-
-        self._start(job, done, "Revisando las carpetas del NAS…")
-
-    # ------------------------------------------------------------- IA
-    def _run_ai(self):
-        mdir = models_dir()
-
-        def job(progress_cb):
-            self._ensure_models(mdir, progress_cb)
-            from ...engine.ai_pipeline import run_ai
-            threads = max(1, min(6, (os.cpu_count() or 2) - 1))
-            with abrir_repo() as repo:
-                return run_ai(repo, mdir, progress_cb=progress_cb, threads=threads)
-
-        def done(st):
-            sugeridos = st.scene_tags + st.people_tags
-            msg = (f"Análisis terminado: {st.analyzed} elementos analizados. "
-                   + ("No hay sugerencias nuevas." if not sugeridos else
-                      "Hay 1 etiqueta sugerida para revisar en Buscar." if sugeridos == 1 else
-                      f"Hay {sugeridos} etiquetas sugeridas para revisar en Buscar."))
-            if st.missing_files:
-                msg += (f" {st.missing_files} no se encontraron; se vuelven a intentar la "
-                        "próxima vez.")
-            if st.errors:
-                msg += f" {st.errors} no se pudieron abrir."
-            if not st.analyzed and not st.missing_files and not st.errors:
-                msg = "No había nada nuevo para analizar."
-            self._set_status(msg)
-            self._refresh_count()
-            self.catalogChanged.emit()
-
-        self._start(job, done, "Preparando el análisis…")
 
     # ------------------------------------------------------------- personas
     def _add_person(self):
@@ -464,8 +512,9 @@ class MotorTab(QWidget):
                 msg += (f" En {len(no_face)} no se detectó un rostro: "
                         + ", ".join(os.path.basename(p) for p in no_face[:5]))
             if added:
-                msg += " Ejecute «Analizar con IA» para buscarla en el catálogo."
-            self._set_status(msg)
+                msg += (" El NAS la busca en el catálogo esta noche; para hacerlo antes, "
+                        "use «Catalogar ahora».")
+            self._set_people_status(msg)
             self._refresh_people()
 
         self._start(job, done, f"Leyendo fotos de {name}…")
@@ -482,4 +531,4 @@ class MotorTab(QWidget):
             return
         self._srv.pedir(lambda repo: repo.delete_person(pid),
                         ok=lambda _: self._refresh_people(),
-                        error=lambda e: self._set_status(texto_para(e)))
+                        error=lambda e: self._set_people_status(texto_para(e)))

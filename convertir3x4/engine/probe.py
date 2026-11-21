@@ -4,9 +4,9 @@ Imágenes vía Pillow; videos vía imageio (que usa el ffmpeg ya empaquetado, as
 que NO se necesita ffprobe). Detecta corruptos y baja resolución de paso.
 """
 
-import imageio
 from PIL import Image
 
+from ..catalog import video_ffmpeg
 from ..catalog.models import ProbeResult
 
 # Por debajo de esto (lado menor, en px) marcamos low_res.
@@ -33,9 +33,7 @@ def probe_image(path: str) -> ProbeResult:
 
 def probe_video(path: str) -> ProbeResult:
     try:
-        reader = imageio.get_reader(path)
-        md = reader.get_meta_data()
-        reader.close()
+        md, _ = video_ffmpeg.leer(path)
     except Exception:
         return ProbeResult(kind="video", quality_flag="corrupt")
 

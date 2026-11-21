@@ -21,7 +21,7 @@ python -m venv venv && source venv/bin/activate && pip install -r requirements.t
 ./venv/bin/python Convertir3x4.py      # shim entry point (also: python -m convertir3x4)
 
 # Tests — pass both files explicitly (pytest's default discovery skips the tests.py name)
-./venv/bin/python -m pytest tests.py tests_catalog.py tests_ai.py tests_clips.py tests_ui.py tests_convertir.py tests_discos.py -v
+./venv/bin/python -m pytest tests.py tests_catalog.py tests_ai.py tests_clips.py tests_ui.py tests_convertir.py tests_discos.py tests_catalogador.py -v
 # tests_discos.py also runs the real panel-copias.py (fake lsblk/systemctl) when ~/Documents/Agents/CDLM-Freenas is present
 # tests_ai.py also runs real-model tests when CDLM_MODELS points to a folder with the downloaded models
 # Catalog tests (tests_catalog/tests_ai/tests_ui) need the dev PostgreSQL; fixtures in conftest.py create a
@@ -36,6 +36,9 @@ CDLM_CATALOGO_SERVIDOR=127.0.0.1 CDLM_CATALOGO_PUERTO=55432 CDLM_CATALOGO_CLAVE=
 
 # Build executable (venv/bin/pip has a stale shebang: use python -m)
 ./venv/bin/python -m PyInstaller Convertir3x4.spec
+
+# NAS catalogador image (CI publishes it on tags as ghcr.io/tuaititecnologia/convertir3x4-catalogador:vX.Y.Z)
+docker build -f Dockerfile.catalogador -t cdlm-catalogador:dev .
 ```
 
 ## Architecture
@@ -109,6 +112,10 @@ convertir3x4/
   appdata.py             per-user data dir + catalog config: config_catalogo() reads CDLM_CATALOGO_* (dev) or
                          catalogo.ini next to the .exe / in the data dir (see catalogo.ini.ejemplo; never commit
                          catalogo.ini). abrir_repo() = conectar + Repo; catalog_thumb_dir() = local thumb cache
+  catalogador.py         the NAS cataloger (headless, Qt-free; `python -m convertir3x4.catalogador`, Docker image
+                         Dockerfile.catalogador): nightly pass + requests from the PCs via catalogado_pedido/
+                         catalogado_estado (+ NOTIFY), heartbeat thread, waits while a recorder disk is copied.
+                         Config from env (CDLM_CATALOGO_*, CDLM_MODELOS, CDLM_HORA…). See docs/catalogado-en-el-nas.md
   workers.py             EngineWorker(QThread): runs fn(progress_cb) off the UI thread; `fallo` carries the exception
   catalog/               the truth — PostgreSQL (Qt-free):
     db.py                ConfigCatalogo (servidor, clave, raiz, carpetas), conectar() (autocommit, 3 s timeout,
@@ -121,6 +128,8 @@ convertir3x4/
     rutas.py             a_relativa / a_completa (UNC, drive letters, posix)
     cache_miniaturas.py  local copy of DB thumbnails as <id>-<sello>.jpg; Buscar reads from disk
     thumbs.py            PIL thumbnail -> JPEG bytes (no Qt → safe in worker threads)
+    video_ffmpeg.py      video metadata + first frame via imageio-ffmpeg directly (imageio picks by extension
+                         and refuses .mts/.m2t)
     ubicacion.py         storage_root / availability: one exists() per root, never per file (offline NAS)
   engine/                the engine — cheap→expensive cascade (Qt-free):
     inventory.py         scan() folders for media (reports unreadable dirs); kind_for()
@@ -148,7 +157,8 @@ never re-adds one a person removed (`tag_rejection`). Face recognition is whitel
 decision (pastors, guests) — do not add clustering of unknown faces or store their embeddings.
 Validated on real photos with `spikes/spike_vision.py`.
 
-Tabs wired in `app.py`: **Buscar** (search catalog), **Catalogar** (MotorTab: the configured NAS folders),
+Tabs wired in `app.py`: **Buscar** (search catalog), **Catalogar** (MotorTab: since v0.7.0 the PCs do NOT catalog;
+it asks the NAS «Catalogar ahora» and shows catalogado_estado, polling every 3 s while visible; people list stays here),
 **Convertir**. Connection rules: the UI thread NEVER touches the DB or the NAS (an offline NAS can block for
 seconds) — short queries go through `servicio_catalogo`, long passes through EngineWorker with their own
 `with abrir_repo() as repo:`; never share a connection across threads. Missing/offline media are drawn in

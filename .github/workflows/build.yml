@@ -102,3 +102,46 @@ jobs:
             Convertir3x4-${{ github.ref_name }}-macos.dmg
             Convertir3x4-${{ github.ref_name }}-linux
           generate_release_notes: true
+
+  # Catalogador del NAS (docs/catalogado-en-el-nas.md): imagen con la misma
+  # etiqueta que el .exe. En PRs y en main solo se arma; se publica con cada tag.
+  catalogador:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Version
+        id: v
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=dev-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build (and push on tags)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.catalogador
+          platforms: linux/amd64
+          build-args: APP_VERSION=${{ steps.v.outputs.version }}
+          push: ${{ startsWith(github.ref, 'refs/tags/v') }}
+          tags: ghcr.io/tuaititecnologia/convertir3x4-catalogador:${{ steps.v.outputs.version }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.description=Catalogador del NAS de Convertir3x4

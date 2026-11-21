@@ -1,6 +1,6 @@
 # Catalogado en el NAS
 
-**Estado:** propuesta del 21/11/2026, sin implementar. Cambia una decisión de `catalogo-compartido.md`: el catalogado y el análisis con IA pasan de las PCs al NAS. Lo demás de ese documento sigue vigente (base PostgreSQL, rutas relativas, miniaturas en la base, faltantes, arrastre a ProPresenter).
+**Estado:** implementado el 21/11/2026 en la rama `catalogado-nas` (v0.7.0), falta instalarlo en el NAS (manual en CDLM-Freenas, `Catalogo-PostgreSQL.md`, "Catalogador"). Cambia una decisión de `catalogo-compartido.md`: el catalogado y el análisis con IA pasan de las PCs al NAS. Lo demás de ese documento sigue vigente (base PostgreSQL, rutas relativas, miniaturas en la base, faltantes, arrastre a ProPresenter).
 
 ## Por qué
 
@@ -53,8 +53,10 @@ Contenedor temporal en el NAS (`python:3.12-slim`, 2 GB de tope), `multimedia` m
 - **Código:** un comando sin interfaz, `python -m convertir3x4.catalogador`, que usa `catalog/` y `engine/` tal como están. `appdata.py` importa Qt, así que el catalogador lee su configuración de variables de entorno del compose (servidor `postgres`, clave, raíz `/media`, carpeta de modelos).
 - **Montajes:** `/mnt/tank/multimedia` → `/media` en **solo lectura**. El catalogado nunca escribe en los archivos. Los modelos de IA en un volumen propio (616 MB; ya bajados en `/mnt/tank/ingreso/_bench/models`).
 - **Rutas:** la base guarda rutas relativas a la raíz. El NAS cataloga `/media/Publicar/…` y las PCs abren el mismo archivo en `\\truenas\multimedia\Publicar\…`.
-- **Acceso a la base:** por la red interna de la App (`ix-catalogo_default`). `pg_hba.conf` hoy acepta al usuario `catalogo` solo desde 192.168.1.0/24 y Netbird. Hay que fijar la subred de la App en el compose y agregar esa subred, solo para `catalogo`.
-- **Recursos:** tope de memoria de 1,5 GB (a confirmar con la primera medición real), `nice` e `ionice` bajos y 2 hilos para ONNX Runtime.
+- **Acceso a la base:** por la red interna de la App (`ix-catalogo_default`), con la línea `samenet` en `pg_hba.conf`, solo para el usuario `catalogo`. `samenet` es la subred de esa red, así que no hace falta fijarla en el compose. Las PCs siguen entrando por sus propias líneas, porque Docker conserva su IP.
+- **Recursos:** tope de memoria de 1,5 GB (a confirmar con la primera medición real), `nice` 10 y 2 hilos para ONNX Runtime. `ionice` no se usa: ZFS no respeta las prioridades de disco por proceso.
+- **Videos:** se leen con imageio-ffmpeg directo (`catalog/video_ffmpeg.py`). La capa de imageio elige el lector por la extensión y no abría `.mts` ni `.m2t`.
+- **Telemetría:** ONNX Runtime trae envío de datos de uso; se apaga al crear la sesión (`engine/vision.py`).
 
 ### Cuándo corre
 
@@ -73,9 +75,9 @@ Dos tablas nuevas, con su migración numerada en `catalog/db.py`:
 
 - **Catalogar** deja de catalogar en la PC. Muestra el estado que informa el NAS («Catalogando Publicar: 1.250 de 4.027 fotos», «Última pasada: hoy 02:10, sin errores») y tiene el botón «Catalogar ahora». En el ⚙ quedan catalogar una subcarpeta y quitar los faltantes, ahora como pedidos al NAS.
 - **Si el latido tiene más de un minuto,** Catalogar avisa que el NAS no está catalogando, con la hora de la última señal. Un pedido hecho en ese momento queda en espera y se atiende cuando el catalogador vuelve.
-- **Lista de carpetas:** pasa de `catalogo.ini` de cada PC a la base, para que el NAS y las dos PCs usen la misma. `catalogo.ini` se queda con la conexión y la raíz.
+- **Lista de carpetas:** la define el catalogador (`CDLM_CATALOGO_CARPETAS` en el compose) y la publica en `catalogado_estado.carpetas`, de donde la leen las PCs. Así hay una sola lista. `catalogo.ini` se queda con la conexión y la raíz.
 - **Personas para reconocer:** se siguen cargando desde la app. La firma de la foto de referencia la calcula la PC y la guarda en la base, como hoy. Los modelos son los mismos en la PC y en el NAS (versión fija en `ai_models.py`).
-- **Zabbix:** el «sigo vivo» lo manda el NAS al terminar cada pasada, no la PC de edición.
+- **Zabbix:** el «sigo vivo» lo manda el NAS al terminar cada pasada, no la PC de edición. Pendiente: la primera versión no lo manda todavía; mientras tanto, el latido y `ultima_fin` en `catalogado_estado` muestran si corre.
 
 ### Versiones
 

@@ -7,8 +7,9 @@ responda. Cada PC las guarda además en su caché local (`cache_miniaturas.py`).
 
 import io
 
-import imageio
 from PIL import Image, ImageOps
+
+from . import video_ffmpeg
 
 THUMB_MAX = 320  # lado mayor de la miniatura, en px
 
@@ -33,9 +34,5 @@ def make_thumb(src_path: str, kind: str) -> bytes | None:
 
 
 def _first_frame(path: str) -> Image.Image | None:
-    reader = imageio.get_reader(path)
-    try:
-        frame = reader.get_data(0)
-    finally:
-        reader.close()
+    _, frame = video_ffmpeg.leer(path, cuadro=True)
     return Image.fromarray(frame).convert("RGB")

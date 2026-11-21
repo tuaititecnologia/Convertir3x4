@@ -537,3 +537,19 @@ class TestConexionPostgres:
                 "WHERE texto_nombre(filename, folder_origin) LIKE %s", ("%1782%",)
             ).fetchone()["n"]
             assert n == 1
+
+
+class TestVideosDeCamara:
+    """`.mts`/`.m2t`: imageio no los abre por la extensión; ffmpeg sí (21/11/2026)."""
+
+    @pytest.mark.parametrize("ext", [".mts", ".m2t", ".m2ts", ".mpg"])
+    def test_se_catalogan(self, temp_dir, ext):
+        from convertir3x4.catalog import thumbs
+        src = os.path.join(temp_dir, "c.mp4")
+        _mp4(src)
+        dst = os.path.join(temp_dir, "grabacion" + ext)
+        os.rename(src, dst)
+        assert inventory.kind_for(dst) == "video"
+        pr = probe.probe_video(dst)
+        assert pr.quality_flag != "corrupt" and pr.width == 160 and pr.duration > 0
+        assert thumbs.make_thumb(dst, "video")[:2] == b"\xff\xd8"

@@ -20,6 +20,9 @@ _STD = np.array([0.26862954, 0.26130258, 0.27577711], dtype=np.float32)
 
 def _session(path: str, threads: int):
     import onnxruntime as ort
+    # IA local: que ONNX Runtime no mande datos de uso a ningún lado.
+    if hasattr(ort, "disable_telemetry_events"):
+        ort.disable_telemetry_events()
     so = ort.SessionOptions()
     so.intra_op_num_threads = threads
     return ort.InferenceSession(path, so, providers=["CPUExecutionProvider"])
