@@ -9,3 +9,6 @@ _version.py
 .env
 *.db
 *.sqlite3
+
+# Configuración del catálogo de cada PC (tiene la contraseña de la base)
+catalogo.ini

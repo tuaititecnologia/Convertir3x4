@@ -15,13 +15,16 @@ def kind_for(path: str) -> str | None:
     return None
 
 
-def scan(root: str) -> list[str]:
+def scan(root: str, errores: list | None = None) -> list[str]:
     """Recorre `root` recursivamente y devuelve rutas absolutas de medios.
 
     Ignora archivos ocultos y carpetas ocultas (p.ej. .git, .DS_Store).
+    Si se pasa `errores`, anota ahí las carpetas que no se pudieron leer (p.ej.
+    el NAS se cayó a mitad de camino): con eso la lista está incompleta.
     """
     found = []
-    for dirpath, dirnames, filenames in os.walk(root):
+    onerror = errores.append if errores is not None else None
+    for dirpath, dirnames, filenames in os.walk(root, onerror=onerror):
         dirnames[:] = [d for d in dirnames if not d.startswith(".")]
         for name in filenames:
             if name.startswith("."):

@@ -16,7 +16,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 
-# LAN de la iglesia y, desde afuera, Netbird (catedral-truenas).
+# LAN de la iglesia y, desde afuera, Netbird (cdlm-truenas).
 URLS_POR_DEFECTO = ("http://192.168.1.224:8790", "http://100.118.161.236:8790")
 
 

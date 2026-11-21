@@ -1,11 +1,13 @@
 """Pestaña 'Catalogar' (el motor).
 
-1. Etapa 0: recorre una carpeta y llena el catálogo (metadata, hashes, miniaturas).
+1. Catalogar: recorre las carpetas del NAS de la configuración (`catalogo.ini`)
+   y llena el catálogo (metadata, hashes, miniaturas).
 2. Análisis con IA: propone tags de escena y reconoce a las personas de la lista.
 3. Personas reconocibles: la lista de quiénes se reconocen (y nadie más).
 
-Todo el trabajo pesado corre en un EngineWorker. Emite `catalogChanged` al
-terminar para que la pestaña Buscar se refresque.
+Todo el trabajo pesado corre en un EngineWorker con su propia conexión; las
+consultas cortas (cantidades, personas) van por el servicio del catálogo.
+Emite `catalogChanged` al terminar para que la pestaña Buscar se refresque.
 """
 
 import os
@@ -13,16 +15,18 @@ import os
 from PyQt6.QtCore import Qt, QSettings, pyqtSignal
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
-    QLineEdit, QFileDialog, QProgressBar, QListWidget,
+    QFileDialog, QProgressBar, QListWidget,
     QListWidgetItem, QInputDialog, QMessageBox,
 )
 
-from ...appdata import db_path, thumb_dir, models_dir
-from ...catalog.db import connect
-from ...catalog.repo import Repo
+from ...appdata import abrir_repo, config_catalogo, models_dir
+from ...catalog import rutas
+from ...catalog.db import CatalogoNoConfigurado
 from ...engine import ai_models
-from ...engine.pipeline import run_stage0
+from ...engine.pipeline import CatalogoOcupado, catalogar
 from ...workers import EngineWorker
+from ..servicio_catalogo import servicio, texto_para
+from ..widgets.caja_conexion import CajaConexion
 from ..widgets.dialogos import confirmar
 from .. import icons
 from ..style import T
@@ -42,6 +46,8 @@ def _resumen_catalogo(stats) -> str:
         partes.append(n(stats.added, "1 nuevo", "nuevos"))
     if stats.updated:
         partes.append(n(stats.updated, "1 actualizado", "actualizados"))
+    if stats.moved:
+        partes.append(n(stats.moved, "1 cambiado de carpeta", "cambiados de carpeta"))
     texto = "Catalogación terminada: " + (" y ".join(partes) if partes else "no había elementos nuevos") + "."
     if stats.skipped and partes:
         texto += f" {n(stats.skipped, '1 ya estaba', 'ya estaban')}."
@@ -50,7 +56,28 @@ def _resumen_catalogo(stats) -> str:
     if stats.corrupt:
         texto += (" 1 está dañado y no se pudo abrir." if stats.corrupt == 1 else
                   f" {stats.corrupt} están dañados y no se pudieron abrir.")
+    if stats.missing:
+        texto += (" 1 ya no está en su carpeta." if stats.missing == 1 else
+                  f" {stats.missing} ya no están en su carpeta.")
+        texto += " Siguen en el catálogo, con sus etiquetas, por si aparecen en otra."
+    if stats.ocupadas:
+        texto += (f" No se revisó {_lista(stats.ocupadas)} porque otra PC la estaba "
+                  "catalogando." if len(stats.ocupadas) == 1 else
+                  f" No se revisaron {_lista(stats.ocupadas)} porque otra PC las estaba "
+                  "catalogando.")
+    if stats.inexistentes:
+        texto += (f" La carpeta {_lista(stats.inexistentes)} no existe en el NAS."
+                  if len(stats.inexistentes) == 1 else
+                  f" Las carpetas {_lista(stats.inexistentes)} no existen en el NAS.")
+    if stats.incompletas:
+        texto += (f" {_lista(stats.incompletas)} no se pudo leer completa; se revisa de "
+                  "nuevo la próxima vez.")
     return texto
+
+
+def _lista(carpetas) -> str:
+    nombres = [f"«{c}»" for c in carpetas]
+    return nombres[0] if len(nombres) == 1 else ", ".join(nombres[:-1]) + " y " + nombres[-1]
 
 
 class MotorTab(QWidget):
@@ -61,7 +88,9 @@ class MotorTab(QWidget):
         self.settings = QSettings("CDLM", "Convertir3x4")
         self._worker: EngineWorker | None = None
         self._on_done_cb = None
+        self._srv = servicio()
         self._build_ui()
+        self._srv.estado_cambiado.connect(self._estado_catalogo)
         self._refresh_count()
         self._refresh_people()
 
@@ -92,24 +121,23 @@ class MotorTab(QWidget):
         self.btn_avanzado.clicked.connect(self._abrir_avanzado)
         cab.addWidget(self.btn_avanzado)
         layout.addLayout(cab)
+        self.conn_box = CajaConexion()
+        self.conn_box.reintentar.connect(self._reintentar)
+        self.conn_box.set_estado(self._srv.estado if self._srv.estado != "ok" else "conectando",
+                                 self._srv.texto)
+        layout.addWidget(self.conn_box)
         layout.addWidget(self._text(
-            "Elija una carpeta: la aplicación agrega al catálogo todas sus fotos y videos "
-            "para encontrarlos luego en Buscar. Puede repetirse en cualquier momento: solo "
-            "se agrega lo que todavía no estaba."))
+            "La aplicación agrega al catálogo todas las fotos y videos de las carpetas del "
+            "NAS que figuran abajo, para encontrarlos luego en Buscar. Puede repetirse en "
+            "cualquier momento: solo se agrega lo nuevo y se actualiza lo que cambió."))
+        self.lbl_carpetas = QLabel()
+        self.lbl_carpetas.setWordWrap(True)
+        self.lbl_carpetas.setTextFormat(Qt.TextFormat.PlainText)
+        layout.addWidget(self.lbl_carpetas)
+        self._carpetas: tuple[str, ...] = ()
+        self._cargar_carpetas()
 
-        row = QHBoxLayout()
-        row.setSpacing(8)
-        self.txt_folder = QLineEdit()
-        self.txt_folder.setPlaceholderText("Carpeta con fotos y videos…")
-        self.txt_folder.setAccessibleName("Carpeta a catalogar")
-        self.txt_folder.setText(self.settings.value("motor_last_dir", ""))
-        row.addWidget(self.txt_folder, 1)
-        self.btn_browse = QPushButton("Elegir carpeta…")
-        self.btn_browse.clicked.connect(self._browse)
-        row.addWidget(self.btn_browse)
-        layout.addLayout(row)
-
-        self.btn_run = QPushButton("Catalogar")
+        self.btn_run = QPushButton("Catalogar ahora")
         self.btn_run.setObjectName("btn_primary")
         self.btn_run.clicked.connect(self._run_stage0)
         layout.addLayout(self._left(self.btn_run))
@@ -169,7 +197,8 @@ class MotorTab(QWidget):
 
     def _abrir_avanzado(self):
         from ..widgets.catalogo_avanzado import CatalogoAvanzado
-        dlg = CatalogoAvanzado(self)
+        dlg = CatalogoAvanzado(self, carpetas=self._carpetas)
+        dlg.catalogarCarpeta.connect(self.catalogar_una_carpeta)
         dlg.catalogChanged.connect(self._refresh_count)
         dlg.catalogChanged.connect(self.catalogChanged.emit)
         dlg.exec()
@@ -199,27 +228,58 @@ class MotorTab(QWidget):
         return lbl
 
     # ------------------------------------------------------------- estado
-    def _refresh_count(self):
+    def _cargar_carpetas(self):
+        """Lee de la configuración qué carpetas del NAS se catalogan."""
         try:
-            conn = connect(db_path())
-            repo = Repo(conn)
-            n, pend = repo.count_media(), repo.count_pending_tags()
-            conn.close()
-            txt = "1 foto o video en el catálogo" if n == 1 else f"{n} fotos y videos en el catálogo"
+            cfg = config_catalogo()
+        except CatalogoNoConfigurado as e:
+            self._carpetas, self._raiz = (), ""
+            self.lbl_carpetas.setText(e.MENSAJE)
+            return
+        self._carpetas, self._raiz = cfg.carpetas, cfg.raiz
+        if not cfg.carpetas:
+            self.lbl_carpetas.setText(
+                "Todavía no hay carpetas del NAS para catalogar en esta PC. Comuníquese "
+                "con el responsable de la aplicación.")
+            return
+        sep = "\\" if cfg.raiz.startswith("\\") or cfg.raiz[1:2] == ":" else "/"
+        nombres = [c.replace("/", sep) for c in cfg.carpetas]
+        self.lbl_carpetas.setText("Carpetas del NAS que se catalogan: " + ", ".join(nombres) + ".")
+
+    def _estado_catalogo(self, estado: str, texto: str):
+        self.conn_box.set_estado(estado, texto)
+        if estado == "error":
+            self.lbl_count.setText("")
+        self._update_buttons()
+
+    def _reintentar(self):
+        self._cargar_carpetas()
+        self._refresh_count()
+        self._refresh_people()
+
+    def _refresh_count(self):
+        def contar(repo):
+            return repo.count_media(), repo.count_pending_tags(), len(repo.faltantes())
+
+        def mostrar(r):
+            n, pend, faltan = r
+            txt = ("1 foto o video en el catálogo" if n == 1 else
+                   f"{n} fotos y videos en el catálogo")
+            if faltan:
+                txt += " · 1 ya no está en su carpeta" if faltan == 1 else \
+                    f" · {faltan} ya no están en su carpeta"
             if pend:
                 txt += f" · {pend} con sugerencias de la IA sin revisar"
             self.lbl_count.setText(txt)
-        except Exception as e:  # noqa: BLE001
-            self.lbl_count.setText("No se pudo abrir el catálogo.")
+
+        self._srv.pedir(contar, ok=mostrar)
 
     def _refresh_people(self):
+        self._srv.pedir(lambda repo: repo.list_persons(), ok=self._mostrar_personas,
+                        error=lambda _e: self._mostrar_personas([]))
+
+    def _mostrar_personas(self, people):
         self.lst_people.clear()
-        try:
-            conn = connect(db_path())
-            people = Repo(conn).list_persons()
-            conn.close()
-        except Exception:  # noqa: BLE001
-            people = []
         for pid, name, n in people:
             it = QListWidgetItem(f"{name} — {n} foto{'s' if n != 1 else ''}")
             it.setData(_PERSON_ID_ROLE, pid)
@@ -238,12 +298,13 @@ class MotorTab(QWidget):
 
     def _update_buttons(self):
         busy = self._worker is not None and self._worker.isRunning()
-        for w in (self.btn_run, self.btn_browse, self.txt_folder, self.btn_ai,
-                  self.btn_add_person):
-            w.setEnabled(not busy)
+        sin_catalogo = self._srv.estado == "error"
+        self.btn_run.setEnabled(not busy and not sin_catalogo and bool(self._carpetas))
+        for w in (self.btn_ai, self.btn_add_person):
+            w.setEnabled(not busy and not sin_catalogo)
         has_sel = self._selected_person() is not None
-        self.btn_add_photos.setEnabled(not busy and has_sel)
-        self.btn_del_person.setEnabled(not busy and has_sel)
+        self.btn_add_photos.setEnabled(not busy and not sin_catalogo and has_sel)
+        self.btn_del_person.setEnabled(not busy and not sin_catalogo and has_sel)
         self.progress.setVisible(busy)
 
     # ------------------------------------------------------------- jobs
@@ -254,7 +315,7 @@ class MotorTab(QWidget):
         self._worker.progress.connect(self._on_progress)
         self._on_done_cb = on_done
         self._worker.finished_ok.connect(self._finish)
-        self._worker.failed.connect(self._on_failed)
+        self._worker.fallo.connect(self._on_failed)
         self._worker.start()
         self._update_buttons()
 
@@ -276,9 +337,11 @@ class MotorTab(QWidget):
         self._worker.wait()
         self._worker = None
         self._update_buttons()
-        # El detalle técnico (err) no le sirve al operador.
-        self._set_status("No se pudo completar la operación. Intente nuevamente; si el "
-                         "problema persiste, comuníquese con el responsable de la aplicación.")
+        # El detalle técnico no le sirve al operador.
+        if isinstance(err, CatalogoOcupado):
+            self._set_status(err.MENSAJE)
+        else:
+            self._set_status(texto_para(err))
 
     @staticmethod
     def _ensure_models(mdir, progress_cb):
@@ -289,35 +352,36 @@ class MotorTab(QWidget):
                         f"{done // mb} de {total // mb} MB…")
         ai_models.ensure(mdir, cb)
 
-    # ------------------------------------------------------------- Etapa 0
-    def _browse(self):
-        start = self.txt_folder.text() or self.settings.value("motor_last_dir", "")
-        path = QFileDialog.getExistingDirectory(self, "Elija la carpeta con fotos y videos", start)
-        if path:
-            self.txt_folder.setText(path)
-
+    # ------------------------------------------------------------- catalogar
     def _run_stage0(self):
-        root = self.txt_folder.text().strip()
-        if not root:
-            self._set_status("Primero elija una carpeta.")
+        self._catalogar(list(self._carpetas))
+
+    def catalogar_una_carpeta(self, ruta: str):
+        """A mano, una carpeta (p. ej. un evento recién subido). Tiene que estar
+        dentro de alguna de la lista; toma el bloqueo de esa carpeta."""
+        rel = rutas.a_relativa(ruta, self._raiz) if self._raiz else None
+        madre = next((c for c in self._carpetas if rel is not None and rutas.dentro_de(rel, c)),
+                     None)
+        if madre is None:
+            self._set_status("Esa carpeta no está entre las que se catalogan. Elija una "
+                             "carpeta dentro de: " + _lista(self._carpetas) + ".")
             return
-        self.settings.setValue("motor_last_dir", root)
-        tdir = thumb_dir()
+        self._catalogar([rel], bloqueo=madre)
+
+    def _catalogar(self, carpetas: list[str], bloqueo: str | None = None):
+        if not carpetas:
+            return
 
         def job(progress_cb):
-            # Conexión propia dentro del hilo worker (sqlite no cruza hilos).
-            conn = connect(db_path())
-            try:
-                return run_stage0(Repo(conn), root, tdir, progress_cb=progress_cb)
-            finally:
-                conn.close()
+            with abrir_repo() as repo:
+                return catalogar(repo, carpetas, progress_cb=progress_cb, bloqueo=bloqueo)
 
         def done(stats):
             self._set_status(_resumen_catalogo(stats))
             self._refresh_count()
             self.catalogChanged.emit()
 
-        self._start(job, done, "Revisando la carpeta…")
+        self._start(job, done, "Revisando las carpetas del NAS…")
 
     # ------------------------------------------------------------- IA
     def _run_ai(self):
@@ -327,11 +391,8 @@ class MotorTab(QWidget):
             self._ensure_models(mdir, progress_cb)
             from ...engine.ai_pipeline import run_ai
             threads = max(1, min(6, (os.cpu_count() or 2) - 1))
-            conn = connect(db_path())
-            try:
-                return run_ai(Repo(conn), mdir, progress_cb=progress_cb, threads=threads)
-            finally:
-                conn.close()
+            with abrir_repo() as repo:
+                return run_ai(repo, mdir, progress_cb=progress_cb, threads=threads)
 
         def done(st):
             sugeridos = st.scene_tags + st.people_tags
@@ -390,14 +451,10 @@ class MotorTab(QWidget):
                 progress_cb(i, len(paths), p)
             if not embs:
                 return 0, no_face
-            conn = connect(db_path())
-            try:
-                repo = Repo(conn)
+            with abrir_repo() as repo:
                 pid = person_id or repo.add_person(name)
                 for p, e in embs:
                     repo.add_person_reference(pid, p, e)
-            finally:
-                conn.close()
             return len(embs), no_face
 
         def done(result):
@@ -423,9 +480,6 @@ class MotorTab(QWidget):
                          "referencia. Las etiquetas que ya tiene en fotos se mantienen.",
                          f"Quitar a {name}", peligro=True):
             return
-        conn = connect(db_path())
-        try:
-            Repo(conn).delete_person(pid)
-        finally:
-            conn.close()
-        self._refresh_people()
+        self._srv.pedir(lambda repo: repo.delete_person(pid),
+                        ok=lambda _: self._refresh_people(),
+                        error=lambda e: self._set_status(texto_para(e)))

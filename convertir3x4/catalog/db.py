@@ -1,189 +1,349 @@
-"""Conexión, esquema y migraciones de la base de datos SQLite del catálogo.
+"""Conexión y esquema del catálogo en PostgreSQL (el del NAS). Sin Qt.
 
-La búsqueda usa FTS5 (módulo estándar de SQLite). `media_fts` es una tabla FTS5
-autónoma (no external-content) cuyo rowid = media.id; el repo la mantiene
-sincronizada al insertar/actualizar medios. Así evitamos triggers frágiles y
-queda lista para sumar columnas de IA (description, ocr_text, synonyms) en la
-Fase 5 sin re-armar el índice.
+Diseño: docs/catalogo-compartido.md. Lo esencial:
+
+- Cada hilo abre su propia conexión con `conectar()` y la cierra al terminar.
+- `conectar()` nunca espera más de unos segundos: si el NAS no responde, lanza
+  `CatalogoNoDisponible` y la app sigue andando sin catálogo.
+- El esquema se crea y se actualiza solo, con migraciones numeradas
+  (`MIGRACIONES`). Dos PCs que arrancan a la vez no chocan: la migración toma un
+  bloqueo de PostgreSQL. Una app más vieja que el catálogo no lo toca
+  (`CatalogoIncompatible`).
+- Las rutas se guardan relativas a la raíz del recurso compartido
+  (`\\\\truenas\\multimedia`), con `/` como separador; cada PC arma la ruta
+  completa con su `ConfigCatalogo.raiz`.
+
+Las migraciones viven acá como texto, no como archivos .sql, para que el .exe
+de PyInstaller no necesite datos extra.
 """
 
-import sqlite3
+import configparser
+import os
+import re
+from dataclasses import dataclass
 
-SCHEMA_VERSION = 2
+import psycopg
+from psycopg.rows import dict_row
 
 # Extensiones de medios reconocidas por el inventario.
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".gif", ".tiff", ".tif"}
 VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm"}
 
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS schema_version (
-    version INTEGER NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS media (
-    id            INTEGER PRIMARY KEY,
-    path          TEXT UNIQUE NOT NULL,
-    filename      TEXT NOT NULL,
-    folder_origin TEXT,
-    kind          TEXT NOT NULL,            -- image | video
-    width         INTEGER,
-    height        INTEGER,
-    aspect        REAL,
-    duration      REAL,                     -- video
-    codec         TEXT,                     -- video
-    size_bytes    INTEGER,
-    file_mtime    INTEGER,                  -- fecha de archivo (NO decide borrado)
-    sha256        TEXT,                     -- dedup exacto
-    phash         TEXT,                     -- dedup casi-duplicado
-    status        TEXT NOT NULL DEFAULT 'library',  -- inbox|library|quarantine|canonical|variant
-    canonical_id  INTEGER REFERENCES media(id) ON DELETE SET NULL,
-    quality_flag  TEXT DEFAULT 'ok',        -- ok|low_res|corrupt
-    thumb_path    TEXT,
-    created_at    INTEGER,
-    updated_at    INTEGER
-);
-
-CREATE INDEX IF NOT EXISTS idx_media_sha256 ON media(sha256);
-CREATE INDEX IF NOT EXISTS idx_media_phash  ON media(phash);
-CREATE INDEX IF NOT EXISTS idx_media_status ON media(status);
-
-CREATE TABLE IF NOT EXISTS ai_result (
-    id                INTEGER PRIMARY KEY,
-    media_id          INTEGER NOT NULL REFERENCES media(id) ON DELETE CASCADE,
-    model             TEXT,
-    description        TEXT,
-    synonyms          TEXT,                 -- términos alternativos buscables
-    media_type        TEXT,                 -- render|fondo|logo|slide|foto-evento|...
-    ocr_text          TEXT,
-    mood              TEXT,
-    color             TEXT,
-    energy            TEXT,
-    people            TEXT,
-    scene             TEXT,
-    flags             TEXT,                 -- json
-    is_ephemeral_score REAL,
-    raw_json          TEXT,
-    created_at        INTEGER,
-    people_sig        TEXT,                 -- lista de personas con la que se analizó (v2)
-    UNIQUE(media_id)
-);
-
-CREATE TABLE IF NOT EXISTS tag (
-    id         INTEGER PRIMARY KEY,
-    name       TEXT UNIQUE NOT NULL,        -- normalizado (minúsculas/trim)
-    kind       TEXT DEFAULT 'descriptivo',  -- propio|descriptivo|ia-sugerido
-    created_at INTEGER
-);
-
-CREATE TABLE IF NOT EXISTS media_tag (
-    media_id  INTEGER NOT NULL REFERENCES media(id) ON DELETE CASCADE,
-    tag_id    INTEGER NOT NULL REFERENCES tag(id) ON DELETE CASCADE,
-    source    TEXT DEFAULT 'humano',        -- humano|ia
-    confirmed INTEGER DEFAULT 1,            -- bool
-    PRIMARY KEY (media_id, tag_id)
-);
-
--- Tags que una persona sacó: la IA no los vuelve a proponer para ese medio.
-CREATE TABLE IF NOT EXISTS tag_rejection (
-    media_id INTEGER NOT NULL REFERENCES media(id) ON DELETE CASCADE,
-    tag_id   INTEGER NOT NULL REFERENCES tag(id) ON DELETE CASCADE,
-    PRIMARY KEY (media_id, tag_id)
-);
-
--- Personas reconocibles: SOLO las cargadas a mano (pastores, gente importante).
--- Se guardan las firmas de sus fotos de referencia; de nadie más.
-CREATE TABLE IF NOT EXISTS person (
-    id         INTEGER PRIMARY KEY,
-    name       TEXT UNIQUE NOT NULL,        -- como se muestra ("Juan Carlos Bazán")
-    created_at INTEGER
-);
-
-CREATE TABLE IF NOT EXISTS person_reference (
-    id          INTEGER PRIMARY KEY,
-    person_id   INTEGER NOT NULL REFERENCES person(id) ON DELETE CASCADE,
-    source_path TEXT,
-    embedding   BLOB NOT NULL,               -- float32 normalizado (SFace)
-    created_at  INTEGER
-);
-
-CREATE TABLE IF NOT EXISTS reference_set (
-    id         INTEGER PRIMARY KEY,
-    name       TEXT UNIQUE NOT NULL,
-    created_at INTEGER
-);
-
-CREATE TABLE IF NOT EXISTS reference_set_member (
-    set_id   INTEGER NOT NULL REFERENCES reference_set(id) ON DELETE CASCADE,
-    media_id INTEGER NOT NULL REFERENCES media(id) ON DELETE CASCADE,
-    PRIMARY KEY (set_id, media_id)
-);
-
-CREATE TABLE IF NOT EXISTS series (
-    id         INTEGER PRIMARY KEY,
-    name       TEXT UNIQUE NOT NULL,
-    created_at INTEGER
-);
-
-CREATE TABLE IF NOT EXISTS series_member (
-    series_id INTEGER NOT NULL REFERENCES series(id) ON DELETE CASCADE,
-    media_id  INTEGER NOT NULL REFERENCES media(id) ON DELETE CASCADE,
-    seq       INTEGER,                      -- orden cronológico
-    PRIMARY KEY (series_id, media_id)
-);
-
-CREATE VIRTUAL TABLE IF NOT EXISTS media_fts USING fts5 (
-    filename,
-    folder_origin,
-    description,
-    ocr_text,
-    synonyms,
-    tags,
-    tokenize = 'unicode61 remove_diacritics 2'
-);
-
-CREATE TABLE IF NOT EXISTS embedding (
-    media_id INTEGER NOT NULL REFERENCES media(id) ON DELETE CASCADE,
-    vector   BLOB,
-    model    TEXT,
-    PRIMARY KEY (media_id)
-);
-"""
+TIEMPO_CONEXION = 3          # segundos; libpq no acepta menos de 2
+_LLAVE_ESQUEMA = 0x43444C4D  # "CDLM": bloqueo para migrar de a una PC por vez
+LLAVE_CATALOGAR = 0x43415441  # "CATA": junto con hashtext(carpeta), una pasada por carpeta
 
 
-def connect(db_path: str) -> sqlite3.Connection:
-    """Abre (o crea) la base, aplica el esquema y devuelve la conexión.
+class CatalogoNoDisponible(Exception):
+    """El servidor del catálogo no responde (NAS apagado, sin red, etc.)."""
 
-    `db_path` puede ser ':memory:' para tests.
+    MENSAJE = "El catálogo no está disponible: el NAS no responde."
+
+    def __init__(self, detalle: str = ""):
+        super().__init__(self.MENSAJE)
+        self.detalle = detalle      # para el registro, no para el operador
+
+
+class CatalogoNoConfigurado(Exception):
+    """Esta PC no tiene `catalogo.ini` (ni las variables de desarrollo)."""
+
+    MENSAJE = ("Esta PC no tiene configurado el catálogo. Comuníquese con el "
+               "responsable de la aplicación.")
+
+    def __init__(self, detalle: str = ""):
+        super().__init__(self.MENSAJE)
+        self.detalle = detalle
+
+
+class ConfiguracionInvalida(ValueError):
+    """`catalogo.ini` tiene un dato que no sirve (el detalle va al registro)."""
+
+
+class CatalogoIncompatible(Exception):
+    """El catálogo fue actualizado por una versión más nueva de la app."""
+
+    MENSAJE = ("Esta versión de la aplicación es anterior a la del catálogo. "
+               "Instale la versión nueva para usarlo.")
+
+    def __init__(self, version_base: int, version_app: int):
+        super().__init__(self.MENSAJE)
+        self.version_base = version_base
+        self.version_app = version_app
+
+
+@dataclass(frozen=True)
+class ConfigCatalogo:
+    servidor: str
+    clave: str = ""
+    usuario: str = "catalogo"
+    base: str = "catalogo"
+    puerto: int = 5432
+    raiz: str = r"\\truenas\multimedia"
+    # Carpetas que se catalogan, relativas a `raiz` y con "/" (p. ej. "Publicar").
+    carpetas: tuple[str, ...] = ()
+
+    def __post_init__(self):
+        object.__setattr__(self, "carpetas", normalizar_carpetas(self.carpetas))
+
+    @classmethod
+    def desde_entorno(cls) -> "ConfigCatalogo | None":
+        """Para desarrollo: CDLM_CATALOGO_SERVIDOR, _PUERTO, _BASE, _USUARIO,
+        _CLAVE, _RAIZ y _CARPETAS (separadas por ";"). None si no hay servidor."""
+        e = os.environ.get
+        servidor = e("CDLM_CATALOGO_SERVIDOR")
+        if not servidor:
+            return None
+        return cls(
+            servidor=servidor,
+            clave=e("CDLM_CATALOGO_CLAVE", ""),
+            usuario=e("CDLM_CATALOGO_USUARIO", "catalogo"),
+            base=e("CDLM_CATALOGO_BASE", "catalogo"),
+            puerto=int(e("CDLM_CATALOGO_PUERTO", "5432")),
+            raiz=e("CDLM_CATALOGO_RAIZ", r"\\truenas\multimedia"),
+            carpetas=tuple(e("CDLM_CATALOGO_CARPETAS", "").split(";")),
+        )
+
+    @classmethod
+    def desde_archivo(cls, ruta: str) -> "ConfigCatalogo | None":
+        """Lee `catalogo.ini` (sección [catalogo]). None si el archivo no existe.
+
+        Lanza `ConfiguracionInvalida` si falta el servidor o hay un dato malo.
+        """
+        if not os.path.isfile(ruta):
+            return None
+        ini = configparser.ConfigParser(interpolation=None)
+        try:
+            ini.read(ruta, encoding="utf-8")
+        except configparser.Error as e:
+            raise ConfiguracionInvalida(f"{ruta}: {e}") from e
+        if not ini.has_section("catalogo"):
+            raise ConfiguracionInvalida(f"{ruta}: falta la sección [catalogo]")
+        sec = ini["catalogo"]
+        if not sec.get("servidor", "").strip():
+            raise ConfiguracionInvalida(f"{ruta}: falta 'servidor'")
+        try:
+            puerto = int(sec.get("puerto", "5432"))
+        except ValueError as e:
+            raise ConfiguracionInvalida(f"{ruta}: 'puerto' no es un número") from e
+        return cls(
+            servidor=sec["servidor"].strip(),
+            clave=sec.get("clave", ""),
+            usuario=sec.get("usuario", "catalogo").strip(),
+            base=sec.get("base", "catalogo").strip(),
+            puerto=puerto,
+            raiz=sec.get("raiz", r"\\truenas\multimedia").strip(),
+            carpetas=tuple(sec.get("carpetas", "").splitlines()),
+        )
+
+
+def normalizar_carpetas(carpetas) -> tuple[str, ...]:
+    """Limpia la lista de carpetas a catalogar: relativas a la raíz, con "/",
+    sin repetidas. Lanza `ConfiguracionInvalida` si una sale de la raíz o si
+    una está dentro de otra (se recorrería dos veces)."""
+    out: list[str] = []
+    for c in carpetas:
+        c = c.strip().replace("\\", "/").strip("/")
+        if not c:
+            continue
+        partes = c.split("/")
+        if re.match(r"^[A-Za-z]:", c) or any(p in ("", ".", "..") for p in partes):
+            raise ConfiguracionInvalida(f"carpeta fuera de la raíz: {c!r}")
+        if c not in out:
+            out.append(c)
+    for a in out:
+        for b in out:
+            if a != b and b.lower().startswith(a.lower() + "/"):
+                raise ConfiguracionInvalida(f"{b!r} está dentro de {a!r}")
+    return tuple(out)
+
+
+def conectar(cfg: ConfigCatalogo, timeout: int = TIEMPO_CONEXION,
+             preparar: bool = True) -> psycopg.Connection:
+    """Abre una conexión (filas como dict) y deja el esquema al día.
+
+    Lanza `CatalogoNoDisponible` si el servidor no responde en `timeout`
+    segundos, y `CatalogoIncompatible` si el catálogo es de una app más nueva.
     """
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA journal_mode = WAL")
-    _init_schema(conn)
+    try:
+        conn = psycopg.connect(
+            host=cfg.servidor, port=cfg.puerto, dbname=cfg.base,
+            user=cfg.usuario, password=cfg.clave,
+            connect_timeout=max(2, int(timeout)),
+            application_name="Convertir3x4",
+            row_factory=dict_row,
+            # Cada sentencia se guarda sola; lo que tiene que ir junto usa
+            # `with conn.transaction()`. Sin esto, una lectura deja abierta una
+            # transacción y las escrituras siguientes nunca se confirmarían.
+            autocommit=True,
+            # Si el NAS se cae con la conexión abierta, que se note en
+            # segundos y no quede una consulta colgada para siempre.
+            keepalives=1, keepalives_idle=10, keepalives_interval=5,
+            keepalives_count=3,
+            options="-c statement_timeout=60000 -c lock_timeout=10000",
+        )
+    except psycopg.OperationalError as e:
+        raise CatalogoNoDisponible(str(e).strip()) from e
+    if preparar:
+        try:
+            preparar_esquema(conn)
+        except BaseException:
+            conn.close()
+            raise
     return conn
 
 
-def _init_schema(conn: sqlite3.Connection):
-    conn.executescript(_SCHEMA)
-    row = conn.execute("SELECT version FROM schema_version").fetchone()
-    if row is None:
-        conn.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
-        conn.commit()
-    else:
-        _migrate(conn, row["version"])
+def version_esquema(conn: psycopg.Connection) -> int:
+    """Versión del esquema en la base (0 si está vacía)."""
+    existe = conn.execute("SELECT to_regclass('esquema') IS NOT NULL AS hay").fetchone()["hay"]
+    if not existe:
+        return 0
+    return conn.execute("SELECT COALESCE(MAX(version), 0) AS v FROM esquema").fetchone()["v"]
 
 
-def _migrate(conn: sqlite3.Connection, from_version: int):
-    """Aplica migraciones incrementales.
+def preparar_esquema(conn: psycopg.Connection):
+    """Aplica las migraciones que falten, de a una PC por vez."""
+    with conn.transaction():
+        conn.execute("SELECT pg_advisory_xact_lock(%s)", (_LLAVE_ESQUEMA,))
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS esquema ("
+            " version integer PRIMARY KEY,"
+            " aplicada timestamptz NOT NULL DEFAULT now())")
+        actual = version_esquema(conn)
+        if actual > VERSION_ESQUEMA:
+            raise CatalogoIncompatible(actual, VERSION_ESQUEMA)
+        for version, sql in MIGRACIONES:
+            if version > actual:
+                conn.execute(sql)
+                conn.execute("INSERT INTO esquema (version) VALUES (%s)", (version,))
 
-    Las tablas nuevas las crea `_SCHEMA` (CREATE IF NOT EXISTS); acá van solo
-    los cambios a tablas existentes.
-    """
-    if from_version == SCHEMA_VERSION:
-        return
-    if from_version < 2:
-        cols = {r["name"] for r in conn.execute("PRAGMA table_info(ai_result)")}
-        if "people_sig" not in cols:
-            conn.execute("ALTER TABLE ai_result ADD COLUMN people_sig TEXT")
-    conn.execute("UPDATE schema_version SET version = ?", (SCHEMA_VERSION,))
-    conn.commit()
+
+# ----------------------------------------------------------------- migraciones
+_V1 = r"""
+CREATE EXTENSION IF NOT EXISTS unaccent;
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+-- unaccent() no es IMMUTABLE y los índices lo exigen. Esta versión fija el
+-- diccionario, así que sí lo es.
+CREATE FUNCTION sin_acentos(text) RETURNS text
+    LANGUAGE sql IMMUTABLE PARALLEL SAFE STRICT
+    RETURN public.unaccent('public.unaccent'::regdictionary, $1);
+
+-- Texto donde se buscan fragmentos (ILIKE '%4782%'): nombre y carpeta, en
+-- minúsculas y sin acentos. Índice pg_trgm sobre esta misma expresión.
+CREATE FUNCTION texto_nombre(filename text, carpeta text) RETURNS text
+    LANGUAGE sql IMMUTABLE PARALLEL SAFE
+    RETURN sin_acentos(lower(COALESCE(filename, '') || ' ' || COALESCE(carpeta, '')));
+
+-- Búsqueda por palabras: configuración `simple` (no recorta palabras a su
+-- raíz, que en nombres de archivo confunde) más unaccent.
+CREATE TEXT SEARCH CONFIGURATION catalogo (COPY = simple);
+ALTER TEXT SEARCH CONFIGURATION catalogo
+    ALTER MAPPING FOR hword, hword_part, word WITH unaccent, simple;
+
+-- Separa "FB_IMG_2024-bautismo.jpg" en palabras antes de indexar: el parser
+-- de PostgreSQL dejaría "bautismo.jpg" como un solo término.
+CREATE FUNCTION palabras(text) RETURNS text
+    LANGUAGE sql IMMUTABLE PARALLEL SAFE
+    RETURN regexp_replace(COALESCE($1, ''), '[^[:alnum:]]+', ' ', 'g');
+
+-- Un archivo del NAS.
+CREATE TABLE media (
+    id            bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    rel_path      text NOT NULL UNIQUE,     -- relativa a la raíz, separador '/'
+    filename      text NOT NULL,
+    folder_origin text,                     -- carpeta del evento, relativa
+    kind          text NOT NULL CHECK (kind IN ('image', 'video')),
+    width         integer,
+    height        integer,
+    aspect        real,
+    duration      real,                     -- video, en segundos
+    codec         text,                     -- video
+    size_bytes    bigint,
+    file_mtime    bigint,                   -- fecha del archivo (epoch)
+    sha256        text,                     -- solo si otro archivo pesa lo mismo
+    phash         text,                     -- dHash, imágenes
+    status        text NOT NULL DEFAULT 'library',
+    quality_flag  text NOT NULL DEFAULT 'ok' CHECK (quality_flag IN ('ok', 'low_res', 'corrupt')),
+    -- NULL: el archivo está. Si no, desde cuándo no aparece en su ruta. Un
+    -- medio que falta no se borra: si reaparece en otra ruta, se le cambia la
+    -- ruta y conserva sus tags.
+    missing_since timestamptz,
+    search_doc    tsvector NOT NULL DEFAULT ''::tsvector,
+    created_at    timestamptz NOT NULL DEFAULT now(),
+    updated_at    timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX media_sha256 ON media (sha256) WHERE sha256 IS NOT NULL;
+CREATE INDEX media_size   ON media (size_bytes);
+CREATE INDEX media_folder ON media (folder_origin);
+CREATE INDEX media_missing ON media (filename, size_bytes, file_mtime)
+    WHERE missing_since IS NOT NULL;
+CREATE INDEX media_search ON media USING gin (search_doc);
+CREATE INDEX media_trgm   ON media USING gin (texto_nombre(filename, folder_origin) gin_trgm_ops);
+
+-- Miniatura JPEG (unos 20 KB), en la base para que todas las PCs la vean.
+-- Cada PC la guarda además en su caché local; `sello` (md5 del JPEG) dice si
+-- la copia local sigue siendo la misma sin traer los bytes.
+CREATE TABLE thumbnail (
+    media_id bigint PRIMARY KEY REFERENCES media(id) ON DELETE CASCADE,
+    jpeg     bytea NOT NULL,
+    sello    text NOT NULL
+);
+
+CREATE TABLE ai_result (
+    media_id    bigint PRIMARY KEY REFERENCES media(id) ON DELETE CASCADE,
+    model       text,
+    people_sig  text,                       -- lista de personas con que se analizó
+    media_type  text,                       -- tag de escena elegido
+    people      text,
+    description text,
+    ocr_text    text,
+    synonyms    text,
+    raw_json    text,
+    created_at  timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE tag (
+    id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    name       text NOT NULL UNIQUE,        -- normalizado (minúsculas, espacios simples)
+    kind       text NOT NULL DEFAULT 'descriptivo',
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE media_tag (
+    media_id  bigint NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+    tag_id    bigint NOT NULL REFERENCES tag(id) ON DELETE CASCADE,
+    source    text NOT NULL DEFAULT 'humano' CHECK (source IN ('humano', 'ia')),
+    confirmed boolean NOT NULL DEFAULT true,
+    PRIMARY KEY (media_id, tag_id)
+);
+CREATE INDEX media_tag_tag ON media_tag (tag_id);
+CREATE INDEX media_tag_pendiente ON media_tag (media_id) WHERE NOT confirmed;
+
+-- Tags que una persona sacó: la IA no los vuelve a proponer para ese medio.
+CREATE TABLE tag_rejection (
+    media_id bigint NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+    tag_id   bigint NOT NULL REFERENCES tag(id) ON DELETE CASCADE,
+    PRIMARY KEY (media_id, tag_id)
+);
+
+-- Personas reconocibles: SOLO las cargadas a mano (pastores, invitados).
+-- Se guardan las firmas de sus fotos de referencia; de nadie más.
+CREATE TABLE person (
+    id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    name       text NOT NULL UNIQUE,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE person_reference (
+    id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    person_id   bigint NOT NULL REFERENCES person(id) ON DELETE CASCADE,
+    source_path text,
+    embedding   bytea NOT NULL,             -- float32 normalizado (SFace)
+    created_at  timestamptz NOT NULL DEFAULT now()
+);
+"""
+
+MIGRACIONES: list[tuple[int, str]] = [
+    (1, _V1),
+]
+VERSION_ESQUEMA = MIGRACIONES[-1][0]

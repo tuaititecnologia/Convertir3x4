@@ -379,7 +379,7 @@ class TestDobleClic:
         tab._open_item(tab.list_widget.item(0))
         assert abiertos == []
 
-    def test_doble_clic_en_buscar(self, app, monkeypatch, tmp_path):
+    def test_doble_clic_en_buscar(self, app, monkeypatch, tmp_path, sin_catalogo):
         from PyQt6.QtCore import Qt
         from PyQt6.QtTest import QTest
         from convertir3x4.catalog.models import Media
@@ -388,7 +388,7 @@ class TestDobleClic:
         monkeypatch.setattr(tab_buscar, "open_file", lambda p: abiertos.append(p) or True)
         f = tmp_path / "culto.mp4"
         f.write_bytes(b"x")
-        t = tab_buscar.BuscarTab()
+        t = tab_buscar.BuscarTab(srv=sin_catalogo)
         t.resize(900, 600)
         t.show()
         t._populate([Media(path=str(f), filename="culto.mp4", kind="video", id=1)])
@@ -755,7 +755,8 @@ class TestDeBuscarAConvertir:
     def _buscar(self, app, media, tmp_path):
         from convertir3x4.catalog.models import Media
         from convertir3x4.ui.tabs import tab_buscar
-        t = tab_buscar.BuscarTab()
+        from conftest import _SinCatalogo
+        t = tab_buscar.BuscarTab(srv=_SinCatalogo())
         t.resize(900, 600)
         t.show()
         perdido = str(tmp_path / "no_esta.jpg")

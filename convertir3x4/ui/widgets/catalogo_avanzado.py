@@ -1,34 +1,37 @@
 """Opciones avanzadas del catálogo: escondidas detrás del ⚙ de Catalogar.
 
-Por ahora, limpiar el catálogo: quitar las fotos y videos cuyo archivo ya no
-existe (se movió o se borró). En dos pasos, buscar y después quitar con
-confirmación, porque se pierden sus tags. Lo que está en un disco o en el NAS
-desconectado NUNCA se toca: con el NAS apagado se vaciaría todo el catálogo.
+- Catalogar una sola carpeta (p. ej. un evento recién subido), sin esperar a
+  recorrer todas. Tiene que estar dentro de alguna carpeta de la lista.
+- Limpiar el catálogo: quitar las fotos y videos que la catalogación marcó
+  como faltantes (su archivo ya no está en su carpeta del NAS). En dos pasos,
+  ver y después quitar con confirmación, porque se pierden sus etiquetas.
+  Un medio solo se marca como faltante si su carpeta se pudo leer entera, así
+  que un NAS caído nunca vacía el catálogo.
 """
 
-import os
-
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
-    QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QMessageBox, QProgressBar,
-    QPushButton, QVBoxLayout,
+    QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout, QLabel, QMessageBox,
+    QProgressBar, QPushButton, QVBoxLayout,
 )
 
-from ...appdata import db_path
-from ...catalog.db import connect
-from ...catalog.repo import Repo
-from ...catalog.ubicacion import friendly_root, revisar_faltantes
+from ...appdata import abrir_repo, catalog_thumb_dir, config_catalogo
+from ...catalog.cache_miniaturas import CacheMiniaturas
+from ...catalog.db import CatalogoNoConfigurado
 from ...workers import EngineWorker
+from ..servicio_catalogo import texto_para
 
 
 class CatalogoAvanzado(QDialog):
     catalogChanged = pyqtSignal()
+    catalogarCarpeta = pyqtSignal(str)       # ruta completa elegida
 
-    def __init__(self, parent=None, ruta_db: str | None = None):
+    def __init__(self, parent=None, carpetas=(), abrir=None):
         super().__init__(parent)
         self.setWindowTitle("Opciones avanzadas del catálogo")
         self.setMinimumWidth(500)
-        self._db = ruta_db or db_path()
+        self._abrir = abrir or abrir_repo
+        self._carpetas = tuple(carpetas)
         self._faltan = []
         self._worker: EngineWorker | None = None
 
@@ -36,20 +39,41 @@ class CatalogoAvanzado(QDialog):
         lay.setContentsMargins(22, 20, 22, 18)
         lay.setSpacing(8)
 
+        # --- una sola carpeta
+        t = QLabel("Catalogar una sola carpeta")
+        t.setObjectName("section_title")
+        lay.addWidget(t)
+        ayuda = QLabel(
+            "Para agregar enseguida una carpeta recién copiada al NAS, sin esperar a que se "
+            "revisen todas. Debe estar dentro de alguna de las carpetas que se catalogan.")
+        ayuda.setObjectName("muted")
+        ayuda.setWordWrap(True)
+        lay.addWidget(ayuda)
+        fila = QHBoxLayout()
+        self.btn_carpeta = QPushButton("Elegir carpeta…")
+        self.btn_carpeta.clicked.connect(self._elegir_carpeta)
+        self.btn_carpeta.setEnabled(bool(self._carpetas))
+        fila.addWidget(self.btn_carpeta)
+        fila.addStretch()
+        lay.addLayout(fila)
+        lay.addSpacing(14)
+
+        # --- limpiar
         t = QLabel("Limpiar el catálogo")
         t.setObjectName("section_title")
         lay.addWidget(t)
         ayuda = QLabel(
-            "Busca fotos y videos que siguen en el catálogo pero cuyo archivo ya no existe "
-            "(porque se movió o se borró) y los quita. Lo que está en un disco o en el NAS "
-            "desconectado no se modifica: vuelve a estar disponible al conectarse.")
+            "Muestra las fotos y videos que siguen en el catálogo pero cuyo archivo ya no "
+            "está en su carpeta del NAS (porque se movió o se borró), y permite quitarlos. "
+            "Si un archivo solo cambió de carpeta, al catalogar se reconoce solo y conserva "
+            "sus etiquetas: conviene catalogar antes de limpiar.")
         ayuda.setObjectName("muted")
         ayuda.setWordWrap(True)
         lay.addWidget(ayuda)
         lay.addSpacing(6)
 
         fila = QHBoxLayout()
-        self.btn_buscar = QPushButton("Buscar lo que ya no existe")
+        self.btn_buscar = QPushButton("Ver lo que ya no está")
         self.btn_buscar.clicked.connect(self.buscar)
         fila.addWidget(self.btn_buscar)
         fila.addStretch()
@@ -78,29 +102,33 @@ class CatalogoAvanzado(QDialog):
         cerrar.clicked.connect(self.reject)
         lay.addWidget(botones)
 
+    # ------------------------------------------------------------- una carpeta
+    def _elegir_carpeta(self):
+        try:
+            inicio = config_catalogo().raiz
+        except CatalogoNoConfigurado:
+            inicio = ""
+        ruta = QFileDialog.getExistingDirectory(self, "Elija la carpeta del NAS", inicio)
+        if ruta:
+            self.catalogarCarpeta.emit(ruta)
+            self.accept()
+
     # ------------------------------------------------------------- buscar
     def buscar(self):
-        ruta = self._db
+        abrir = self._abrir
 
-        def fn(progress_cb):
-            conn = connect(ruta)
-            try:
-                return revisar_faltantes(Repo(conn).all_media(), progress_cb)
-            finally:
-                conn.close()
-        self._correr(fn, self._mostrar_revision)
+        def fn(_cb):
+            with abrir() as repo:
+                return repo.faltantes()
+        self._correr(fn, self._mostrar_faltantes)
 
-    def _mostrar_revision(self, rev):
-        self._faltan = rev.faltan
-        n = len(rev.faltan)
-        partes = ["No hay nada para limpiar: todos los archivos están en su lugar." if not n else
-                  "Hay 1 foto o video cuyo archivo ya no existe." if n == 1 else
-                  f"Hay {n} fotos y videos cuyo archivo ya no existe."]
-        if rev.sin_revisar:
-            donde = " y ".join(friendly_root(r) for r in rev.raices_desconectadas)
-            partes.append(f"No se revisaron {rev.sin_revisar} porque {donde} no está conectado; "
-                          "esos elementos no se modifican.")
-        self._resultado(" ".join(partes))
+    def _mostrar_faltantes(self, faltan):
+        self._faltan = faltan
+        n = len(faltan)
+        self._resultado(
+            "No hay nada para limpiar: todos los archivos están en su lugar." if not n else
+            "Hay 1 foto o video cuyo archivo ya no está en su carpeta." if n == 1 else
+            f"Hay {n} fotos y videos cuyo archivo ya no está en su carpeta.")
         self.btn_quitar.setText("Quitar 1 del catálogo…" if n == 1 else f"Quitar {n} del catálogo…")
         self.btn_quitar.setVisible(n > 0)
 
@@ -116,8 +144,9 @@ class CatalogoAvanzado(QDialog):
         msg.setIcon(QMessageBox.Icon.Warning)
         msg.setWindowTitle("Quitar del catálogo")
         msg.setText(f"¿Quitar del catálogo {'1 foto o video' if n == 1 else f'{n} fotos y videos'} "
-                    "cuyo archivo ya no existe?")
-        msg.setInformativeText(f"{ejemplos}\n\nSe perderán sus etiquetas. Esta acción no se puede deshacer.")
+                    "cuyo archivo ya no está en su carpeta?")
+        msg.setInformativeText(f"{ejemplos}\n\nSe perderán sus etiquetas, también en la otra PC. "
+                               "Esta acción no se puede deshacer.")
         quitar = msg.addButton("Quitar del catálogo", QMessageBox.ButtonRole.DestructiveRole)
         msg.addButton("Cancelar", QMessageBox.ButtonRole.RejectRole)
         msg.setDefaultButton(msg.buttons()[-1])
@@ -126,19 +155,12 @@ class CatalogoAvanzado(QDialog):
             self.quitar()
 
     def quitar(self):
-        ruta, ids = self._db, [m.id for m in self._faltan]
+        abrir, ids = self._abrir, [m.id for m in self._faltan]
 
         def fn(_cb):
-            conn = connect(ruta)
-            try:
-                huerfanas = Repo(conn).delete_media(ids)
-            finally:
-                conn.close()
-            for t in huerfanas:            # miniaturas que nadie más usa
-                try:
-                    os.remove(t)
-                except OSError:
-                    pass
+            with abrir() as repo:
+                repo.delete_media(ids)
+            CacheMiniaturas(catalog_thumb_dir()).olvidar(ids)
             return len(ids)
         self._correr(fn, self._quitado)
 
@@ -160,7 +182,7 @@ class CatalogoAvanzado(QDialog):
         # Métodos (no lambdas): si la ventana se cierra antes, Qt corta la conexión.
         w.progress.connect(self._avance)
         w.finished_ok.connect(self._ok)
-        w.failed.connect(self._fallo)
+        w.fallo.connect(self._fallo)
         self._worker = w
         w.start()
 
@@ -172,9 +194,9 @@ class CatalogoAvanzado(QDialog):
         self._fin()
         self._al_terminar(resultado)
 
-    def _fallo(self, _msg):
+    def _fallo(self, e):
         self._fin()
-        self._resultado("No se pudo completar la operación. Intente nuevamente.")
+        self._resultado(texto_para(e))
 
     def _fin(self):
         if self._worker is not None:
