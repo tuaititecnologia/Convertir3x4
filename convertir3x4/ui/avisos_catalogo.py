@@ -7,15 +7,22 @@ conexión propia (nunca la del servicio del catálogo) y emite `cambio`.
 
 Si se corta la conexión, reintenta cada `REINTENTO` segundos. Al volver emite
 `cambio` igual, porque mientras estuvo cortado pudo haberse perdido algún aviso.
+
+Cada `PING` segundos manda una consulta mínima. Sin eso, una conexión que quedó
+medio cortada (se cayó Netbird, se reinició el NAS) parece viva y el hilo se
+queda esperando avisos que nunca llegan. También evita que el servidor corte la
+sesión por inactiva (`idle_session_timeout`).
 """
 
 import threading
+import time
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from ..catalog.db import CANAL_CAMBIOS
 
 REINTENTO = 10.0
+PING = 60.0
 
 
 class AvisosCatalogo(QThread):
@@ -43,9 +50,13 @@ class AvisosCatalogo(QThread):
                 if conectado_antes:
                     self.cambio.emit()      # se reconectó: pudo perderse algo
                 conectado_antes = True
+                ultimo_ping = time.monotonic()
                 while not self._parar.is_set():
                     if any(True for _ in repo.conn.notifies(timeout=1.0)):
                         self.cambio.emit()
+                    if time.monotonic() - ultimo_ping >= PING:
+                        repo.conn.execute("SELECT 1")
+                        ultimo_ping = time.monotonic()
             except Exception:  # noqa: BLE001 — sin NAS o sin configurar: se reintenta
                 pass
             finally:

@@ -575,6 +575,25 @@ class TestBuscarEnVivo:
             avisos.detener()
         assert not avisos.isRunning()
 
+    def test_el_oyente_consulta_cada_tanto_para_no_quedar_sordo(self, app, pg_cfg, monkeypatch):
+        from convertir3x4.catalog.db import conectar
+        from convertir3x4.catalog.repo import Repo
+        from convertir3x4.ui import avisos_catalogo
+        monkeypatch.setattr(avisos_catalogo, "PING", 0.2)
+        avisos = avisos_catalogo.AvisosCatalogo(abrir=lambda: Repo(conectar(pg_cfg), "/"))
+        avisos.start()
+        try:
+            with Repo(conectar(pg_cfg), "/") as r:
+                def ultima_del_oyente():
+                    fila = r.conn.execute(
+                        "SELECT query FROM pg_stat_activity WHERE datname = current_database() "
+                        "AND pid <> pg_backend_pid() AND query IN ('LISTEN catalogo', 'SELECT 1')"
+                    ).fetchone()
+                    return fila and fila["query"]
+                assert _esperar(app, lambda: ultima_del_oyente() == "SELECT 1", 5)
+        finally:
+            avisos.detener()
+
 
 def test_confirmaciones_nombran_la_accion():
     # Criterio de textos (impeccable/clarify): nada de Sí/No/Cerrar genéricos en

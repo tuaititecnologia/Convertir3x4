@@ -32,9 +32,11 @@ from .. import icons
 from ..style import T
 
 _GRID_THUMB = 150
-# Cambios que avisa el NAS: se juntan y se muestran a lo sumo cada tantos ms.
+# Cambios que avisa el NAS: se juntan y se muestran a lo sumo cada 20 s. Durante
+# una pasada llega un aviso por archivo; cada puesta al día rehace la búsqueda y
+# revisa los archivos en el NAS, y las etiquetas que se pongan esperan detrás.
 _VIVO_ESPERA_MS = 1500
-_VIVO_MINIMO_MS = 5000
+_VIVO_MINIMO_MS = 20000
 
 
 _QUALITY = {"low_res": "Baja resolución: puede verse borrosa en la pantalla.",

@@ -84,8 +84,8 @@ Dos tablas nuevas, con su migración numerada en `catalog/db.py`:
 La app es cliente de un servidor: lo que cataloga el NAS y las etiquetas que pone una PC aparecen en Buscar de la otra sin que el operador haga nada.
 
 - **En la base:** la migración 3 agrega disparadores en `media`, `media_tag` y `tag` que avisan por el canal `catalogo` (`NOTIFY`). Avisan los cambios de cualquiera, el NAS o una PC. Un `UPDATE` que no cambia nada no avisa, y los avisos de una misma transacción llegan como uno solo.
-- **En la PC:** un hilo con su propia conexión escucha el canal (`ui/avisos_catalogo.py`). Si se corta, reintenta cada 10 s, y al volver avisa igual por si se perdió algo.
-- **En Buscar:** junta los avisos y vuelve a consultar a lo sumo cada 5 s, con la misma búsqueda. Conserva lo seleccionado y el lugar de la grilla. Si el operador está arrastrando, eligiendo con el mouse o tiene un menú abierto, espera a que termine. Con la pestaña escondida no consulta; se pone al día al volver a verla.
+- **En la PC:** un hilo con su propia conexión escucha el canal (`ui/avisos_catalogo.py`). Si se corta, reintenta cada 10 s, y al volver avisa igual por si se perdió algo. Cada 60 s manda una consulta mínima: si la conexión quedó medio cortada (se cayó Netbird, se reinició el NAS), así se entera y reconecta, y el servidor no la corta por inactiva.
+- **En Buscar:** junta los avisos y vuelve a consultar a lo sumo cada 20 s, con la misma búsqueda. Conserva lo seleccionado y el lugar de la grilla. Si el operador está arrastrando, eligiendo con el mouse o tiene un menú abierto, espera a que termine. Con la pestaña escondida no consulta; se pone al día al volver a verla.
 - **Sin consultas periódicas:** las PCs no le preguntan a la base cada tantos segundos si hay algo nuevo. Eso cargaría la red, sobre todo por Netbird.
 
 ### Versiones
