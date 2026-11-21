@@ -858,3 +858,31 @@ class TestCatalogarEnElNas:
         finally:
             tab.deleteLater()
             srv.cerrar()
+
+
+def test_los_nombres_de_la_barra_lateral_entran_enteros(window):
+    # «Grabadora» se veía «Gra…ora»: el texto más el margen del botón no entraba.
+    for b in window._nav.buttons() + [window.btn_help]:
+        assert b.fontMetrics().horizontalAdvance(b.text()) <= b.width() - 8, b.text()
+
+
+def test_buscar_nota_solo_que_se_conecto_el_nas(app, sin_catalogo, monkeypatch):
+    from convertir3x4.catalog.models import Media
+    from convertir3x4.ui.tabs import tab_buscar
+    from convertir3x4.ui.widgets.media_grid import STATE_ROLE
+    t = tab_buscar.BuscarTab(srv=sin_catalogo)
+    t.show()
+    m = Media(path="/Volumes/NAS_PRUEBA/evento/a.jpg", filename="a.jpg", kind="image", id=1)
+    t._mostrar_busqueda(t._busqueda, [m], {}, [], {m.path: False},
+                        {"/Volumes/NAS_PRUEBA": False})
+    t.grid.item(0).setSelected(True)
+    assert t.grid.item(0).data(STATE_ROLE) == "offline" and t.offline_box.isVisibleTo(t)
+    conectado = []
+    monkeypatch.setattr(tab_buscar, "_existe", lambda r: (conectado.append(r), True)[1])
+    t._revisar_raices()                         # lo que hace el reloj cada 5 s
+    assert _esperar(app, lambda: t.grid.item(0).data(STATE_ROLE) is None, 5)
+    assert conectado == ["/Volumes/NAS_PRUEBA"]  # una pregunta por raíz, no por archivo
+    assert not t.offline_box.isVisibleTo(t)
+    assert t.grid.item(0).isSelected()           # no se pierde lo elegido
+    t.close()
+    t.deleteLater()

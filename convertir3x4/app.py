@@ -18,7 +18,7 @@ from .ui.tabs.tab_buscar import BuscarTab
 from .ui.tabs.tab_motor import MotorTab
 from .ui.tabs.tab_discos import DiscosTab
 
-_RAIL_WIDTH = 76
+_RAIL_WIDTH = 80      # «Grabadora» (56 px a 11 px) tiene que entrar sin cortarse
 
 
 class NavButton(QToolButton):

@@ -9,6 +9,7 @@ esta PC y, si faltan, se bajan de la base en segundo plano.
 import ntpath
 import os
 import re
+import threading
 
 from PyQt6.QtCore import Qt, QElapsedTimer, QPoint, QSize, QTimer, pyqtSignal
 from PyQt6.QtGui import QIcon, QPixmap
@@ -40,6 +41,13 @@ _VIVO_MINIMO_MS = 20000
 # Si una búsqueda tarda más que esto, se muestra que se están trayendo datos del NAS
 # (antes no: una respuesta rápida no tiene que hacer parpadear nada).
 _CARGANDO_MS = 300
+# Cada cuánto se mira si se conectó o se desconectó el NAS (o un disco) mientras
+# Buscar está a la vista: una pregunta por raíz, fuera del hilo de la interfaz.
+_RAICES_MS = 5000
+
+
+def _existe(raiz: str) -> bool:
+    return os.path.exists(raiz)
 
 
 _QUALITY = {"low_res": "Baja resolución: puede verse borrosa en la pantalla.",
@@ -66,6 +74,7 @@ class SearchLineEdit(QLineEdit):
 class BuscarTab(QWidget):
     # Rutas elegidas en el catálogo para convertir (MainWindow las pasa a Convertir)
     enviarAConvertir = pyqtSignal(list)
+    _raices_revisadas = pyqtSignal(dict)      # desde el hilo que pregunta por las raíces
 
     def __init__(self, parent=None, srv=None):
         super().__init__(parent)
@@ -94,6 +103,11 @@ class BuscarTab(QWidget):
         self._cargando = QTimer(self)
         self._cargando.setSingleShot(True)
         self._cargando.timeout.connect(self._mostrar_cargando)
+        self._revisando_raices = False
+        self._raices_timer = QTimer(self)
+        self._raices_timer.setInterval(_RAICES_MS)
+        self._raices_timer.timeout.connect(self._revisar_raices)
+        self._raices_revisadas.connect(self._raices_cambiaron)
         self.refresh()
 
     def _build_ui(self):
@@ -272,11 +286,53 @@ class BuscarTab(QWidget):
         self._do_search(conservar=True)
         self._reload_known_tags()
 
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self._raices_timer.stop()
+
     def showEvent(self, event):
         super().showEvent(event)
+        self._raices_timer.start()
         if self._desactualizada:
             self._desactualizada = False
             self.cambio_en_el_catalogo()
+
+    # ------------------------------------------------------------- NAS conectado
+    def _revisar_raices(self):
+        """¿Se conectó o se desconectó el NAS (o un disco) de lo que se ve?"""
+        raices = list(getattr(self, "_raices", None) or {})
+        if not raices or self._revisando_raices:
+            return
+        self._revisando_raices = True
+
+        def preguntar():
+            resultado = {r: _existe(r) for r in raices}
+            try:
+                self._raices_revisadas.emit(resultado)
+            except RuntimeError:
+                pass        # la pestaña se cerró mientras se preguntaba
+        threading.Thread(target=preguntar, daemon=True, name="raices").start()
+
+    def _raices_cambiaron(self, ahora: dict):
+        self._revisando_raices = False
+        antes = getattr(self, "_raices", None) or {}
+        if all(antes.get(r) == ok for r, ok in ahora.items()):
+            return
+        self._raices = {**antes, **ahora}
+        self._presentes = {m.path: self._raices.get(storage_root(m.path), False)
+                           for m in getattr(self, "_results", [])}
+        self._repintar_conservando()
+
+    def _repintar_conservando(self):
+        vista = self._vista()
+        self.grid._stop_preview()
+        self._restaurando = True
+        try:
+            self._apply_kind_filter()
+        finally:
+            self._restaurando = False
+        self._volver_a(vista)
+        self._on_selection_changed()
 
     def _vista(self) -> dict:
         """Lo que el operador tiene elegido y dónde está mirando."""
@@ -356,14 +412,7 @@ class BuscarTab(QWidget):
         self._presentes = presentes
         self._raices = raices
         if vista is not None:
-            self.grid._stop_preview()
-            self._restaurando = True
-            try:
-                self._apply_kind_filter()
-            finally:
-                self._restaurando = False
-            self._volver_a(vista)
-            self._on_selection_changed()
+            self._repintar_conservando()
         else:
             self._apply_kind_filter()
         if faltan:
