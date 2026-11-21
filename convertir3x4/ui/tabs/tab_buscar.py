@@ -56,7 +56,8 @@ def _existe(raiz: str) -> bool:
 
 
 _QUALITY = {"low_res": "Baja resolución: puede verse borrosa en la pantalla.",
-            "corrupt": "El archivo parece dañado."}
+            "corrupt": "El archivo parece dañado.",
+            "en_negro": "La imagen está en negro: no muestra nada."}
 
 
 class SearchLineEdit(QLineEdit):

@@ -630,3 +630,81 @@ def test_buscar_trae_las_etiquetas_de_cada_uno(repo):
     assert m_a.etiquetas == [("culto joven", True), ("predicación", False)]  # confirmadas primero
     assert m_b.etiquetas == []
     assert repo.get_media(a).etiquetas is None            # solo Buscar las pide
+
+
+# --------------------------------------------------------------- imágenes en negro
+def _video_negro_y_color(path, negro_s=3, color_s=3, color=(200, 40, 40), fps=10):
+    """Video que empieza en negro (como una grabación) y después muestra algo."""
+    import imageio_ffmpeg
+    import numpy as np
+    w, h = 64, 48
+    gen = imageio_ffmpeg.write_frames(path, (w, h), fps=fps, macro_block_size=16)
+    gen.send(None)
+    for i in range((negro_s + color_s) * fps):
+        cuadro = np.zeros((h, w, 3), np.uint8)
+        if i >= negro_s * fps:
+            cuadro[:] = color
+        gen.send(cuadro.tobytes())
+    gen.close()
+
+
+class TestEnNegro:
+    def test_la_miniatura_de_un_video_no_es_el_primer_cuadro_negro(self, temp_dir):
+        from convertir3x4.catalog import thumbs
+        p = os.path.join(temp_dir, "culto.mp4")
+        _video_negro_y_color(p, negro_s=2, color_s=4)     # 10 % y 30 % en negro, 50 % no
+        jpeg = thumbs.make_thumb(p, "video", 6.0)
+        assert jpeg and not thumbs.en_negro(jpeg)
+
+    def test_marca_en_negro_y_la_ia_no_lo_mira(self, temp_dir, pg_cfg):
+        from PIL import Image
+        from convertir3x4.catalog.db import conectar
+        from convertir3x4.engine import ai_pipeline
+        from convertir3x4.engine.pipeline import catalogar
+        _video_negro_y_color(os.path.join(temp_dir, "todo_negro.mp4"), negro_s=4, color_s=0)
+        _video_negro_y_color(os.path.join(temp_dir, "bien.mp4"))
+        Image.new("RGB", (900, 600), (3, 3, 3)).save(os.path.join(temp_dir, "tapada.jpg"))
+        Image.new("RGB", (900, 600), (90, 120, 200)).save(os.path.join(temp_dir, "cielo.jpg"))
+        with Repo(conectar(pg_cfg), temp_dir) as r:
+            st = catalogar(r, [""])
+            assert st.added == 4 and st.en_negro == 2
+            flags = {m.filename: m.quality_flag for m in r.all_media()}
+            # en negro pesa más que la baja resolución (todos estos son chicos)
+            assert flags == {"todo_negro.mp4": "en_negro", "tapada.jpg": "en_negro",
+                             "bien.mp4": "low_res", "cielo.jpg": "low_res"}
+            mirar = {m.filename for m, _ in r.media_for_ai(ai_pipeline.AI_MODEL, "")}
+            assert mirar == {"bien.mp4", "cielo.jpg"}
+
+    def test_rehace_las_miniaturas_viejas_y_descarta_lo_que_sugirio_la_ia(self, temp_dir,
+                                                                          pg_cfg):
+        from convertir3x4.catalog import thumbs
+        from convertir3x4.catalog.db import conectar
+        from convertir3x4.engine.pipeline import catalogar
+        p = os.path.join(temp_dir, "culto.mp4")
+        _video_negro_y_color(p, negro_s=2, color_s=4)
+        with Repo(conectar(pg_cfg), temp_dir) as r:
+            catalogar(r, [""])
+            (m,) = r.all_media()
+            # como quedó con la v0.7.x: primer cuadro negro, «logo» sugerido, una etiqueta humana
+            r.conn.execute("UPDATE media SET miniatura_version = 1 WHERE id = %s", (m.id,))
+            r._guardar_miniatura(m.id, _jpeg_negro())
+            r.suggest_tag(m.id, "logo")
+            r.apply_tag(m.id, "congreso 2015")
+            r.save_ai_result(m.id, "modelo", "", "video", [], "{}")
+            st = catalogar(r, [""])
+            assert st.miniaturas_rehechas == 1 and st.skipped == 1
+            assert not thumbs.en_negro(r.miniatura(m.id))
+            assert r.tags_for(m.id) == ["congreso 2015"]          # la humana queda
+            assert r.get_ai_raw(m.id) is None                     # se vuelve a analizar
+            fila = r.conn.execute("SELECT miniatura_version FROM media WHERE id = %s",
+                                  (m.id,)).fetchone()
+            assert fila["miniatura_version"] == thumbs.MINIATURA_VERSION
+            assert catalogar(r, [""]).miniaturas_rehechas == 0   # una sola vez
+
+
+def _jpeg_negro():
+    import io
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", (64, 48), (0, 0, 0)).save(buf, "JPEG")
+    return buf.getvalue()

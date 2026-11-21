@@ -76,6 +76,9 @@ def resumen_pasada(resumen: dict | None) -> str:
     if g("corrupt"):
         texto += (" 1 está dañado y no se pudo abrir." if g("corrupt") == 1 else
                   f" {g('corrupt')} están dañados y no se pudieron abrir.")
+    if g("en_negro"):
+        texto += (" 1 está en negro y no se etiqueta." if g("en_negro") == 1 else
+                  f" {g('en_negro')} están en negro y no se etiquetan.")
     if g("missing"):
         texto += (" 1 ya no está en su carpeta." if g("missing") == 1 else
                   f" {g('missing')} ya no están en su carpeta.")

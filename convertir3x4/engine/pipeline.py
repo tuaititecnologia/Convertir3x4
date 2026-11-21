@@ -53,6 +53,8 @@ class Stage0Stats:
     corrupt: int = 0
     duplicates: int = 0
     moved: int = 0          # reaparecieron en otra ruta (conservan sus tags)
+    en_negro: int = 0       # fotos negras o videos en negro (no se etiquetan)
+    miniaturas_rehechas: int = 0   # hechas con una regla vieja (thumbs.MINIATURA_VERSION)
     missing: int = 0        # dejaron de estar en esta pasada y no reaparecieron
     ocupadas: list[str] = field(default_factory=list)      # otra PC las catalogaba
     inexistentes: list[str] = field(default_factory=list)  # no están en el NAS
@@ -155,6 +157,9 @@ def _procesar(repo: Repo, path: str, existentes: dict, status: str,
     if previo is not None and previo["file_mtime"] == mtime and previo["size_bytes"] == size:
         if previo["missing_since"] is not None:
             repo.marcar_presente(previo["id"])
+        if previo["miniatura_version"] < thumbs.MINIATURA_VERSION \
+                and previo["quality_flag"] != "corrupt":
+            _rehacer_miniatura(repo, path, previo, stats)
         stats.skipped += 1
         return None
 
@@ -169,6 +174,13 @@ def _procesar(repo: Repo, path: str, existentes: dict, status: str,
     pr = probe_mod.probe(path, kind)
     if pr.quality_flag == "corrupt":
         stats.corrupt += 1
+    miniatura = thumbs.make_thumb(path, kind, pr.duration) if pr.quality_flag != "corrupt" \
+        else None
+    calidad = pr.quality_flag
+    # En negro pesa más que la baja resolución: no muestra nada, se use donde se use.
+    if calidad in ("ok", "low_res") and thumbs.en_negro(miniatura):
+        calidad = "en_negro"
+        stats.en_negro += 1
     media = Media(
         path=path,
         rel_path=rel,
@@ -185,14 +197,38 @@ def _procesar(repo: Repo, path: str, existentes: dict, status: str,
         sha256=sha,
         phash=dedup.dhash_image(path) if kind == "image" else None,
         status=status,
-        quality_flag=pr.quality_flag,
+        quality_flag=calidad,
     )
-    mid = repo.upsert_media(media, miniatura=thumbs.make_thumb(path, kind))
+    mid = repo.upsert_media(media, miniatura=miniatura,
+                            miniatura_version=thumbs.MINIATURA_VERSION)
     if previo is None:
         stats.added += 1
         return mid
     stats.updated += 1
     return None
+
+
+def _rehacer_miniatura(repo: Repo, path: str, previo: dict, stats: Stage0Stats):
+    """Un archivo que no cambió pero cuya miniatura se hizo con una regla vieja.
+    Las fotos se rehacen desde la miniatura guardada (no hace falta leer el
+    archivo: solo se mira si es negra); los videos, desde el archivo."""
+    if previo["kind"] == "video":
+        jpeg = thumbs.make_thumb(path, "video", previo["duration"])
+    else:
+        jpeg = None
+    negro = thumbs.en_negro(jpeg if jpeg is not None else repo.miniatura(previo["id"]))
+    calidad = None
+    if negro and previo["quality_flag"] in ("ok", "low_res"):
+        calidad = "en_negro"
+    elif not negro and previo["quality_flag"] == "en_negro":
+        calidad = "ok"
+    if negro:
+        stats.en_negro += 1
+    if jpeg is not None or calidad != previo["quality_flag"]:
+        repo.rehacer_miniatura(previo["id"], jpeg, thumbs.MINIATURA_VERSION, calidad)
+        stats.miniaturas_rehechas += 1
+    else:
+        repo.marcar_miniatura_al_dia(previo["id"], thumbs.MINIATURA_VERSION)
 
 
 def _reaparecido(repo: Repo, path: str, size: int, mtime: int):
