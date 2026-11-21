@@ -476,24 +476,57 @@ def test_sin_problemas_no_hay_explicacion(copia):
     assert explicar(copia) is None
 
 
-def test_historial_explica_el_error_con_el_mouse_y_al_elegirlo():
+def test_ficha_de_una_copia_sin_vocabulario_tecnico():
+    from convertir3x4.nas.copias import ficha
+    formateada = {"fase": "FORMATEADO", "actualizado": "2026-11-21 20:38:01", "uuid": "25B6-1F03",
+                  "tipo": "exfat", "destino": "/mnt/tank/multimedia/Historial/Reuniones",
+                  "particion": "/dev/sdh2", "modelo": "MSI S270 960GB", "serie": "5112510",
+                  "tamano": "894.3G", "archivos": 32, "pendientes": 0, "errores": 0,
+                  "verificado": {"fecha": "2026-11-21 20:38:01", "archivos": 32, "fallos": []}}
+    assert dict(ficha(formateada)) == {
+        "Disco": "MSI S270 960GB · 894 GB", "Número de serie": "5112510",
+        "Archivos": "32 copiados",
+        "Verificación": "El 21/11/2026 20:38: los 32 archivos coinciden con lo copiado",
+        "Vaciado": "El 21/11/2026 20:38. Listo para volver a grabar",
+        "Última novedad": "21/11/2026 20:38"}
+    cortada = {"fase": "ERROR", "modelo": "ADATA SU630", "tamano": "447.1G", "archivos": 20,
+               "pendientes": 20, "falta_gb": 404.0, "copiado_gb": 7.4, "errores": 1}
+    f = dict(ficha(cortada))
+    assert f["Archivos"] == "0 de 20 copiados · 1 con error"
+    assert f["Copiado"] == "7,4 GB de 411 GB"
+    texto = " ".join(v for _, v in ficha(formateada) + ficha(cortada)).lower()
+    for palabra in ("/dev/", "/mnt/", "exfat", "uuid", "25b6"):
+        assert palabra not in texto, palabra
+
+
+def test_historial_muestra_la_copia_completa_al_elegirla():
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    from PyQt6.QtWidgets import QApplication
+    from PyQt6.QtWidgets import QApplication, QLabel
     app = QApplication.instance() or QApplication([])
     from convertir3x4.ui.tabs.tab_discos import DiscosTab
     t = DiscosTab()
     t._timer.stop()
     t._llenar_historial([
-        {"uuid": "135E-0818", "modelo": "Disco 1", "fase": "ERROR",
+        {"uuid": "135E-0818", "modelo": "ADATA SU630", "fase": "ERROR", "archivos": 20,
+         "pendientes": 20, "destino": "/mnt/tank/multimedia/Reuniones",
          "error": "el disco se desconecto (/dev/sdh2 ya no existe)", "actualizado": "2026-09-28"},
         {"uuid": "17AA-1F10", "modelo": "Disco 2", "fase": "FORMATEADO"}])
     it = t.tree.topLevelItem(0)
-    for col in range(4):
-        assert "se desconectó en medio de la copia" in it.toolTip(col)
-    assert "/dev/" not in it.toolTip(0)
-    assert not t.lbl_explicacion.isVisibleTo(t)
+    assert all(not it.toolTip(col) for col in range(4))      # lo del aviso pasó al panel
+    assert not t.panel_copia.isVisibleTo(t)
     it.setSelected(True)
     app.processEvents()
-    assert t.lbl_explicacion.isVisibleTo(t)
-    assert "Qué hacer:" in t.lbl_explicacion.text() and "<b>Error</b>" in t.lbl_explicacion.text()
+    assert t.panel_copia.isVisibleTo(t)
+    assert t.lbl_copia_estado.text() == "Error"
+    assert "se desconectó en medio de la copia" in t.lbl_copia_que.text()
+    assert "Qué hacer:" in t.lbl_copia_hacer.text()
+    datos = [t.grid_copia.itemAt(i).widget().text() for i in range(t.grid_copia.count())]
+    assert datos[:4] == ["Disco", "ADATA SU630", "Carpeta en el NAS", "Reuniones"]
+    assert "0 de 20 copiados" in datos
+    assert not any("/dev/" in d or "/mnt/" in d for d in datos)
+    # una copia sin problemas: su estado, sin «Qué hacer»
+    t.tree.topLevelItem(1).setSelected(True)
+    it.setSelected(False)
+    app.processEvents()
+    assert t.lbl_copia_estado.text() == "Vacío" and not t.lbl_copia_hacer.isVisibleTo(t)
     t.deleteLater()

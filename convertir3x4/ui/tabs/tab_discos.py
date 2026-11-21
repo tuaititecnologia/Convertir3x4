@@ -15,13 +15,13 @@ import os
 from PyQt6.QtCore import QSettings, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QFontDatabase
 from PyQt6.QtWidgets import (
-    QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QFrame, QHBoxLayout,
+    QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QFrame, QGridLayout, QHBoxLayout,
     QInputDialog, QLabel, QLineEdit, QListWidget, QMessageBox, QPlainTextEdit, QProgressBar,
     QPushButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from ...nas.copias import (
-    URLS_POR_DEFECTO, PanelClient, acciones_para, explicar, fecha, lineas_contenido,
+    URLS_POR_DEFECTO, PanelClient, acciones_para, explicar, fecha, ficha, lineas_contenido,
     nota_operador, resumir, resumir_contenido, tipo_disco,
 )
 from ...workers import EngineWorker
@@ -40,16 +40,7 @@ _TONOS = {"activo": "accent_text", "ok": "ok", "aviso": "warn", "error": "danger
 def _tono(tono: str) -> str:
     return getattr(T, _TONOS.get(tono, "text_3"))
 _UUID_ROLE = Qt.ItemDataRole.UserRole
-_EXPLICACION_ROLE = Qt.ItemDataRole.UserRole + 1
-
-
-def texto_copia(titulo: str, detalle: str, explicacion: tuple[str, str] | None) -> str:
-    """Lo que se lee de una copia del historial (aviso del mouse y debajo de la lista):
-    el estado y, si hubo un problema, qué pasó y qué hacer."""
-    if explicacion:
-        que, hacer = explicacion
-        return f"{titulo}\n{que}\nQué hacer: {hacer}"
-    return f"{titulo}\n{detalle}" if detalle else titulo
+_COPIA_ROLE = Qt.ItemDataRole.UserRole + 1      # el estado completo de la copia (dict)
 
 
 def _cliente_desde(settings: QSettings) -> PanelClient:
@@ -166,13 +157,29 @@ class DiscosTab(QWidget):
         self.tree.itemSelectionChanged.connect(self._on_historial_sel)
         blay.addWidget(self.tree, 2)
 
-        # La copia elegida, explicada: qué pasó y qué hacer (sin jerga del NAS)
-        self.lbl_explicacion = QLabel("")
-        self.lbl_explicacion.setWordWrap(True)
-        self.lbl_explicacion.setTextFormat(Qt.TextFormat.RichText)
-        self.lbl_explicacion.setAccessibleName("Qué pasó con la copia elegida")
-        self.lbl_explicacion.setVisible(False)
-        blay.addWidget(self.lbl_explicacion)
+        # La copia elegida, completa: estado, qué pasó y qué hacer, y sus datos
+        self.panel_copia = QFrame()
+        self.panel_copia.setObjectName("panel")
+        self.panel_copia.setAccessibleName("Detalle de la copia elegida")
+        pc = QVBoxLayout(self.panel_copia)
+        pc.setContentsMargins(14, 10, 14, 12)
+        pc.setSpacing(6)
+        self.lbl_copia_estado = QLabel("")
+        self.lbl_copia_estado.setObjectName("section_title")
+        pc.addWidget(self.lbl_copia_estado)
+        self.lbl_copia_que = QLabel("")
+        self.lbl_copia_que.setWordWrap(True)
+        pc.addWidget(self.lbl_copia_que)
+        self.lbl_copia_hacer = QLabel("")
+        self.lbl_copia_hacer.setWordWrap(True)
+        pc.addWidget(self.lbl_copia_hacer)
+        self.grid_copia = QGridLayout()
+        self.grid_copia.setHorizontalSpacing(16)
+        self.grid_copia.setVerticalSpacing(4)
+        self.grid_copia.setColumnStretch(1, 1)
+        pc.addLayout(self.grid_copia)
+        self.panel_copia.setVisible(False)
+        blay.addWidget(self.panel_copia)
 
         # El registro del NAS es técnico: le sirve a quien administra el NAS, no al
         # operador. Queda escondido detrás de un botón.
@@ -384,14 +391,12 @@ class DiscosTab(QWidget):
             it = QTreeWidgetItem([disco, r.titulo, self._carpeta(c.get("destino")),
                                   fecha(c.get("actualizado"))])
             it.setData(0, _UUID_ROLE, c["uuid"])
-            texto = texto_copia(r.titulo, r.detalle, explicar(c))
-            it.setData(0, _EXPLICACION_ROLE, texto)
-            for col in range(4):        # sobre cualquier columna de la fila
-                it.setToolTip(col, texto)
+            it.setData(0, _COPIA_ROLE, c)
             it.setForeground(1, _color(r.tono))
             self.tree.addTopLevelItem(it)
             if c["uuid"] == sel:
                 it.setSelected(True)
+                self._mostrar_copia(c)
         if copias:   # vacía, se quedan los anchos iniciales (si no, los títulos se cortan)
             for i in range(3):
                 self.tree.resizeColumnToContents(i)
@@ -404,20 +409,44 @@ class DiscosTab(QWidget):
     def _on_historial_sel(self):
         items = self.tree.selectedItems()
         if not items:
-            self.lbl_explicacion.setVisible(False)
+            self.panel_copia.setVisible(False)
             return
-        texto = items[0].data(0, _EXPLICACION_ROLE) or ""
-        lineas = [html.escape(x) for x in texto.split("\n")]
-        if lineas:
-            lineas[0] = f"<b>{lineas[0]}</b>"
-        self.lbl_explicacion.setText("<br>".join(lineas))
-        self.lbl_explicacion.setVisible(bool(texto))
+        self._mostrar_copia(items[0].data(0, _COPIA_ROLE) or {})
         uuid = items[0].data(0, _UUID_ROLE)
         self._log_uuid = uuid
         self.txt_log.setPlainText("Cargando…")
         client = self.client
         self._run(lambda: client.log(uuid),
                   lambda texto: uuid == self._log_uuid and self._set_log(texto))
+
+    def _mostrar_copia(self, c: dict):
+        """El panel de la copia elegida: estado, qué pasó y qué hacer, y sus datos."""
+        r = resumir(c)
+        self.lbl_copia_estado.setText(r.titulo)
+        self.lbl_copia_estado.setStyleSheet(f"color: {_color(r.tono).color().name()};")
+        exp = explicar(c)
+        que, hacer = exp if exp else (r.detalle, "")
+        self.lbl_copia_que.setText(que)
+        self.lbl_copia_que.setVisible(bool(que))
+        self.lbl_copia_hacer.setText(f"<b>Qué hacer:</b> {html.escape(hacer)}" if hacer else "")
+        self.lbl_copia_hacer.setVisible(bool(hacer))
+        while self.grid_copia.count():
+            w = self.grid_copia.takeAt(0).widget()
+            if w is not None:
+                w.deleteLater()
+        filas = ficha(c)
+        if c.get("destino"):      # después del disco: dónde quedó
+            filas.insert(1 if filas and filas[0][0] == "Disco" else 0,
+                         ("Carpeta en el NAS", self._carpeta(c["destino"])))
+        for i, (dato, valor) in enumerate(filas):
+            k = QLabel(dato)
+            k.setObjectName("muted")
+            v = QLabel(valor)
+            v.setWordWrap(True)
+            v.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            self.grid_copia.addWidget(k, i, 0, Qt.AlignmentFlag.AlignTop)
+            self.grid_copia.addWidget(v, i, 1)
+        self.panel_copia.setVisible(True)
 
     def _set_log(self, texto):
         bar = self.txt_log.verticalScrollBar()
