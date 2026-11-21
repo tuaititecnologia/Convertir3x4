@@ -924,3 +924,40 @@ def test_buscar_nota_solo_que_se_conecto_el_nas(app, sin_catalogo, monkeypatch):
     assert t.grid.item(0).isSelected()           # no se pierde lo elegido
     t.close()
     t.deleteLater()
+
+
+def test_la_grilla_de_buscar_muestra_las_etiquetas(app, sin_catalogo):
+    from convertir3x4.catalog.models import Media
+    from convertir3x4.ui.tabs.tab_buscar import BuscarTab
+    from convertir3x4.ui.widgets.media_grid import TAGS_ROLE
+    t = BuscarTab(srv=sin_catalogo)
+    t.resize(700, 500)
+    t.show()
+    m = Media(path="/a.jpg", filename="a.jpg", kind="image", id=1,
+              etiquetas=[("predicación", False)])
+    t._populate([m], {}, {"/a.jpg": True}, {"/": True})
+    app.processEvents()
+    it = t.grid.item(0)
+    assert it.data(TAGS_ROLE) == [("predicación", False)]
+    rect = t.grid.visualItemRect(it)
+    img = t.grid.viewport().grab().toImage()
+    dpr = img.devicePixelRatio()
+    # el renglón de las etiquetas, abajo de la celda: hay violeta de la IA
+    colores = [img.pixelColor(int(x * dpr), int(y * dpr))
+               for y in range(rect.bottom() - 22, rect.bottom() - 4)
+               for x in range(rect.left(), rect.right())]
+    # el texto en violeta (tono de T.ia) y el fondo del chip no negro (rgba mal leído)
+    assert any(c.hslHue() in range(240, 290) and c.lightness() > 110 for c in colores)
+    assert QColor(0, 0, 0) not in colores
+    t.close()
+    t.deleteLater()
+
+
+def test_qcolor_entiende_los_colores_con_transparencia():
+    from convertir3x4.ui.style import DARK, LIGHT, qcolor
+    for paleta in (DARK, LIGHT):
+        for nombre, valor in paleta.items():
+            if isinstance(valor, str) and valor.startswith(("#", "rgba")):
+                assert qcolor(valor).isValid(), nombre
+    c = qcolor("rgba(150, 110, 240, 0.16)")
+    assert (c.red(), c.green(), c.blue(), round(c.alphaF(), 2)) == (150, 110, 240, 0.16)

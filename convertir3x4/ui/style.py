@@ -532,3 +532,16 @@ QTabBar::tab:hover:!selected {{ color: {T.text}; }}
 
 DARK_STYLE = build_stylesheet()  # compatibilidad (shim y tests viejos): modo oscuro
 
+
+def qcolor(valor: str) -> "QColor":
+    """Un color del tema como QColor. Los tokens con transparencia están escritos
+    como en CSS («rgba(150, 110, 240, 0.16)»), que QColor no entiende (da negro)."""
+    from PyQt6.QtGui import QColor
+    import re as _re
+    m = _re.fullmatch(r"rgba\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*([\d.]+)\s*\)", valor.strip())
+    if m:
+        r, g, b, a = m.groups()
+        c = QColor(int(r), int(g), int(b))
+        c.setAlphaF(float(a))
+        return c
+    return QColor(valor)

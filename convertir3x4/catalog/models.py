@@ -30,6 +30,9 @@ class Media:
     # Desde cuándo el archivo no está en su ruta (None: está). Ver repo.py.
     missing_since: datetime | None = None
     id: int | None = None
+    # Etiquetas para mostrar en la grilla: [(nombre, confirmada)], confirmadas
+    # primero. Solo las trae Repo.buscar (None: no se pidieron).
+    etiquetas: list | None = None
 
     @property
     def is_video(self) -> bool:

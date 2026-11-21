@@ -26,6 +26,7 @@ from ..servicio_catalogo import servicio, texto_para
 from ..widgets.caja_conexion import CajaConexion
 from ..widgets.media_grid import (
     DragOutListWidget, PATH_ROLE, MEDIA_ID_ROLE, KIND_ROLE, DURATION_ROLE, STATE_ROLE,
+    TAGS_ROLE,
 )
 from ..widgets.tag_bar import TagBar
 from ...utils import open_file
@@ -205,7 +206,7 @@ class BuscarTab(QWidget):
         self.offline_box.setVisible(False)
         layout.addWidget(self.offline_box)
 
-        self.grid = DragOutListWidget(thumb=_GRID_THUMB)
+        self.grid = DragOutListWidget(thumb=_GRID_THUMB, etiquetas=True)
         self.grid.setAccessibleName("Resultados")
         self.grid.itemSelectionChanged.connect(self._on_selection_changed)
         self.grid.itemDoubleClicked.connect(self._open_item)
@@ -517,6 +518,7 @@ class BuscarTab(QWidget):
         item.setData(MEDIA_ID_ROLE, m.id)
         item.setData(KIND_ROLE, m.kind)
         item.setData(DURATION_ROLE, m.duration)
+        item.setData(TAGS_ROLE, m.etiquetas or [])
         disponible = present[m.path] and not m.missing
         if not disponible:
             # No se puede arrastrar a ProPresenter: la miniatura va en gris.
@@ -700,6 +702,7 @@ class BuscarTab(QWidget):
         def listo(_):
             self._reload_known_tags()
             self._on_selection_changed()
+            self._do_search(conservar=True)     # que la grilla muestre la etiqueta ya
 
         def fallo(e):
             self.lbl_seleccion.setText("No se pudo guardar la etiqueta. " + texto_para(e))
@@ -737,7 +740,8 @@ def _iguales(antes, ahora) -> bool:
     """Misma grilla: mismos elementos, en el mismo orden y en el mismo estado."""
     if antes is None:
         return False
-    clave = lambda m: (m.id, m.path, m.missing_since, m.quality_flag, m.width, m.height)  # noqa: E731
+    clave = lambda m: (m.id, m.path, m.missing_since, m.quality_flag, m.width, m.height,  # noqa: E731
+                       tuple(m.etiquetas or ()))
     return [clave(m) for m in antes] == [clave(m) for m in ahora]
 
 

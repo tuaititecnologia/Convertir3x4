@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import (
     QStyledItemDelegate, QStyle,
 )
 
-from ..style import DARK, T
+from ..style import DARK, T, qcolor
 
 # Roles custom para guardar metadata en cada QListWidgetItem
 PATH_ROLE = Qt.ItemDataRole.UserRole
@@ -31,6 +31,7 @@ STORYBOARD_ROLE = Qt.ItemDataRole.UserRole + 8  # ruta de la tira de cuadros (vi
 PREVIEW_ROLE = Qt.ItemDataRole.UserRole + 9     # QPixmap del cuadro de vista previa actual
 SIZE_ROLE = Qt.ItemDataRole.UserRole + 10       # (ancho, alto) del original (vista previa de Convertir)
 ACTION_ROLE = Qt.ItemDataRole.UserRole + 11     # texto de un botón sobre la miniatura ("Cancelar", "Reintentar")
+TAGS_ROLE = Qt.ItemDataRole.UserRole + 12       # [(nombre, confirmada)] debajo del nombre (Buscar)
 
 # Estados que se dibujan sobre la miniatura. Sin estado: normal.
 #   loading  todavía no hay miniatura      working  convirtiendo/bajando (con %)
@@ -63,17 +64,20 @@ class ThumbDelegate(QStyledItemDelegate):
     """
 
     LABEL_H = 22
+    TAGS_H = 22         # renglón de etiquetas (solo si la grilla las muestra)
     PAD = 6
 
-    def __init__(self, thumb: int, parent=None):
+    def __init__(self, thumb: int, parent=None, etiquetas: bool = False):
         super().__init__(parent)
         self.thumb = thumb
+        self.etiquetas = etiquetas
 
     def set_thumb(self, thumb: int):
         self.thumb = thumb
 
     def cell_size(self) -> QSize:
-        return QSize(self.thumb + self.PAD * 2, self.thumb + self.PAD * 2 + self.LABEL_H)
+        return QSize(self.thumb + self.PAD * 2, self.thumb + self.PAD * 2 + self.LABEL_H
+                     + (self.TAGS_H if self.etiquetas else 0))
 
     def sizeHint(self, option, index) -> QSize:
         # La celda toma el ancho de la columna (ver _fit_columns), sin el margen.
@@ -165,6 +169,10 @@ class ThumbDelegate(QStyledItemDelegate):
         painter.setPen(QColor(T.text if selected else T.text_2))
         painter.drawText(text_rect, int(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter),
                          name)
+        if self.etiquetas:
+            self._paint_tags(painter, index.data(TAGS_ROLE) or [],
+                             QRectF(r.left() + self.PAD, text_rect.bottom() + 3,
+                                    r.width() - self.PAD * 2, self.TAGS_H - 4))
 
         # Borde de selección por encima de todo; el foco de teclado, punteado
         if selected:
@@ -173,6 +181,48 @@ class ThumbDelegate(QStyledItemDelegate):
         elif focused:
             painter.setPen(QPen(QColor(T.accent_text), 1.5, Qt.PenStyle.DashLine))
             painter.drawPath(path)
+        painter.restore()
+
+    def _paint_tags(self, painter, tags, rect: QRectF):
+        """Etiquetas en un renglón, centradas: violeta las que sugirió la IA y
+        nadie confirmó; las demás, en el color del texto. Si no entran: «+N»."""
+        if not tags:
+            return
+        painter.save()
+        font = painter.font()
+        font.setPixelSize(11)
+        font.setWeight(500)
+        painter.setFont(font)
+        fm = QFontMetrics(font)
+        h, gap, pad = rect.height(), 4, 7
+        anchos = [fm.horizontalAdvance(n) + pad * 2 for n, _ in tags]
+        entran, usado = 0, 0.0
+        for i, w in enumerate(anchos):
+            resto = len(tags) - i - 1
+            mas = (fm.horizontalAdvance(f"+{resto}") + pad * 2 + gap) if resto else 0
+            if usado + w + mas > rect.width() and entran:
+                break
+            usado += w + gap
+            entran += 1
+        sobran = len(tags) - entran
+        if sobran:
+            usado += fm.horizontalAdvance(f"+{sobran}") + pad * 2 + gap
+        x = rect.left() + max(0.0, (rect.width() - (usado - gap)) / 2)
+        for (nombre, confirmada), w in zip(tags[:entran], anchos):
+            w = min(w, rect.width())
+            caja = QRectF(x, rect.top(), w, h)
+            chip = QPainterPath()
+            chip.addRoundedRect(caja, h / 2, h / 2)
+            painter.fillPath(chip, qcolor(T.raised if confirmada else T.ia_soft))
+            painter.setPen(QColor(T.text_2 if confirmada else T.ia))
+            painter.drawText(caja, int(Qt.AlignmentFlag.AlignCenter),
+                             fm.elidedText(nombre, Qt.TextElideMode.ElideRight, int(w - pad * 2)))
+            x += w + gap
+        if sobran:
+            texto = f"+{sobran}"
+            caja = QRectF(x, rect.top(), fm.horizontalAdvance(texto) + pad * 2, h)
+            painter.setPen(QColor(T.text_3))
+            painter.drawText(caja, int(Qt.AlignmentFlag.AlignCenter), texto)
         painter.restore()
 
     def _paint_state(self, painter, state, index, img_rect: QRectF):
@@ -362,7 +412,7 @@ class DragOutListWidget(_HoverPreview, QListWidget):
     copia. Se ofrece Copy|Link y el destino decide; PP linkea.
     """
 
-    def __init__(self, parent=None, thumb: int = 150):
+    def __init__(self, parent=None, thumb: int = 150, etiquetas: bool = False):
         super().__init__(parent)
         self.setObjectName("media_grid")
         self.setViewMode(QListWidget.ViewMode.IconMode)
@@ -373,7 +423,7 @@ class DragOutListWidget(_HoverPreview, QListWidget):
         self.setDragEnabled(True)
         self.setDragDropMode(QAbstractItemView.DragDropMode.DragOnly)
         self.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
-        self._delegate = ThumbDelegate(thumb, self)
+        self._delegate = ThumbDelegate(thumb, self, etiquetas)
         self.setItemDelegate(self._delegate)
         self._empty_text = ""
         self._init_hover()

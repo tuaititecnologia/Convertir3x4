@@ -618,3 +618,15 @@ class TestBuscarPorPaginas:
         assert [m.filename for m in videos] == ["culto_video.mp4"] and total == 1
         fotos, total = repo.buscar("", kind="image", cuantos=2)
         assert len(fotos) == 2 and total == 8
+
+
+def test_buscar_trae_las_etiquetas_de_cada_uno(repo):
+    from convertir3x4.catalog.models import Media
+    a = repo.upsert_media(Media(path="/n/a.jpg", filename="a.jpg", kind="image"))
+    repo.upsert_media(Media(path="/n/b.jpg", filename="b.jpg", kind="image"))
+    repo.suggest_tag(a, "predicación")
+    repo.apply_tag(a, "culto joven")
+    (m_a, m_b), _ = repo.buscar("")
+    assert m_a.etiquetas == [("culto joven", True), ("predicación", False)]  # confirmadas primero
+    assert m_b.etiquetas == []
+    assert repo.get_media(a).etiquetas is None            # solo Buscar las pide

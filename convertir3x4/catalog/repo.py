@@ -548,7 +548,8 @@ class Repo:
         los fragmentos; los que faltan de su ruta al final), pero en UNA consulta
         con el orden resuelto en la base, así cada página sigue a la anterior sin
         repetir ni saltear. `kind` ('image'/'video') filtra en la base. No trae
-        `search_doc` (el índice de texto: ~40 % de cada fila). El total es None
+        `search_doc` (el índice de texto: ~40 % de cada fila) y sí las etiquetas
+        de cada uno, para la grilla. El total es None
         si se pidió una página después del final.
         """
         where, params = [], []
@@ -577,7 +578,7 @@ class Repo:
             params += [tsq, tsq]
         orden += ", m.filename, m.id"
         rows = self._q(
-            f"SELECT {_COLUMNAS_MEDIA}, count(*) OVER () AS total FROM media m "
+            f"SELECT {_COLUMNAS_MEDIA}, {_ETIQUETAS_MEDIA}, count(*) OVER () AS total FROM media m "
             + ("WHERE " + " AND ".join(where) + " " if where else "")
             + f"ORDER BY {orden} LIMIT %s OFFSET %s",
             params + [cuantos, desde]).fetchall()
@@ -662,6 +663,11 @@ _COLUMNAS_MEDIA = ", ".join("m." + c for c in (
     "id", "rel_path", "filename", "folder_origin", "kind", "width", "height", "aspect",
     "duration", "codec", "size_bytes", "file_mtime", "sha256", "phash", "status",
     "quality_flag", "missing_since"))
+# Las etiquetas de cada medio, para la grilla: [[nombre, confirmada], ...]
+_ETIQUETAS_MEDIA = (
+    "(SELECT COALESCE(json_agg(json_build_array(t.name, mt.confirmed) "
+    "ORDER BY mt.confirmed DESC, t.name), '[]') FROM media_tag mt "
+    "JOIN tag t ON t.id = mt.tag_id WHERE mt.media_id = m.id) AS etiquetas")
 
 
 def _row_to_media(row, raiz: str) -> Media:
@@ -684,6 +690,7 @@ def _row_to_media(row, raiz: str) -> Media:
         status=row["status"],
         quality_flag=row["quality_flag"],
         missing_since=row["missing_since"],
+        etiquetas=[(n, c) for n, c in row["etiquetas"]] if "etiquetas" in row else None,
     )
 
 
