@@ -87,6 +87,8 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
+          # Solo los ejecutables: la acción de Docker sube además su registro del build.
+          pattern: Convertir3x4-*
 
       - name: Rename binaries for release
         run: |
@@ -136,6 +138,8 @@ jobs:
 
       - name: Build (and push on tags)
         uses: docker/build-push-action@v6
+        env:
+          DOCKER_BUILD_RECORD_UPLOAD: false
         with:
           context: .
           file: Dockerfile.catalogador
