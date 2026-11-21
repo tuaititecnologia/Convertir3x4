@@ -21,7 +21,8 @@ from PyQt6.QtWidgets import (
 )
 
 from ...nas.copias import (
-    URLS_POR_DEFECTO, PanelClient, acciones_para, explicar, fecha, ficha, lineas_contenido,
+    URLS_POR_DEFECTO, PanelClient, acciones_para, explicar, fecha, ficha, filas_copiados,
+    lineas_contenido,
     nota_operador, resumir, resumir_contenido, tipo_disco,
 )
 from ...workers import EngineWorker
@@ -178,6 +179,21 @@ class DiscosTab(QWidget):
         self.grid_copia.setVerticalSpacing(4)
         self.grid_copia.setColumnStretch(1, 1)
         pc.addLayout(self.grid_copia)
+        pc.addSpacing(6)
+        self.lbl_copiados = QLabel("Archivos copiados")
+        self.lbl_copiados.setObjectName("section_title")
+        pc.addWidget(self.lbl_copiados)
+        self.lbl_copiados_estado = QLabel("")
+        self.lbl_copiados_estado.setObjectName("muted")
+        self.lbl_copiados_estado.setWordWrap(True)
+        pc.addWidget(self.lbl_copiados_estado)
+        self.lista_copiados = QTreeWidget()
+        self.lista_copiados.setHeaderLabels(["En el disco", "En el NAS", "Tamaño", "Copiado"])
+        self.lista_copiados.setRootIsDecorated(False)
+        self.lista_copiados.setAccessibleName("Archivos copiados")
+        self.lista_copiados.setMinimumHeight(160)
+        self.lista_copiados.setVisible(False)
+        pc.addWidget(self.lista_copiados)
         self.panel_copia.setVisible(False)
         blay.addWidget(self.panel_copia)
 
@@ -396,7 +412,7 @@ class DiscosTab(QWidget):
             self.tree.addTopLevelItem(it)
             if c["uuid"] == sel:
                 it.setSelected(True)
-                self._mostrar_copia(c)
+                self._mostrar_copia(c, traer=False)    # refresco: la lista ya está
         if copias:   # vacía, se quedan los anchos iniciales (si no, los títulos se cortan)
             for i in range(3):
                 self.tree.resizeColumnToContents(i)
@@ -411,16 +427,17 @@ class DiscosTab(QWidget):
         if not items:
             self.panel_copia.setVisible(False)
             return
-        self._mostrar_copia(items[0].data(0, _COPIA_ROLE) or {})
         uuid = items[0].data(0, _UUID_ROLE)
         self._log_uuid = uuid
+        self._mostrar_copia(items[0].data(0, _COPIA_ROLE) or {})
         self.txt_log.setPlainText("Cargando…")
         client = self.client
         self._run(lambda: client.log(uuid),
                   lambda texto: uuid == self._log_uuid and self._set_log(texto))
 
-    def _mostrar_copia(self, c: dict):
-        """El panel de la copia elegida: estado, qué pasó y qué hacer, y sus datos."""
+    def _mostrar_copia(self, c: dict, traer: bool = True):
+        """El panel de la copia elegida: estado, qué pasó y qué hacer, sus datos y
+        los archivos copiados (`traer`: pedirlos al NAS; si no, se reusan)."""
         r = resumir(c)
         self.lbl_copia_estado.setText(r.titulo)
         self.lbl_copia_estado.setStyleSheet(f"color: {_color(r.tono).color().name()};")
@@ -446,7 +463,74 @@ class DiscosTab(QWidget):
             v.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             self.grid_copia.addWidget(k, i, 0, Qt.AlignmentFlag.AlignTop)
             self.grid_copia.addWidget(v, i, 1)
+        self._filas_grid = len(filas)     # la grilla no achica rowCount al vaciarse
         self.panel_copia.setVisible(True)
+        guardados = getattr(self, "_copiados", None)
+        if traer or not guardados or guardados[0] != c.get("uuid"):
+            self._pedir_copiados(c.get("uuid"))
+        else:
+            self._agregar_inicio_fin(guardados[1])
+
+    def _pedir_copiados(self, uuid):
+        self.lista_copiados.clear()
+        self.lista_copiados.setVisible(False)
+        self.lbl_copiados_estado.setText("Trayendo la lista del NAS…")
+        self.lbl_copiados_estado.setVisible(True)
+        if not uuid or self.client is None:
+            self.lbl_copiados_estado.setText("No se puede consultar el NAS.")
+            return
+        client = self.client
+
+        def ok(datos):
+            if uuid == self._log_uuid:
+                self._copiados = (uuid, datos)
+                self._mostrar_copiados(datos)
+
+        def fallo(msg):
+            if uuid == self._log_uuid:
+                self.lbl_copiados_estado.setText("No se pudo traer la lista de archivos. "
+                                                 + _amigable(msg))
+        self._run(lambda: client.copiados(uuid), ok, fallo)
+
+    def _mostrar_copiados(self, datos: dict | None):
+        if datos is None:
+            self.lbl_copiados_estado.setText("El NAS todavía no informa la lista de archivos: "
+                                             "hay que actualizar el servicio de la Grabadora.")
+            return
+        filas = filas_copiados(datos)
+        self._agregar_inicio_fin(datos)
+        if not filas:
+            self.lbl_copiados_estado.setText("Esta copia no tiene archivos anotados.")
+            return
+        total, errores = int(datos.get("total") or 0), len(datos.get("errores") or [])
+        txt = "1 archivo copiado" if total == 1 else f"{total} archivos copiados"
+        if errores:
+            txt += " · " + ("1 no se pudo leer" if errores == 1 else f"{errores} no se pudieron leer")
+        if total > len(datos.get("copiados") or []):
+            txt += f" (se muestran los primeros {len(datos['copiados'])})"
+        self.lbl_copiados_estado.setText(txt)
+        rojo = _color("error")
+        for origen, destino, tam, cuando, fallo in filas:
+            it = QTreeWidgetItem([origen, destino, tam, cuando])
+            if fallo:
+                for col in range(4):
+                    it.setForeground(col, rojo)
+            self.lista_copiados.addTopLevelItem(it)
+        for i in range(4):
+            self.lista_copiados.resizeColumnToContents(i)
+        self.lista_copiados.setVisible(True)
+
+    def _agregar_inicio_fin(self, datos: dict | None):
+        """Cuándo empezó y terminó la copia, al final de sus datos."""
+        if not datos:
+            return
+        for dato, valor in (("Empezó", datos.get("inicio")), ("Terminó", datos.get("fin"))):
+            if valor:
+                k = QLabel(dato)
+                k.setObjectName("muted")
+                self.grid_copia.addWidget(k, self._filas_grid, 0)
+                self.grid_copia.addWidget(QLabel(fecha(valor)), self._filas_grid, 1)
+                self._filas_grid += 1
 
     def _set_log(self, texto):
         bar = self.txt_log.verticalScrollBar()

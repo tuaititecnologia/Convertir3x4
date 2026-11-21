@@ -57,7 +57,7 @@ def test_resumir_terminado_corriendo_es_auto_formateando():
 def test_resumir_disco_formateado_con_uuid_nuevo():
     r = resumir(None, None, {"admitido": True, "formateado": {"fecha": "2026-11-15 11:38:12",
                                                               "archivos": 39}})
-    assert r.titulo == "Vacío" and "39 archivos" in r.detalle
+    assert r.titulo == "Copia y vaciado completo" and "39 archivos" in r.detalle
 
 
 def test_resumir_ntfs_y_tarea_fallida():
@@ -528,5 +528,68 @@ def test_historial_muestra_la_copia_completa_al_elegirla():
     t.tree.topLevelItem(1).setSelected(True)
     it.setSelected(False)
     app.processEvents()
-    assert t.lbl_copia_estado.text() == "Vacío" and not t.lbl_copia_hacer.isVisibleTo(t)
+    assert t.lbl_copia_estado.text() == "Copia y vaciado completo"
+    assert not t.lbl_copia_hacer.isVisibleTo(t)
+    t.deleteLater()
+
+
+def test_panel_copiados_lista_lo_copiado_sin_rutas_del_nas(panel):
+    d = panel["raiz"] / UUID
+    raiz = str(panel["multimedia"])
+    (d / "copiados.jsonl").write_text("\n".join(json.dumps(x) for x in [
+        {"origen": "HyperDeck_0002.mp4", "tamano": 4_100_000_000, "mtime": 1,
+         "destino": f"{raiz}/Historial/Reuniones/2026-11-15_HyperDeck_0002.mp4",
+         "fecha": "2026-11-15 11:20:00"},
+        {"origen": "HyperDeck_0001.mp4", "tamano": 8_200_000_000, "mtime": 1,
+         "destino": f"{raiz}/Historial/Reuniones/2026-11-15_HyperDeck_0001.mp4",
+         "fecha": "2026-11-15 11:10:00"},
+        # «Copiar lo nuevo» volvió a anotarlo: vale el último renglón
+        {"origen": "HyperDeck_0001.mp4", "tamano": 8_200_000_000, "mtime": 1,
+         "destino": f"{raiz}/Historial/Reuniones/2026-11-15_HyperDeck_0001.mp4",
+         "fecha": "2026-11-15 11:30:00"}]) + "\n")
+    (d / "errores.jsonl").write_text(json.dumps({"origen": "HyperDeck_0003.mp4",
+                                                 "error": "stat: Input/output error"}) + "\n")
+    (d / "copia.log").write_text("[2026-11-15 11:00:01] ==== inicio: /dev/sdh2 ...\n"
+                                 "[2026-11-15 11:37:00] ==== fin OK: 39 archivos\n")
+    c = PanelClient([panel["url"]], panel["token"])
+    datos = c.copiados(UUID)
+    assert datos["total"] == 2 and datos["inicio"] == "2026-11-15 11:00:01"
+    assert datos["fin"] == "2026-11-15 11:37:00"
+    from convertir3x4.nas.copias import filas_copiados
+    filas = filas_copiados(datos)
+    assert filas[0] == ("HyperDeck_0003.mp4", "", "", "No se pudo leer", True)
+    assert filas[1] == ("HyperDeck_0001.mp4", "Historial/Reuniones/2026-11-15_HyperDeck_0001.mp4",
+                        "8,2 GB", "15/11/2026 11:30", False)
+    assert all("/mnt/" not in f[1] and raiz not in f[1] for f in filas)
+
+
+def test_cliente_copiados_con_un_nas_viejo_devuelve_none(monkeypatch):
+    from convertir3x4.nas import copias
+    c = copias.PanelClient(["http://x"], "t")
+    monkeypatch.setattr(c, "_pedir", lambda *a, **k: (_ for _ in ()).throw(
+        copias.PanelError("No existe")))
+    assert c.copiados("ABCD-1234") is None
+
+
+def test_detalle_muestra_los_archivos_copiados():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PyQt6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    from convertir3x4.ui.tabs.tab_discos import DiscosTab
+    t = DiscosTab()
+    t._timer.stop()
+    t._log_uuid = "A"
+    t._mostrar_copia({"uuid": "A", "fase": "FORMATEADO", "modelo": "MSI"}, traer=False)
+    t._mostrar_copiados({"total": 1, "inicio": "2026-11-15 11:00:01", "fin": "2026-11-15 11:37:00",
+                         "copiados": [{"origen": "HyperDeck_0001.mp4", "bytes": 8_200_000_000,
+                                       "destino": "Historial/Reuniones/a.mp4",
+                                       "fecha": "2026-11-15 11:30:00"}],
+                         "errores": [{"origen": "HyperDeck_0003.mp4", "error": "x"}]})
+    assert t.lista_copiados.topLevelItemCount() == 2
+    assert t.lista_copiados.topLevelItem(1).text(1) == "Historial/Reuniones/a.mp4"
+    assert "1 archivo copiado · 1 no se pudo leer" == t.lbl_copiados_estado.text()
+    datos = [t.grid_copia.itemAt(i).widget().text() for i in range(t.grid_copia.count())]
+    assert datos[-4:] == ["Empezó", "15/11/2026 11:00", "Terminó", "15/11/2026 11:37"]
+    t._mostrar_copiados(None)
+    assert "actualizar el servicio de la Grabadora" in t.lbl_copiados_estado.text()
     t.deleteLater()
