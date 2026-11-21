@@ -49,7 +49,7 @@ Contenedor temporal en el NAS (`python:3.12-slim`, 2 GB de tope), `multimedia` m
 
 ### El catalogador
 
-- **Imagen:** se arma en GitHub Actions con el mismo código del `.exe` y se publica en `ghcr.io/tuaititecnologia/convertir3x4-catalogador` con la misma etiqueta de versión (`v0.7.0`, …). El repositorio es público, así que el NAS la baja sin credenciales. Las dependencias van fijas por versión.
+- **Imagen:** se arma en GitHub Actions con el mismo código del `.exe` y se publica en `ghcr.io/tuaititecnologia/convertir3x4-catalogador` con la misma etiqueta de versión (`v0.7.0`, …). El repositorio es público, pero GitHub suele crear el paquete como privado la primera vez. Antes de instalar hay que confirmar en el NAS que `docker pull` funciona sin credenciales; si no, se hace público el paquete. Las dependencias van fijas por versión.
 - **Código:** un comando sin interfaz, `python -m convertir3x4.catalogador`, que usa `catalog/` y `engine/` tal como están. `appdata.py` importa Qt, así que el catalogador lee su configuración de variables de entorno del compose (servidor `postgres`, clave, raíz `/media`, carpeta de modelos).
 - **Montajes:** `/mnt/tank/multimedia` → `/media` en **solo lectura**. El catalogado nunca escribe en los archivos. Los modelos de IA en un volumen propio (616 MB; ya bajados en `/mnt/tank/ingreso/_bench/models`).
 - **Rutas:** la base guarda rutas relativas a la raíz. El NAS cataloga `/media/Publicar/…` y las PCs abren el mismo archivo en `\\truenas\multimedia\Publicar\…`.
@@ -102,6 +102,8 @@ Mientras una PC tenga la versión vieja, esa PC no toca el catálogo (`CatalogoI
 - **Las PCs no catalogan.** Cataloga solo el NAS. Se saca de la app el catalogado local.
 - **Se agregan los videos de cámara** `.mpg`, `.mts` y `.m2t` (89, 59 y 16 archivos, unos 86 GB) a `VIDEO_EXTS`, después de probar que ffmpeg los lee.
 - **Las fotos RAW no se catalogan** (246 `.nef` y 23 `.cr2`).
+
+Prueba con los archivos reales del NAS (21/11/2026): se leen bien los 59 `.mts`, los 16 `.m2t` y 91 de los 100 `.mpg`. Los 9 restantes pesan 0 bytes (están vacíos desde 2014, en `Historial/Archivo 2013-2019/VIDEOS03/…/congreso aviva el fuego 2014/…/2 jk/`) y quedan marcados como dañados.
 
 ## Para decidir
 

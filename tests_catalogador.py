@@ -198,3 +198,14 @@ def _esperar(cond, segundos=5.0):
             return
         time.sleep(0.05)
     raise AssertionError("no se cumplió a tiempo")
+
+
+def test_horas_con_zona(repo_nas, cfg):
+    """`ultima_fin` es la hora real, en cualquier zona de la base (la de
+    desarrollo está en UTC; la del NAS, en Buenos Aires)."""
+    repo_nas.pedir_catalogado()
+    antes = dt.datetime.now().astimezone()
+    cat.ciclo(repo_nas, cfg)
+    est = repo_nas.estado_catalogado()
+    assert abs((est["ultima_fin"] - antes).total_seconds()) < 30
+    assert abs((est["ultima_inicio"] - antes).total_seconds()) < 30

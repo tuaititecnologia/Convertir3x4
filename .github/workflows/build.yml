@@ -75,7 +75,8 @@ jobs:
           path: ${{ matrix.artifact-path }}
 
   release:
-    needs: build
+    # El .exe de v0.7.0+ no cataloga: sin la imagen del NAS, no hay release.
+    needs: [build, catalogador]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:

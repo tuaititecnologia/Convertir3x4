@@ -220,7 +220,8 @@ def atender(repo: Repo, cfg: ConfigCatalogador, pedido: dict | None,
     quien = f"pedido {pedido['id']}" if pedido else "pasada nocturna"
     log.info("empieza %s (%s)", quien, carpeta or "todas las carpetas")
     repo.actualizar_estado(fase="catalogando", hechos=0, total=None, detalle=None,
-                           pedido_id=pedido["id"] if pedido else None, ultima_inicio=ahora)
+                           pedido_id=pedido["id"] if pedido else None,
+                           ultima_inicio=ahora.astimezone())   # con zona: la base es timestamptz
     resumen, error = None, None
     try:
         resumen = pasada(repo, cfg, carpeta, parar)
@@ -232,7 +233,7 @@ def atender(repo: Repo, cfg: ConfigCatalogador, pedido: dict | None,
         log.exception("falló %s", quien)
         error = f"{e.__class__.__name__}: {e}"[:500]
     fin = dict(fase="esperando", hechos=None, total=None, detalle=None, pedido_id=None,
-               ultima_fin=datetime.datetime.now(), ultima_resumen=resumen, ultima_error=error)
+               ultima_fin=datetime.datetime.now().astimezone(), ultima_resumen=resumen, ultima_error=error)
     if pedido is None:
         # Al terminar, no al empezar: si se corta a mitad, se repite esa noche.
         fin["ultima_programada"] = ahora.date() if ahora.time() >= cfg.hora else \
