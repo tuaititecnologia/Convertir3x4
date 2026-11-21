@@ -16,8 +16,9 @@ clave =
 ; unidad: ProPresenter guarda la ruta completa que recibe al arrastrar.
 raiz = \\truenas\multimedia
 
-; Carpetas que se catalogan, relativas a la raíz, una por línea (con sangría).
-; No pueden salir de la raíz ni estar una dentro de otra.
+; Desde la v0.7.0 las PCs no catalogan: lo hace el NAS, y la lista de carpetas
+; está en el compose de la App «catalogo» (CDLM_CATALOGO_CARPETAS). Este dato
+; ya no se usa; se deja por compatibilidad con versiones anteriores.
 carpetas =
     Entrada
     Publicar

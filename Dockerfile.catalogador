@@ -1,0 +1,21 @@
+# Catalogador del NAS: docs/catalogado-en-el-nas.md.
+# Lo publica GitHub Actions como ghcr.io/tuaititecnologia/convertir3x4-catalogador
+# con la misma etiqueta que el .exe (vX.Y.Z). Corre en la App «catalogo» de TrueNAS.
+FROM python:3.12-slim
+
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 TZ=America/Argentina/Buenos_Aires
+COPY requirements-catalogador.txt /tmp/
+RUN pip install --no-cache-dir --root-user-action=ignore -r /tmp/requirements-catalogador.txt \
+ && rm /tmp/requirements-catalogador.txt
+
+WORKDIR /app
+COPY convertir3x4/__init__.py convertir3x4/config.py convertir3x4/catalogador.py convertir3x4/
+COPY convertir3x4/catalog convertir3x4/catalog
+COPY convertir3x4/engine convertir3x4/engine
+ARG APP_VERSION=dev
+RUN echo "APP_VERSION = \"${APP_VERSION}\"" > _version.py \
+ && python -c "import convertir3x4.catalogador, convertir3x4.engine.ai_pipeline"
+
+# Usuario «apps» de TrueNAS; el compose le suma el grupo multimedia para leer.
+USER 568:568
+CMD ["python", "-m", "convertir3x4.catalogador"]

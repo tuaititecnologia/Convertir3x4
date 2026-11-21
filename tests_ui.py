@@ -4,6 +4,7 @@ Cubren lo que se arregló al pasar al tema nuevo (docs: ui/style.py), para que n
 vuelva a romperse sin que nadie lo note.
 """
 
+import datetime
 import os
 import re
 
@@ -571,3 +572,78 @@ class TestRegistroDeLosTextos:
                             and id(n) not in docs and self.PROHIBIDAS.search(n.value)):
                         encontrados.append(f"{nombre}:{n.lineno}: {n.value[:70]!r}")
         assert not encontrados, "\n".join(encontrados)
+
+
+class TestCatalogarEnElNas:
+    """Pestaña Catalogar: pide al NAS y muestra lo que informa (catalogado_estado)."""
+
+    AHORA = datetime.datetime(2026, 11, 22, 10, 0).astimezone()
+
+    def _est(self, **k):
+        base = dict(fase="esperando", segundos_sin_latido=5, hechos=None, total=None,
+                    ultima_fin=None, ultima_error=None, ultima_resumen=None, latido=None)
+        base.update(k)
+        return base
+
+    def test_textos_del_estado(self):
+        from convertir3x4.ui.tabs.tab_motor import texto_estado
+        hoy = self.AHORA.replace(hour=2, minute=10)
+        assert "no está preparado" in texto_estado(self._est(segundos_sin_latido=None), [])[0]
+        t, trabaja = texto_estado(self._est(fase="catalogando", hechos=3, total=10), [])
+        assert t == "El NAS está revisando las carpetas: 3 de 10." and trabaja
+        t, _ = texto_estado(self._est(ultima_fin=hoy, ultima_resumen={
+            "catalogado": {"added": 12, "missing": 1}, "ia": {"scene_tags": 3}}), [], self.AHORA)
+        assert t.startswith("Última revisión: hoy a las 02:10. 12 nuevos.")
+        assert "1 ya no está en su carpeta" in t and "La IA sugirió 3 etiquetas" in t
+        t, _ = texto_estado(self._est(ultima_fin=hoy, ultima_error="x"), [], self.AHORA)
+        assert "no pudo terminar" in t
+        t, trabaja = texto_estado(self._est(segundos_sin_latido=600, latido=hoy),
+                                  [{"id": 1}], self.AHORA)
+        assert "no está catalogando" in t and "hoy a las 02:10" in t and "en espera" in t
+        assert not trabaja
+        assert "grabadora" in texto_estado(self._est(fase="esperando_copia"), [])[0]
+        assert "versión anterior" in texto_estado(self._est(fase="detenido"), [])[0]
+        assert texto_estado(self._est(), [{"id": 1}])[1]       # pedido en la fila
+
+    def test_pide_al_nas_y_muestra_el_estado(self, app, pg_cfg, tmp_path):
+        from convertir3x4.catalog.db import conectar
+        from convertir3x4.catalog.repo import Repo
+        from convertir3x4.ui.servicio_catalogo import ServicioCatalogo
+        from convertir3x4.ui.tabs.tab_motor import MotorTab
+
+        def abrir():
+            return Repo(conectar(pg_cfg), str(tmp_path))
+        with abrir() as r:           # lo que publica el catalogador al arrancar
+            r.actualizar_estado(carpetas=["Publicar", "Entrada"], fase="esperando")
+        srv = ServicioCatalogo(abrir=abrir)
+        tab = MotorTab(srv=srv)
+        try:
+            assert _esperar(app, lambda: tab.btn_run.isEnabled())
+            assert "Publicar" in tab.lbl_carpetas.text()
+            assert "todavía no catalogó" in tab.lbl_status.text()
+            tab.btn_run.click()
+            assert not tab.btn_run.isEnabled()
+            assert _esperar(app, lambda: "va a empezar" in tab.lbl_status.text())
+            with abrir() as r:
+                assert [p["carpeta"] for p in r.pedidos_abiertos()] == [None]
+                p = r.tomar_pedido()
+                r.actualizar_estado(fase="catalogando", hechos=5, total=20)
+            tab.refresh()
+            assert _esperar(app, lambda: "5 de 20" in tab.lbl_status.text())
+            assert tab.progress.isVisibleTo(tab) and not tab.btn_run.isEnabled()
+            cambios = []
+            tab.catalogChanged.connect(lambda: cambios.append(1))
+            with abrir() as r:
+                r.cerrar_pedido(p["id"], {"catalogado": {"added": 2}})
+                r.actualizar_estado(fase="esperando", ultima_fin=datetime.datetime.now(),
+                                    ultima_resumen={"catalogado": {"added": 2}})
+            tab.refresh()
+            assert _esperar(app, lambda: "2 nuevos" in tab.lbl_status.text())
+            assert tab.btn_run.isEnabled() and not tab.progress.isVisibleTo(tab)
+            assert cambios == []      # primera pasada vista: no había una anterior
+            # una subcarpeta fuera de la lista no se pide
+            tab.catalogar_una_carpeta(str(tmp_path / "Historial"))
+            assert "no está entre las que se catalogan" in tab.lbl_status.text()
+        finally:
+            tab.deleteLater()
+            srv.cerrar()

@@ -1,7 +1,8 @@
 """Opciones avanzadas del catálogo: escondidas detrás del ⚙ de Catalogar.
 
 - Catalogar una sola carpeta (p. ej. un evento recién subido), sin esperar a
-  recorrer todas. Tiene que estar dentro de alguna carpeta de la lista.
+  recorrer todas: se le pide al NAS. Tiene que estar dentro de alguna carpeta
+  de la lista.
 - Limpiar el catálogo: quitar las fotos y videos que la catalogación marcó
   como faltantes (su archivo ya no está en su carpeta del NAS). En dos pasos,
   ver y después quitar con confirmación, porque se pierden sus etiquetas.
@@ -44,8 +45,8 @@ class CatalogoAvanzado(QDialog):
         t.setObjectName("section_title")
         lay.addWidget(t)
         ayuda = QLabel(
-            "Para agregar enseguida una carpeta recién copiada al NAS, sin esperar a que se "
-            "revisen todas. Debe estar dentro de alguna de las carpetas que se catalogan.")
+            "Para que el NAS agregue enseguida una carpeta recién copiada, sin revisar todas. "
+            "Debe estar dentro de alguna de las carpetas que se catalogan.")
         ayuda.setObjectName("muted")
         ayuda.setWordWrap(True)
         lay.addWidget(ayuda)

@@ -36,11 +36,12 @@ HELP = [
                                  "descartarla: no volverá a sugerirse."),
     ]),
     ("Catalogar", [
-        ("Agregar al catálogo", "Elija la carpeta y haga clic en Catalogar. Puede repetirse "
-                                "en cualquier momento: solo se agrega lo que todavía no "
-                                "estaba."),
-        ("Análisis con IA", "Sugiere etiquetas y reconoce a las personas de la lista. Todo "
-                            "queda como sugerencia hasta que se confirma en Buscar."),
+        ("Agregar al catálogo", "El NAS revisa las carpetas todas las noches. Para no "
+                                "esperar, haga clic en «Catalogar ahora»: solo se agrega "
+                                "lo que todavía no estaba."),
+        ("Análisis con IA", "El NAS sugiere etiquetas y reconoce a las personas de la "
+                            "lista al catalogar. Todo queda como sugerencia hasta que se "
+                            "confirma en Buscar."),
         ("Personas", "Solo se reconoce a las personas de la lista. Cargue de 3 a 5 fotos "
                      "por persona en las que el rostro se vea con claridad."),
     ]),

@@ -27,7 +27,8 @@ from psycopg.rows import dict_row
 
 # Extensiones de medios reconocidas por el inventario.
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".gif", ".tiff", ".tif"}
-VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm"}
+# .mpg/.mts/.m2t: grabaciones de cámara del archivo histórico (decidido el 21/11/2026).
+VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm", ".mpg", ".mpeg", ".mts", ".m2ts", ".m2t"}
 
 TIEMPO_CONEXION = 3          # segundos; libpq no acepta menos de 2
 _LLAVE_ESQUEMA = 0x43444C4D  # "CDLM": bloqueo para migrar de a una PC por vez
@@ -343,7 +344,47 @@ CREATE TABLE person_reference (
 );
 """
 
+# El catalogado corre en el NAS (docs/catalogado-en-el-nas.md). Las PCs lo
+# piden y lo miran a través de estas dos tablas.
+_V2 = r"""
+-- Un pedido de catalogar: «Catalogar ahora» (carpeta NULL = todas las de la
+-- lista) o una subcarpeta desde el ⚙. El catalogador del NAS lo toma, lo marca
+-- empezado y lo cierra con el resultado (o el error).
+CREATE TABLE catalogado_pedido (
+    id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    carpeta    text,
+    pedido_por text,
+    creado     timestamptz NOT NULL DEFAULT now(),
+    empezado   timestamptz,
+    terminado  timestamptz,
+    resumen    jsonb,
+    error      text
+);
+CREATE INDEX catalogado_pedido_abierto ON catalogado_pedido (id) WHERE terminado IS NULL;
+
+-- Una sola fila: qué está haciendo el catalogador del NAS. `latido` se
+-- actualiza cada pocos segundos mientras el catalogador está vivo.
+CREATE TABLE catalogado_estado (
+    id             boolean PRIMARY KEY DEFAULT true CHECK (id),
+    version_app    text,
+    carpetas       text[] NOT NULL DEFAULT '{}',
+    fase           text NOT NULL DEFAULT 'esperando',
+    detalle        text,
+    hechos         integer,
+    total          integer,
+    pedido_id      bigint,
+    ultima_inicio  timestamptz,
+    ultima_fin     timestamptz,
+    ultima_resumen jsonb,
+    ultima_error   text,
+    ultima_programada date,
+    latido         timestamptz
+);
+INSERT INTO catalogado_estado DEFAULT VALUES;
+"""
+
 MIGRACIONES: list[tuple[int, str]] = [
     (1, _V1),
+    (2, _V2),
 ]
 VERSION_ESQUEMA = MIGRACIONES[-1][0]

@@ -18,6 +18,7 @@ import hashlib
 import re
 
 import psycopg
+import psycopg.types.json
 
 from . import rutas
 from .db import LLAVE_CATALOGAR
@@ -254,6 +255,81 @@ class Repo:
         self._q("SELECT pg_advisory_unlock(%s, hashtext(%s))", (LLAVE_CATALOGAR, carpeta))
 
     # ------------------------------------------------------------- tags
+    # ------------------------------------------------- catalogado en el NAS
+    # Lo pide una PC (`pedir_catalogado`) y lo atiende el catalogador del NAS
+    # (`tomar_pedido` … `cerrar_pedido`). Ver docs/catalogado-en-el-nas.md.
+
+    def pedir_catalogado(self, carpeta: str | None = None, pedido_por: str = "") -> int:
+        """Anota un pedido (carpeta None = todas). Si ya hay uno igual sin
+        empezar, devuelve ese en lugar de duplicarlo."""
+        with self.conn.transaction():
+            fila = self._q(
+                "SELECT id FROM catalogado_pedido WHERE terminado IS NULL AND empezado IS NULL"
+                " AND carpeta IS NOT DISTINCT FROM %s ORDER BY id LIMIT 1", (carpeta,)).fetchone()
+            if fila:
+                return fila["id"]
+            pid = self._q(
+                "INSERT INTO catalogado_pedido (carpeta, pedido_por) VALUES (%s, %s)"
+                " RETURNING id", (carpeta, pedido_por or None)).fetchone()["id"]
+            self._q("NOTIFY catalogado")
+        return pid
+
+    def pedidos_abiertos(self) -> list[dict]:
+        return self._q(
+            "SELECT id, carpeta, pedido_por, creado, empezado FROM catalogado_pedido"
+            " WHERE terminado IS NULL ORDER BY id").fetchall()
+
+    def pedido(self, pedido_id: int) -> dict | None:
+        return self._q("SELECT * FROM catalogado_pedido WHERE id = %s", (pedido_id,)).fetchone()
+
+    def tomar_pedido(self) -> dict | None:
+        """El pedido más viejo sin empezar, ya marcado como empezado."""
+        return self._q(
+            "UPDATE catalogado_pedido SET empezado = now() WHERE id = ("
+            " SELECT id FROM catalogado_pedido WHERE terminado IS NULL AND empezado IS NULL"
+            " ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING *").fetchone()
+
+    def cerrar_pedido(self, pedido_id: int, resumen: dict | None = None,
+                      error: str | None = None):
+        self._q("UPDATE catalogado_pedido SET terminado = now(), resumen = %s, error = %s"
+                " WHERE id = %s", (psycopg.types.json.Jsonb(resumen) if resumen is not None
+                                   else None, error, pedido_id))
+
+    def soltar_pedidos_colgados(self) -> int:
+        """Al arrancar el catalogador: lo que quedó empezado y sin cerrar (se
+        cortó a mitad) vuelve a la fila. La pasada es idempotente."""
+        return self._q("UPDATE catalogado_pedido SET empezado = NULL"
+                       " WHERE terminado IS NULL AND empezado IS NOT NULL").rowcount
+
+    def estado_catalogado(self) -> dict:
+        """La fila de estado, con `segundos_sin_latido` (None si nunca latió)."""
+        return self._q(
+            "SELECT *, EXTRACT(EPOCH FROM now() - latido)::integer AS segundos_sin_latido,"
+            " now() AS ahora FROM catalogado_estado").fetchone()
+
+    _CAMPOS_ESTADO = {"version_app", "carpetas", "fase", "detalle", "hechos", "total",
+                      "pedido_id", "ultima_inicio", "ultima_fin", "ultima_resumen",
+                      "ultima_error", "ultima_programada"}
+
+    def actualizar_estado(self, latir: bool = True, **campos):
+        """Cambia los campos dados de la fila de estado (y el latido)."""
+        malos = set(campos) - self._CAMPOS_ESTADO
+        if malos:
+            raise ValueError(f"campos desconocidos: {sorted(malos)}")
+        sets, vals = [], []
+        for k, v in campos.items():
+            if k == "ultima_resumen" and v is not None:
+                v = psycopg.types.json.Jsonb(v)
+            sets.append(f"{k} = %s")
+            vals.append(v)
+        if latir:
+            sets.append("latido = now()")
+        if sets:
+            self._q("UPDATE catalogado_estado SET " + ", ".join(sets), vals)
+
+    def latir(self):
+        self._q("UPDATE catalogado_estado SET latido = now()")
+
     def normalize_tag(self, name: str) -> str:
         return " ".join(name.strip().lower().split())
 
