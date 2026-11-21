@@ -56,7 +56,7 @@ Contenedor temporal en el NAS (`python:3.12-slim`, 2 GB de tope), `multimedia` m
 - **Acceso a la base:** por la red interna de la App (`ix-catalogo_default`), con la línea `samenet` en `pg_hba.conf`, solo para el usuario `catalogo`. `samenet` es la subred de esa red, así que no hace falta fijarla en el compose. Las PCs siguen entrando por sus propias líneas, porque Docker conserva su IP.
 - **Recursos:** tope de memoria de 1,5 GB (a confirmar con la primera medición real), `nice` 10 y 2 hilos para ONNX Runtime. `ionice` no se usa: ZFS no respeta las prioridades de disco por proceso.
 - **Videos:** se leen con imageio-ffmpeg directo (`catalog/video_ffmpeg.py`). La capa de imageio elige el lector por la extensión y no abría `.mts` ni `.m2t`.
-- **Telemetría:** ONNX Runtime trae envío de datos de uso; se apaga al crear la sesión (`engine/vision.py`).
+- **Telemetría:** ONNX Runtime trae envío de datos de uso; se apaga al crear la sesión (`engine/vision.py`). Además, desde el 21/11/2026 el catalogador corre en una red de Docker interna (`interna`, `internal: true`) que solo llega a PostgreSQL: no tiene salida a internet, así que nada puede salir del NAS aunque una librería lo intente. Los modelos ya están en `/modelos`; si cambia su versión en `ai_models.py`, hay que bajarlos a mano.
 
 ### Cuándo corre
 
@@ -76,7 +76,7 @@ Dos tablas nuevas, con su migración numerada en `catalog/db.py`:
 - **Catalogar** deja de catalogar en la PC. Muestra el estado que informa el NAS («Catalogando Publicar: 1.250 de 4.027 fotos», «Última pasada: hoy 02:10, sin errores») y tiene el botón «Catalogar ahora». En el ⚙ quedan catalogar una subcarpeta y quitar los faltantes, ahora como pedidos al NAS.
 - **Si el latido tiene más de un minuto,** Catalogar avisa que el NAS no está catalogando, con la hora de la última señal. Un pedido hecho en ese momento queda en espera y se atiende cuando el catalogador vuelve.
 - **Lista de carpetas:** la define el catalogador (`CDLM_CATALOGO_CARPETAS` en el compose) y la publica en `catalogado_estado.carpetas`, de donde la leen las PCs. Así hay una sola lista. `catalogo.ini` se queda con la conexión y la raíz.
-- **Personas para reconocer:** se siguen cargando desde la app. La firma de la foto de referencia la calcula la PC y la guarda en la base, como hoy. Los modelos son los mismos en la PC y en el NAS (versión fija en `ai_models.py`).
+- **Personas para reconocer** (v0.7.2): se cargan desde la app, pero la firma la calcula el NAS. La PC achica cada foto a 1.600 px y la sube a `person_reference` como `pendiente` (`Repo.subir_fotos_de_referencia`, que despierta al catalogador). El catalogador la procesa en la siguiente vuelta, o cada 30 s si está en medio de una pasada, y la deja `lista`, `sin_cara` o `ilegible`. La lista de la app lo muestra por los avisos de la base. La foto queda guardada para recalcular la firma si cambia el modelo de caras. La PC no baja ni carga modelos, y el `.exe` ya no lleva ONNX Runtime ni OpenCV. La persona se reconoce en el catálogo desde la próxima pasada.
 - **Zabbix:** el «sigo vivo» lo manda el NAS al terminar cada pasada, no la PC de edición. Pendiente: la primera versión no lo manda todavía; mientras tanto, el latido y `ultima_fin` en `catalogado_estado` muestran si corre.
 
 ### Cambios en vivo (v0.7.1)
@@ -113,6 +113,28 @@ Mientras una PC tenga la versión vieja, esa PC no toca el catálogo (`CatalogoI
 - **Las fotos RAW no se catalogan** (246 `.nef` y 23 `.cr2`).
 
 Prueba con los archivos reales del NAS (21/11/2026): se leen bien los 59 `.mts`, los 16 `.m2t` y 91 de los 100 `.mpg`. Los 9 restantes pesan 0 bytes (están vacíos desde 2014, en `Historial/Archivo 2013-2019/VIDEOS03/…/congreso aviva el fuego 2014/…/2 jk/`) y quedan marcados como dañados.
+
+## Primera pasada real (21/11/2026)
+
+Pedido desde la base a las 13:52 con la v0.7.0, todas las carpetas. Terminó a las 16:56 (**3 h 04 min**), sin errores ni reinicios del contenedor.
+
+| | |
+|---|---|
+| Catalogado | 5.764 archivos (4.027 fotos, 1.737 videos), 37 duplicados, 28 dañados. Datos y miniaturas hasta las 15:30 aprox. |
+| IA | 5.736 analizados en 1 h 26 min, 4.102 etiquetas de escena propuestas (sin personas todavía: la lista está vacía) |
+| Memoria del contenedor | Pico de 1.339 MB (`memory.peak`) con tope de 1.536 MB. Esa cifra incluye la caché de archivos del cgroup; en reposo, con CLIP cargado, quedan 720 MB propios del proceso. Se deja el tope como está y se vuelve a mirar en las próximas pasadas |
+
+**Los 28 dañados:**
+
+| Cantidad | Qué son |
+|---|---|
+| 18 | `.MOV` de una cámara Canon (`Historial/…/CONGRESO JOVENES 2015/VIERNES/MOVIL NOCHE/[02D290]/MVI_00xx.MOV`, de 26 a 118 MB). La cabecera está bien, pero ningún cuadro se puede decodificar, tampoco con el ffmpeg de Homebrew. La carpeta con nombre entre corchetes parece una recuperación de tarjeta |
+| 9 | `.MPG` de 0 bytes (2014), ya vistos en la prueba de formatos |
+| 1 | `Historial/Reuniones/2025-01-12_20-11_HyperDeck_0024.mp4`, de 4.748 bytes |
+
+Etiquetas más propuestas: acción social (1.109), predicación (1.030), alabanza (878), oración (285), congregación (203). «Acción social» tan arriba sugiere revisar ese texto en `engine/vocab.py`.
+
+A las 17:00 se pasó el NAS a la v0.7.1 (esquema 3, cambios en vivo).
 
 ## Para decidir
 

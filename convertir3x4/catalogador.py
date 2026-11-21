@@ -11,6 +11,8 @@ Diseño: docs/catalogado-en-el-nas.md. Lo esencial:
 - Informa qué hace en `catalogado_estado`, con un latido cada pocos segundos
   desde un hilo con su propia conexión.
 - No arranca una pasada mientras se copia un disco de la grabadora.
+- Calcula las firmas de las fotos de referencia de las personas que sube una PC
+  (`Repo.subir_fotos_de_referencia`), apenas llegan, incluso en medio de una pasada.
 - Si el NAS (la base) se cae, se reconecta solo. Si el catálogo es de una
   versión más nueva, no lo toca y lo informa.
 
@@ -46,6 +48,7 @@ ESPERA_RECONEXION = 30    # segundos entre intentos si la base no responde
 VENTANA_PROGRAMADA = 6    # horas después de CDLM_HORA en que todavía se corre la nocturna
 VIGENCIA_COPIA = 600      # segundos: una copia sin novedades por más tiempo se da por muerta
 FASES_COPIA = ("COPIANDO", "MONTANDO")
+REVISAR_REFERENCIAS = 30  # segundos: en una pasada larga, cada cuánto se miran las fotos de personas
 
 
 @dataclass(frozen=True)
@@ -163,16 +166,66 @@ class Detenido(Exception):
     """Se pidió apagar el catalogador en medio de una pasada."""
 
 
+def procesar_referencias(repo: Repo, cfg: ConfigCatalogador) -> int:
+    """Calcula la firma de las fotos de referencia que subió una PC. Devuelve
+    cuántas procesó. Es rápido (unas pocas fotos), así que no espera nada."""
+    if not cfg.ia:
+        return 0
+    pendientes = repo.referencias_pendientes()
+    if not pendientes:
+        return 0
+    import io
+
+    from PIL import Image, ImageOps
+
+    from .engine import ai_models
+    from .engine import faces as faces_mod
+    ai_models.ensure(cfg.modelos)
+    engine = faces_mod.FaceEngine(cfg.modelos)
+    for ref_id, jpeg in pendientes:
+        try:
+            img = ImageOps.exif_transpose(Image.open(io.BytesIO(jpeg))).convert("RGB")
+            v = engine.reference_feature(img)
+        except Exception:  # noqa: BLE001 — foto que no se puede abrir
+            repo.guardar_referencia(ref_id, None, "ilegible")
+            continue
+        if v is None:
+            repo.guardar_referencia(ref_id, None, "sin_cara")
+        else:
+            repo.guardar_referencia(ref_id, faces_mod.to_blob(v), "lista")
+    log.info("fotos de referencia procesadas: %d", len(pendientes))
+    return len(pendientes)
+
+
+def _referencias_al_paso(repo: Repo, cfg: ConfigCatalogador) -> int:
+    """Una falla con las fotos de personas no corta la pasada ni el servicio
+    (se reintenta en la próxima vuelta). Devuelve cuántas procesó."""
+    try:
+        if cfg.ia and repo.hay_referencias_pendientes():
+            return procesar_referencias(repo, cfg)
+    except (CatalogoNoDisponible, psycopg.OperationalError):
+        raise
+    except Exception:  # noqa: BLE001
+        log.exception("no se pudieron procesar las fotos de referencia")
+    return 0
+
+
 class _Avance:
     """progress_cb que escribe en la fila de estado, como mucho cada 2 s, y
-    corta la pasada si se está apagando el contenedor."""
+    corta la pasada si se está apagando el contenedor. Cada
+    REVISAR_REFERENCIAS segundos atiende las fotos de personas que hayan subido."""
 
-    def __init__(self, repo: Repo, fase: str, parar: threading.Event | None = None):
+    def __init__(self, repo: Repo, fase: str, parar: threading.Event | None = None,
+                 cfg: ConfigCatalogador | None = None):
         self.repo, self.fase, self._parar, self._ultimo = repo, fase, parar, 0.0
+        self._cfg, self._refs = cfg, time.monotonic()
 
     def __call__(self, hechos, total, ruta=""):
         if self._parar is not None and self._parar.is_set():
             raise Detenido()
+        if self._cfg is not None and time.monotonic() - self._refs >= REVISAR_REFERENCIAS:
+            self._refs = time.monotonic()
+            _referencias_al_paso(self.repo, self._cfg)
         ahora = time.monotonic()
         if ahora - self._ultimo < 2 and hechos != total:
             return
@@ -196,7 +249,7 @@ def pasada(repo: Repo, cfg: ConfigCatalogador, carpeta: str | None = None,
         if madre is None:
             raise ValueError(f"«{rel}» no está dentro de las carpetas que se catalogan")
         lista, bloqueo = [rel], madre
-    stats = catalogar(repo, lista, progress_cb=_Avance(repo, "catalogando", parar),
+    stats = catalogar(repo, lista, progress_cb=_Avance(repo, "catalogando", parar, cfg),
                       bloqueo=bloqueo)
     resumen = {"catalogado": asdict(stats)}
     if cfg.ia:
@@ -204,7 +257,7 @@ def pasada(repo: Repo, cfg: ConfigCatalogador, carpeta: str | None = None,
         from .engine.ai_pipeline import run_ai
         repo.actualizar_estado(fase="preparando_ia", hechos=None, total=None, detalle=None)
         ai_models.ensure(cfg.modelos)
-        st = run_ai(repo, cfg.modelos, progress_cb=_Avance(repo, "analizando", parar),
+        st = run_ai(repo, cfg.modelos, progress_cb=_Avance(repo, "analizando", parar, cfg),
                     threads=cfg.hilos)
         resumen["ia"] = asdict(st)
     return resumen
@@ -251,6 +304,8 @@ def ciclo(repo: Repo, cfg: ConfigCatalogador,
     """Una vuelta: atiende un pedido o la pasada nocturna, si corresponde.
     Devuelve True si hizo algo."""
     ahora = ahora or datetime.datetime.now()
+    # Las fotos de personas son pocas y no compiten con la copia de un disco.
+    hizo = _referencias_al_paso(repo, cfg) > 0
     copia = copia_en_curso(cfg.copias)
     if copia:
         est = repo.estado_catalogado()
@@ -258,14 +313,14 @@ def ciclo(repo: Repo, cfg: ConfigCatalogador,
             ahora, cfg.hora, est["ultima_programada"])
         repo.actualizar_estado(fase="esperando_copia" if hay_trabajo else "esperando",
                                detalle=copia if hay_trabajo else None)
-        return False
+        return hizo
     pedido = repo.tomar_pedido()
     if pedido is None:
         est = repo.estado_catalogado()
         if not toca_programada(ahora, cfg.hora, est["ultima_programada"]):
             if est["fase"] != "esperando":
                 repo.actualizar_estado(fase="esperando", detalle=None)
-            return False
+            return hizo
     atender(repo, cfg, pedido, ahora, parar)
     return True
 

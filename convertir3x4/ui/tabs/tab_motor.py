@@ -5,8 +5,8 @@ docs/catalogado-en-el-nas.md): todas las noches y cuando alguien lo pide desde
 acá. Esta pestaña solo pide («Catalogar ahora», o una subcarpeta desde el ⚙) y
 muestra lo que el NAS informa en la base. Mientras se ve, consulta cada 3 s.
 
-También administra la lista de personas reconocibles: la firma de cada foto de
-referencia se calcula en esta PC y se guarda en la base.
+También administra la lista de personas reconocibles: esta PC sube las fotos de
+referencia (achicadas) y el NAS calcula sus firmas. La PC no usa modelos de IA.
 """
 
 import datetime
@@ -20,10 +20,10 @@ from PyQt6.QtWidgets import (
     QListWidgetItem, QInputDialog,
 )
 
-from ...appdata import abrir_repo, config_catalogo, models_dir
+from ...appdata import abrir_repo, config_catalogo
 from ...catalog import rutas
 from ...catalog.db import CatalogoNoConfigurado
-from ...engine import ai_models
+from ...catalog.thumbs import foto_de_referencia
 from ...workers import EngineWorker
 from ..servicio_catalogo import servicio, texto_para
 from ..widgets.caja_conexion import CajaConexion
@@ -32,6 +32,7 @@ from .. import icons
 from ..style import T
 
 _PERSON_ID_ROLE = Qt.ItemDataRole.UserRole
+_PERSON_NAME_ROLE = Qt.ItemDataRole.UserRole + 1
 _IMAGE_FILTER = "Imágenes (*.jpg *.jpeg *.png *.webp *.bmp)"
 _CONTENT_MAX_W = 760
 _SECTION_GAP = 22
@@ -42,6 +43,19 @@ _RESPONSABLE = "Comuníquese con el responsable de la aplicación."
 
 def _n(k, uno, varios):
     return uno if k == 1 else f"{k} {varios}"
+
+
+def texto_persona(p: dict) -> str:
+    """Una persona de la lista, con lo que el NAS hizo con sus fotos."""
+    n = p["listas"]
+    texto = f"{p['name']} — " + ("1 foto" if n == 1 else f"{n} fotos")
+    if p["pendientes"]:
+        texto += " · " + ("1 en proceso en el NAS" if p["pendientes"] == 1 else
+                          f"{p['pendientes']} en proceso en el NAS")
+    k = len(p["sin_cara"])
+    if k:
+        texto += " · " + ("1 sin rostro visible" if k == 1 else f"{k} sin rostro visible")
+    return texto
 
 
 def resumen_pasada(resumen: dict | None) -> str:
@@ -154,6 +168,7 @@ class MotorTab(QWidget):
         self._trabajando = False
         self._pedidos: list = []
         self._consultando = False
+        self._personas_en_proceso = False   # hay fotos que el NAS todavía no procesó
         self._build_ui()
         self._timer = QTimer(self)
         self._timer.setInterval(_POLL_MS)
@@ -313,8 +328,15 @@ class MotorTab(QWidget):
         self.refresh()
         self._refresh_people()
 
+    def cambio_en_el_catalogo(self):
+        """Aviso del NAS (ui/avisos_catalogo.py): p. ej. ya procesó las fotos de
+        una persona, o la otra PC agregó a alguien."""
+        self._refresh_people()
+
     def refresh(self):
         """Estado del NAS, pedidos en espera y cantidades (una sola consulta)."""
+        if self._personas_en_proceso:
+            self._refresh_people()          # por si no llega el aviso
         if self._consultando:
             return
         self._consultando = True
@@ -374,11 +396,18 @@ class MotorTab(QWidget):
                         error=lambda _e: self._mostrar_personas([]))
 
     def _mostrar_personas(self, people):
+        sel = self._selected_person()
+        self._personas_en_proceso = any(p["pendientes"] for p in people)
         self.lst_people.clear()
-        for pid, name, n in people:
-            it = QListWidgetItem(f"{name} — {n} foto{'s' if n != 1 else ''}")
-            it.setData(_PERSON_ID_ROLE, pid)
+        for p in people:
+            it = QListWidgetItem(texto_persona(p))
+            it.setData(_PERSON_ID_ROLE, p["id"])
+            it.setData(_PERSON_NAME_ROLE, p["name"])
+            if p["sin_cara"]:
+                it.setToolTip("Sin un rostro visible (no se usan): " + ", ".join(p["sin_cara"]))
             self.lst_people.addItem(it)
+            if sel and sel[0] == p["id"]:
+                it.setSelected(True)
         if not people:
             it = QListWidgetItem("Todavía no hay nadie en la lista.")
             it.setFlags(Qt.ItemFlag.NoItemFlags)
@@ -389,7 +418,7 @@ class MotorTab(QWidget):
         items = self.lst_people.selectedItems()
         if not items:
             return None
-        return items[0].data(_PERSON_ID_ROLE), items[0].text().split(" — ")[0]
+        return items[0].data(_PERSON_ID_ROLE), items[0].data(_PERSON_NAME_ROLE)
 
     def _update_buttons(self):
         busy = self._worker is not None and self._worker.isRunning()
@@ -443,23 +472,13 @@ class MotorTab(QWidget):
         self._on_done_cb(result)
 
     def _on_progress(self, done, total, msg):
-        if msg.startswith("⬇"):
-            self._set_people_status(msg)
+        pass
 
     def _on_failed(self, err):
         self._worker.wait()
         self._worker = None
         self._update_buttons()
         self._set_people_status(texto_para(err))
-
-    @staticmethod
-    def _ensure_models(mdir, progress_cb):
-        def cb(done, total, name):
-            mb = 1024 * 1024
-            progress_cb(done // mb, total // mb,
-                        f"⬇ Preparando el reconocimiento (solo la primera vez): "
-                        f"{done // mb} de {total // mb} MB…")
-        ai_models.ensure(mdir, cb)
 
     # ------------------------------------------------------------- personas
     def _add_person(self):
@@ -482,42 +501,37 @@ class MotorTab(QWidget):
         if not paths:
             return
         self.settings.setValue("people_last_dir", os.path.dirname(paths[0]))
-        mdir = models_dir()
 
         def job(progress_cb):
-            self._ensure_models(mdir, progress_cb)
-            from ...engine.ai_pipeline import reference_embedding
-            from ...engine.faces import FaceEngine
-            engine = FaceEngine(mdir)
-            embs, no_face = [], []
+            # Leer las fotos (pueden estar en el NAS) va fuera del hilo de la interfaz.
+            fotos, ilegibles = [], []
             for i, p in enumerate(paths, 1):
                 try:
-                    e = reference_embedding(engine, p)
-                except Exception:  # noqa: BLE001 — foto ilegible
-                    e = None
-                (embs.append((p, e)) if e is not None else no_face.append(p))
+                    fotos.append((p, foto_de_referencia(p)))
+                except Exception:  # noqa: BLE001 — no es una imagen o no se puede leer
+                    ilegibles.append(p)
                 progress_cb(i, len(paths), p)
-            if not embs:
-                return 0, no_face
-            with abrir_repo() as repo:
-                pid = person_id or repo.add_person(name)
-                for p, e in embs:
-                    repo.add_person_reference(pid, p, e)
-            return len(embs), no_face
+            if fotos:
+                with abrir_repo() as repo:
+                    repo.subir_fotos_de_referencia(name, fotos, person_id)
+            return len(fotos), ilegibles
 
         def done(result):
-            added, no_face = result
-            msg = f"{name}: {added} foto{'s' if added != 1 else ''} de referencia cargada{'s' if added != 1 else ''}."
-            if no_face:
-                msg += (f" En {len(no_face)} no se detectó un rostro: "
-                        + ", ".join(os.path.basename(p) for p in no_face[:5]))
-            if added:
-                msg += (" El NAS la busca en el catálogo esta noche; para hacerlo antes, "
-                        "use «Catalogar ahora».")
+            subidas, ilegibles = result
+            msg = ""
+            if subidas:
+                msg = (f"{name}: " + ("se envió 1 foto" if subidas == 1 else
+                                      f"se enviaron {subidas} fotos")
+                       + " al NAS, que busca el rostro en unos segundos. La persona se "
+                         "reconoce en el catálogo desde la próxima pasada (esta noche, o "
+                         "antes con «Catalogar ahora»).")
+            if ilegibles:
+                msg += ((" " if msg else "") + "No se pudieron abrir: "
+                        + ", ".join(os.path.basename(p) for p in ilegibles[:5]) + ".")
             self._set_people_status(msg)
             self._refresh_people()
 
-        self._start(job, done, f"Leyendo fotos de {name}…")
+        self._start(job, done, f"Enviando fotos de {name} al NAS…")
 
     def _delete_person(self):
         sel = self._selected_person()

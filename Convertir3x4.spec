@@ -18,13 +18,15 @@ a = Analysis(
     # Tipografía Inter e iconos Lucide del tema (ui/style.py, ui/icons.py)
     datas=_metadata + [('convertir3x4/ui/assets', 'convertir3x4/ui/assets')],
     hiddenimports=['imageio', 'imageio_ffmpeg', 'imageio.plugins.ffmpeg', 'numpy',
-                   'onnxruntime', 'cv2', 'tokenizers', 'PyQt6.QtSvg',
+                   'PyQt6.QtSvg',
                    # Catálogo en PostgreSQL: psycopg carga su parte compilada por nombre
                    'psycopg', 'psycopg_binary', 'psycopg_binary.pq', 'psycopg_binary._psycopg'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    # La IA (escenas, caras) corre solo en el NAS (catalogador): la PC no carga
+    # modelos, así que el .exe no lleva ONNX Runtime, OpenCV ni tokenizers.
+    excludes=['onnxruntime', 'cv2', 'tokenizers'],
     noarchive=False,
 )
 

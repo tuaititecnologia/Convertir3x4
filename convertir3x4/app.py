@@ -234,6 +234,7 @@ class MainWindow(QMainWindow):
         from .ui.avisos_catalogo import AvisosCatalogo
         self._avisos = AvisosCatalogo(parent=self)
         self._avisos.cambio.connect(self.buscar_tab.cambio_en_el_catalogo)
+        self._avisos.cambio.connect(self.motor_tab.cambio_en_el_catalogo)
         self._avisos.start()
 
     def closeEvent(self, event):

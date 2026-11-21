@@ -15,6 +15,7 @@ módulo (el esquema vive en `db.py`).
 """
 
 import hashlib
+import os
 import re
 
 import psycopg
@@ -437,33 +438,69 @@ class Repo:
         self._q("INSERT INTO person (name) VALUES (%s) ON CONFLICT (name) DO NOTHING", (name,))
         return self._q("SELECT id FROM person WHERE name = %s", (name,)).fetchone()["id"]
 
-    def list_persons(self) -> list[tuple[int, str, int]]:
-        """(id, nombre, cantidad de fotos de referencia)."""
+    def list_persons(self) -> list[dict]:
+        """Cada persona con sus fotos de referencia según cómo las dejó el NAS:
+        {id, name, listas, pendientes, sin_cara: [nombres de archivo]}."""
         rows = self._q(
-            "SELECT p.id, p.name, COUNT(r.id) AS n FROM person p "
-            "LEFT JOIN person_reference r ON r.person_id = p.id "
+            "SELECT p.id, p.name,"
+            " COUNT(r.id) FILTER (WHERE r.estado = 'lista') AS listas,"
+            " COUNT(r.id) FILTER (WHERE r.estado = 'pendiente') AS pendientes,"
+            " COALESCE(array_agg(r.source_path ORDER BY r.id)"
+            "   FILTER (WHERE r.estado IN ('sin_cara', 'ilegible')), '{}') AS sin_cara "
+            "FROM person p LEFT JOIN person_reference r ON r.person_id = p.id "
             "GROUP BY p.id ORDER BY p.name")
-        return [(r["id"], r["name"], r["n"]) for r in rows]
+        return [{"id": r["id"], "name": r["name"], "listas": r["listas"],
+                 "pendientes": r["pendientes"],
+                 "sin_cara": [os.path.basename((p or "").replace("\\", "/")) for p in r["sin_cara"]]}
+                for r in rows]
 
     def delete_person(self, person_id: int):
         """Borra la persona y sus firmas. Los tags ya puestos quedan."""
         self._q("DELETE FROM person WHERE id = %s", (person_id,))
 
     def add_person_reference(self, person_id: int, source_path: str, embedding: bytes):
+        """Una firma ya calculada (la usan las pruebas y el NAS)."""
         self._q("INSERT INTO person_reference (person_id, source_path, embedding) "
                 "VALUES (%s, %s, %s)", (person_id, source_path, embedding))
+
+    def subir_fotos_de_referencia(self, nombre: str, fotos: list[tuple[str, bytes]],
+                                  person_id: int | None = None) -> int:
+        """La PC sube fotos (ruta de origen, JPEG achicado) de una persona; el NAS
+        calcula las firmas. Crea la persona si es nueva y despierta al
+        catalogador. Devuelve el id de la persona."""
+        with self.conn.transaction():
+            pid = person_id or self.add_person(nombre)
+            for ruta, jpeg in fotos:
+                self._q("INSERT INTO person_reference (person_id, source_path, foto, estado) "
+                        "VALUES (%s, %s, %s, 'pendiente')", (pid, ruta, jpeg))
+            self._q("NOTIFY catalogado")
+        return pid
+
+    def referencias_pendientes(self) -> list[tuple[int, bytes]]:
+        return [(r["id"], bytes(r["foto"])) for r in self._q(
+            "SELECT id, foto FROM person_reference WHERE estado = 'pendiente' ORDER BY id")]
+
+    def hay_referencias_pendientes(self) -> bool:
+        return self._q("SELECT EXISTS (SELECT 1 FROM person_reference "
+                       "WHERE estado = 'pendiente') AS hay").fetchone()["hay"]
+
+    def guardar_referencia(self, ref_id: int, embedding: bytes | None, estado: str):
+        self._q("UPDATE person_reference SET embedding = %s, estado = %s WHERE id = %s",
+                (embedding, estado, ref_id))
 
     def person_reference_blobs(self) -> dict[str, list[bytes]]:
         out: dict[str, list[bytes]] = {}
         for r in self._q("SELECT p.name, r.embedding FROM person_reference r "
-                         "JOIN person p ON p.id = r.person_id ORDER BY r.id"):
+                         "JOIN person p ON p.id = r.person_id "
+                         "WHERE r.estado = 'lista' ORDER BY r.id"):
             out.setdefault(r["name"], []).append(bytes(r["embedding"]))
         return out
 
     def people_signature(self) -> str:
         """Cambia cada vez que se agrega o quita una referencia o una persona."""
         rows = self._q("SELECT r.id, p.name FROM person_reference r "
-                       "JOIN person p ON p.id = r.person_id ORDER BY r.id").fetchall()
+                       "JOIN person p ON p.id = r.person_id "
+                       "WHERE r.estado = 'lista' ORDER BY r.id").fetchall()
         if not rows:
             return ""
         raw = ";".join(f"{r['id']}:{r['name']}" for r in rows)

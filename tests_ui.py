@@ -756,3 +756,50 @@ class TestCatalogarEnElNas:
         finally:
             tab.deleteLater()
             srv.cerrar()
+
+    def test_personas_la_pc_sube_y_el_nas_procesa(self, app, pg_cfg, tmp_path, monkeypatch):
+        import numpy as np
+        from PIL import Image
+        from convertir3x4 import catalogador as cat
+        from convertir3x4.catalog.db import ConfigCatalogo, conectar
+        from convertir3x4.catalog.repo import Repo
+        from convertir3x4.engine import ai_models, faces
+        from convertir3x4.ui.servicio_catalogo import ServicioCatalogo
+        from convertir3x4.ui.tabs import tab_motor
+
+        abrir = lambda: Repo(conectar(pg_cfg), str(tmp_path))      # noqa: E731
+        fotos = []
+        for nombre, color in (("pastor1.jpg", "blue"), ("pastor2.jpg", "red")):
+            fotos.append(str(tmp_path / nombre))
+            Image.new("RGB", (3000, 2000), color).save(fotos[-1])
+        monkeypatch.setattr(tab_motor.QFileDialog, "getOpenFileNames",
+                            staticmethod(lambda *a, **k: (fotos, "")))
+        monkeypatch.setattr(tab_motor, "abrir_repo", abrir)
+        # la PC no baja ni carga modelos
+        monkeypatch.setattr(ai_models, "ensure", lambda *a, **k: pytest.fail("bajó modelos"))
+        srv = ServicioCatalogo(abrir=abrir)
+        tab = tab_motor.MotorTab(srv=srv)
+        try:
+            tab._pick_and_add_refs(None, "Juan Carlos Bazán")
+            assert _esperar(app, lambda: "se enviaron 2 fotos al NAS" in tab.lbl_people_status.text())
+            assert _esperar(app, lambda: tab.lst_people.count() == 1 and "2 en proceso en el NAS"
+                            in tab.lst_people.item(0).text())
+
+            class Caras:                 # el NAS: hay cara solo en la foto azul
+                def __init__(self, *a):
+                    pass
+
+                def reference_feature(self, img):
+                    return np.ones(128, np.float32) if img.getpixel((0, 0))[2] > 200 else None
+            monkeypatch.setattr(ai_models, "ensure", lambda *a, **k: None)
+            monkeypatch.setattr(faces, "FaceEngine", Caras)
+            with abrir() as r:
+                cfg = cat.ConfigCatalogador(catalogo=ConfigCatalogo(servidor="x"))
+                assert cat.procesar_referencias(r, cfg) == 2
+            tab.cambio_en_el_catalogo()                     # el aviso del NAS
+            assert _esperar(app, lambda: tab.lst_people.item(0).text()
+                            == "Juan Carlos Bazán — 1 foto · 1 sin rostro visible")
+            assert "pastor2.jpg" in tab.lst_people.item(0).toolTip()
+        finally:
+            tab.deleteLater()
+            srv.cerrar()
