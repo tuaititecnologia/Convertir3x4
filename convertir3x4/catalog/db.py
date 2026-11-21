@@ -383,8 +383,33 @@ CREATE TABLE catalogado_estado (
 INSERT INTO catalogado_estado DEFAULT VALUES;
 """
 
+# Cliente-servidor: las PCs se enteran solas de lo que cambia en el catálogo
+# (lo nuevo que cataloga el NAS, las etiquetas que pone la otra PC). Cada cambio
+# avisa por el canal `catalogo`; varios avisos de una misma transacción llegan
+# como uno solo. Un UPDATE que no cambia nada no avisa.
+_V3 = r"""
+CREATE FUNCTION avisar_cambio_catalogo() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    PERFORM pg_notify('catalogo', TG_TABLE_NAME);
+    RETURN NULL;
+END $$;
+
+CREATE TRIGGER media_aviso AFTER INSERT OR DELETE ON media
+    FOR EACH ROW EXECUTE FUNCTION avisar_cambio_catalogo();
+CREATE TRIGGER media_aviso_cambio AFTER UPDATE ON media
+    FOR EACH ROW WHEN (OLD.* IS DISTINCT FROM NEW.*) EXECUTE FUNCTION avisar_cambio_catalogo();
+CREATE TRIGGER media_tag_aviso AFTER INSERT OR DELETE ON media_tag
+    FOR EACH ROW EXECUTE FUNCTION avisar_cambio_catalogo();
+CREATE TRIGGER media_tag_aviso_cambio AFTER UPDATE ON media_tag
+    FOR EACH ROW WHEN (OLD.* IS DISTINCT FROM NEW.*) EXECUTE FUNCTION avisar_cambio_catalogo();
+CREATE TRIGGER tag_aviso AFTER INSERT OR DELETE ON tag
+    FOR EACH ROW EXECUTE FUNCTION avisar_cambio_catalogo();
+"""
+
 MIGRACIONES: list[tuple[int, str]] = [
     (1, _V1),
     (2, _V2),
+    (3, _V3),
 ]
+CANAL_CAMBIOS = "catalogo"
 VERSION_ESQUEMA = MIGRACIONES[-1][0]
