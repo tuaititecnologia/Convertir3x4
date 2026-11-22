@@ -9,19 +9,22 @@ Consulta el estado cada pocos segundos, y solo mientras la pestaña está visibl
 Toda llamada de red corre en un EngineWorker para no trabar la UI.
 """
 
+import html
 import os
 
-from PyQt6.QtCore import QSettings, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QEvent, QSettings, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QFontDatabase
 from PyQt6.QtWidgets import (
-    QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QFrame, QHBoxLayout,
+    QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QFrame, QGridLayout, QHBoxLayout,
     QInputDialog, QLabel, QLineEdit, QListWidget, QMessageBox, QPlainTextEdit, QProgressBar,
-    QPushButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QBoxLayout, QHeaderView, QPushButton, QScrollArea, QTreeWidget, QTreeWidgetItem,
+    QVBoxLayout, QWidget,
 )
 
 from ...nas.copias import (
-    URLS_POR_DEFECTO, PanelClient, acciones_para, fecha, lineas_contenido, nota_operador,
-    resumir, resumir_contenido, tipo_disco,
+    URLS_POR_DEFECTO, PanelClient, acciones_para, explicar, fecha, ficha, filas_copiados,
+    lineas_contenido,
+    nota_operador, resumir, resumir_contenido, tipo_disco,
 )
 from ...workers import EngineWorker
 from .. import icons
@@ -30,7 +33,6 @@ from ..widgets.dialogos import confirmar
 
 _POLL_MS = 3000          # mientras se ve el módulo
 _POLL_FONDO_MS = 20000   # escondido: solo para avisar en la barra lateral
-_CONTENT_MAX_W = 860
 # Tono de cada estado -> color de la paleta activa (claro u oscuro), no fijo.
 _TONOS = {"activo": "accent_text", "ok": "ok", "aviso": "warn", "error": "danger",
           "neutro": "text_3"}
@@ -39,6 +41,63 @@ _TONOS = {"activo": "accent_text", "ok": "ok", "aviso": "warn", "error": "danger
 def _tono(tono: str) -> str:
     return getattr(T, _TONOS.get(tono, "text_3"))
 _UUID_ROLE = Qt.ItemDataRole.UserRole
+_COPIA_ROLE = Qt.ItemDataRole.UserRole + 1      # el estado completo de la copia (dict)
+# Medidas de la página (px). Ver _build_ui.
+_PAGINA_MAX_W = 1600        # la columna de contenido no se estira más que esto
+_TEXTO_MAX_W = 680          # texto corrido: renglones cómodos de leer
+_LADO_A_LADO_W = 1100       # historial y detalle lado a lado: nunca con menos que esto
+_DETALLE_MIN_W = 480        # …y solo si al detalle le quedan al menos estos px
+_HISTERESIS = 24            # margen para no saltar de un modo al otro en el límite
+_LISTA_FILAS = 8            # uno abajo del otro, la lista muestra unas 8 copias
+_DATOS_LADO_A_LADO_W = 900  # desde este ancho del panel, «Disco» y «Copia» van lado a lado
+_ARCHIVOS_VISIBLES = 12     # la lista de archivos crece hasta 12; con más, se desplaza
+
+
+class _Adaptable(QWidget):
+    """Dos partes lado a lado si el ancho alcanza; si no, una debajo de la otra.
+    Decide por el ancho propio (no el de la ventana), así sirve en cualquier lugar."""
+    cambio = pyqtSignal(bool)        # True: lado a lado
+
+    def __init__(self, umbral: int, espacio: int = 16, espacio_vertical: int | None = None,
+                 por_su_ancho: bool = True, parent=None):
+        super().__init__(parent)
+        self.umbral = umbral
+        self.por_su_ancho = por_su_ancho
+        self.espacio = (espacio, espacio if espacio_vertical is None else espacio_vertical)
+        self.lado_a_lado = True
+        self.lay = QBoxLayout(QBoxLayout.Direction.LeftToRight, self)
+        self.lay.setContentsMargins(0, 0, 0, 0)
+        self.lay.setSpacing(espacio)
+
+    def agregar(self, w: QWidget, estirar: int = 0):
+        self.lay.addWidget(w, estirar)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self.por_su_ancho:
+            self.ajustar(event.size().width())
+
+    def ajustar(self, ancho: int):
+        """Elige el modo para `ancho`. Con margen: si está lado a lado, recién pasa
+        a apilado por debajo del umbral; para volver, tiene que sobrar _HISTERESIS."""
+        lado = ancho >= self.umbral + (0 if self.lado_a_lado else _HISTERESIS)
+        if lado != self.lado_a_lado:
+            self.lado_a_lado = lado
+            self.lay.setDirection(QBoxLayout.Direction.LeftToRight if lado
+                                  else QBoxLayout.Direction.TopToBottom)
+            self.lay.setSpacing(self.espacio[0] if lado else self.espacio[1])
+            self.cambio.emit(lado)
+
+
+def _vaciar(grid):
+    """Saca todo de una grilla ya mismo: si solo se borra «después», lo viejo se
+    sigue dibujando encima de lo nuevo un instante."""
+    while grid.count():
+        w = grid.takeAt(0).widget()
+        if w is not None:
+            w.hide()
+            w.setParent(None)
+            w.deleteLater()
 
 
 def _cliente_desde(settings: QSettings) -> PanelClient:
@@ -74,12 +133,23 @@ class DiscosTab(QWidget):
 
     # ------------------------------------------------------------- UI
     def _build_ui(self):
-        outer = QHBoxLayout(self)
-        outer.setContentsMargins(32, 28, 32, 24)
+        # La pestaña entera se desplaza si la ventana es baja. Una sola columna de
+        # contenido, alineada a la izquierda y con un ancho máximo para no estirarse
+        # en pantallas grandes; el texto corrido queda a un ancho cómodo de leer.
+        afuera = QVBoxLayout(self)
+        afuera.setContentsMargins(0, 0, 0, 0)
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
+        afuera.addWidget(self.scroll)
+        lienzo = QWidget()
+        self.scroll.setWidget(lienzo)
+        fila_lienzo = QHBoxLayout(lienzo)
+        fila_lienzo.setContentsMargins(32, 28, 32, 24)
         content = QWidget()
-        content.setMaximumWidth(_CONTENT_MAX_W)
-        outer.addWidget(content, 1)
-        outer.addStretch(0)
+        content.setMaximumWidth(_PAGINA_MAX_W)
+        fila_lienzo.addWidget(content, 1)
+        fila_lienzo.addStretch(0)
         lay = QVBoxLayout(content)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(10)
@@ -94,6 +164,7 @@ class DiscosTab(QWidget):
             "discos aparecen en la lista, pero no se copian automáticamente."))
 
         row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
         # Estado de la conexión, bien visible mientras se conecta o si falla
         # (ver _set_conexion). Mientras tanto, todo lo de abajo queda en gris.
         self.conn_box = QFrame()
@@ -134,7 +205,7 @@ class DiscosTab(QWidget):
         self.chk_auto.clicked.connect(self._toggle_auto)
         blay.addWidget(self.chk_auto)
 
-        blay.addSpacing(14)
+        blay.addSpacing(18)
         blay.addWidget(_title("Discos conectados al NAS"))
         self.cards_box = QVBoxLayout()
         self.cards_box.setSpacing(8)
@@ -143,36 +214,44 @@ class DiscosTab(QWidget):
         self.cards_box.addWidget(self.lbl_sin_discos)
         blay.addLayout(self.cards_box)
 
-        blay.addSpacing(14)
+        blay.addSpacing(18)
         blay.addWidget(_title("Historial de copias"))
         self.tree = QTreeWidget()
         self.tree.setHeaderLabels(["Disco", "Estado", "Carpeta en el NAS", "Actualizado"])
         self.tree.setRootIsDecorated(False)
         self.tree.setAccessibleName("Historial de copias")
         # Ancho inicial: vacía (mientras conecta) los títulos no quedan cortados
-        for col, ancho in enumerate((170, 170, 290)):
+        for col, ancho in enumerate((170, 170, 160)):
             self.tree.setColumnWidth(col, ancho)
         self.tree.itemSelectionChanged.connect(self._on_historial_sel)
-        blay.addWidget(self.tree, 2)
 
-        # El registro del NAS es técnico: le sirve a quien administra el NAS, no al
-        # operador. Queda escondido detrás de un botón.
-        self.btn_log = QPushButton("Ver el detalle técnico")
-        self.btn_log.setObjectName("btn_link")
-        self.btn_log.setCheckable(True)
-        self.btn_log.setToolTip("Registro de la copia, para el administrador del NAS")
-        self.btn_log.toggled.connect(self._toggle_log)
-        blay.addWidget(self.btn_log, 0, Qt.AlignmentFlag.AlignLeft)
-        self.txt_log = QPlainTextEdit()
-        self.txt_log.setReadOnly(True)
-        self.txt_log.setPlaceholderText("Seleccione una copia de la lista para ver el detalle.")
-        self.txt_log.setAccessibleName("Detalle técnico de la copia")
-        self.txt_log.setVisible(False)
-        # Monoespaciada del sistema: existe en cualquier plataforma (es un registro)
-        mono = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
-        mono.setPixelSize(12)
-        self.txt_log.setFont(mono)
-        blay.addWidget(self.txt_log, 1)
+        # Lista y detalle: lado a lado si hay ancho; si no, la lista (con alto
+        # para unas 8 copias) y el detalle debajo. La página se desplaza entera:
+        # ninguno de los dos se aplasta.
+        # Lo decide el ancho disponible en la ventana (no el del historial, que no
+        # baja de su mínimo y así nunca cambiaba de modo): ver _decidir_historial.
+        self.historial = _Adaptable(_LADO_A_LADO_W, espacio=16, por_su_ancho=False)
+        self.historial.cambio.connect(self._acomodar_historial)
+        self.historial.agregar(self.tree)
+        self.lado_detalle = QWidget()
+        ld = QVBoxLayout(self.lado_detalle)
+        ld.setContentsMargins(0, 0, 0, 0)
+        self.lbl_sin_copia = QLabel("Elija una copia del historial para ver todo lo que se "
+                                    "sabe de ella: qué pasó, los datos del disco y los "
+                                    "archivos copiados.")
+        self.lbl_sin_copia.setObjectName("muted")
+        self.lbl_sin_copia.setWordWrap(True)
+        self.lbl_sin_copia.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ld.addWidget(self.lbl_sin_copia, 1)
+        self.panel_copia = self._armar_panel_copia()
+        ld.addWidget(self.panel_copia)
+        ld.addStretch(1)
+        self.historial.agregar(self.lado_detalle)
+        blay.addWidget(self.historial, 1)
+        blay.addStretch(0)       # uno abajo del otro: lo que sobra va al final, no arriba
+        self._blay = blay
+        self.scroll.viewport().installEventFilter(self)
+        self._acomodar_historial(self.historial.lado_a_lado)
 
         self.lbl_sin_discos.setVisible(False)   # no se sabe hasta que el NAS responde
         self._puntos = 0
@@ -180,6 +259,171 @@ class DiscosTab(QWidget):
         self._anim.setInterval(450)
         self._anim.timeout.connect(self._animar_conectando)
         self._set_conexion("conectando")
+
+    def _armar_panel_copia(self) -> QFrame:
+        """La copia elegida, completa: estado y fecha; qué pasó y qué hacer (en un
+        recuadro si hubo un problema); los datos del disco y de la copia; los
+        archivos copiados; y al pie, su registro técnico."""
+        panel = QFrame()
+        panel.setObjectName("panel")
+        panel.setAccessibleName("Detalle de la copia elegida")
+        pc = QVBoxLayout(panel)
+        pc.setContentsMargins(18, 14, 18, 16)
+        pc.setSpacing(12)
+
+        cabeza = QHBoxLayout()
+        cabeza.setSpacing(12)
+        self.lbl_copia_estado = QLabel("")
+        self.lbl_copia_estado.setObjectName("section_title")
+        cabeza.addWidget(self.lbl_copia_estado, 1)
+        self.lbl_copia_cuando = QLabel("")
+        self.lbl_copia_cuando.setObjectName("muted")
+        cabeza.addWidget(self.lbl_copia_cuando, 0, Qt.AlignmentFlag.AlignVCenter)
+        pc.addLayout(cabeza)
+
+        # Qué pasó y qué hacer. Si hubo un problema, en un recuadro que se note.
+        self.caja_copia = QFrame()
+        cj = QVBoxLayout(self.caja_copia)
+        cj.setContentsMargins(0, 0, 0, 0)
+        cj.setSpacing(4)
+        self.lbl_copia_que = QLabel("")
+        self.lbl_copia_que.setWordWrap(True)
+        cj.addWidget(self.lbl_copia_que)
+        self.lbl_copia_hacer = QLabel("")
+        self.lbl_copia_hacer.setWordWrap(True)
+        cj.addWidget(self.lbl_copia_hacer)
+        pc.addWidget(self.caja_copia)
+
+        # Datos en dos grupos: lado a lado si el panel es ancho, si no uno abajo del otro
+        self.datos_copia = _Adaptable(_DATOS_LADO_A_LADO_W, espacio=28, espacio_vertical=14)
+        self.grid_disco = self._grupo_datos(self.datos_copia, "Disco")
+        self.grid_copia = self._grupo_datos(self.datos_copia, "Copia")
+        pc.addWidget(self.datos_copia)
+
+        archivos = QVBoxLayout()
+        archivos.setSpacing(6)
+        self.lbl_copiados = QLabel("Archivos copiados")
+        self.lbl_copiados.setObjectName("section_title")
+        archivos.addWidget(self.lbl_copiados)
+        self.lbl_copiados_estado = QLabel("")
+        self.lbl_copiados_estado.setObjectName("muted")
+        self.lbl_copiados_estado.setWordWrap(True)
+        archivos.addWidget(self.lbl_copiados_estado)
+        self.lista_copiados = QTreeWidget()
+        self.lista_copiados.setHeaderLabels(["En el disco", "En el NAS", "Tamaño", "Copiado"])
+        self.lista_copiados.setRootIsDecorated(False)
+        self.lista_copiados.setAccessibleName("Archivos copiados")
+        self.lista_copiados.setTextElideMode(Qt.TextElideMode.ElideMiddle)
+        self.lista_copiados.setUniformRowHeights(True)
+        cab = self.lista_copiados.header()
+        cab.setStretchLastSection(False)
+        cab.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        cab.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        cab.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        cab.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.lista_copiados.setVisible(False)
+        archivos.addWidget(self.lista_copiados)
+        pc.addLayout(archivos)
+
+        # El registro del NAS es técnico: le sirve a quien administra el NAS, no al
+        # operador. Queda al pie de la copia, escondido detrás de un enlace.
+        self.btn_log = QPushButton("Ver el detalle técnico")
+        self.btn_log.setObjectName("btn_link")
+        self.btn_log.setCheckable(True)
+        self.btn_log.setToolTip("Registro de la copia, para el administrador del NAS")
+        self.btn_log.toggled.connect(self._toggle_log)
+        pc.addWidget(self.btn_log, 0, Qt.AlignmentFlag.AlignLeft)
+        self.txt_log = QPlainTextEdit()
+        self.txt_log.setReadOnly(True)
+        self.txt_log.setPlaceholderText("Seleccione una copia de la lista para ver el detalle.")
+        self.txt_log.setAccessibleName("Detalle técnico de la copia")
+        self.txt_log.setMinimumHeight(180)
+        self.txt_log.setVisible(False)
+        # Monoespaciada del sistema: existe en cualquier plataforma (es un registro)
+        mono = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
+        mono.setPixelSize(12)
+        self.txt_log.setFont(mono)
+        pc.addWidget(self.txt_log)
+        panel.setVisible(False)
+        panel.installEventFilter(self)       # al cambiar de ancho, recalcula su alto
+        return panel
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.Resize and event.size().width() != event.oldSize().width():
+            if obj is getattr(self, "panel_copia", None):
+                QTimer.singleShot(0, self._fijar_alto_panel)
+            elif obj is self.scroll.viewport():
+                self._decidir_historial()
+        return super().eventFilter(obj, event)
+
+    def _decidir_historial(self):
+        """Lado a lado solo si entran la lista entera y un detalle cómodo."""
+        margenes = self.scroll.widget().layout().contentsMargins()
+        disponible = min(self.scroll.viewport().width() - margenes.left() - margenes.right(),
+                         _PAGINA_MAX_W)
+        self.historial.umbral = max(_LADO_A_LADO_W,
+                                    self._ancho_lista() + 16 + _DETALLE_MIN_W)
+        self.historial.ajustar(disponible)
+
+    def _fijar_alto_panel(self):
+        """El alto que necesita el detalle para su ancho actual, como mínimo. Qt lo
+        calcula mal con textos de varios renglones anidados y el panel quedaba
+        más bajo que su contenido (lo de abajo se encimaba)."""
+        lay = self.panel_copia.layout()
+        alto = lay.totalHeightForWidth(self.panel_copia.width()) if lay.hasHeightForWidth() \
+            else lay.totalMinimumSize().height()
+        if alto > 0 and alto != self.panel_copia.minimumHeight():
+            self.panel_copia.setMinimumHeight(alto)
+
+    @staticmethod
+    def _grupo_datos(contenedor: "_Adaptable", titulo: str) -> QGridLayout:
+        caja = QWidget()
+        v = QVBoxLayout(caja)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(6)
+        t = QLabel(titulo)
+        t.setObjectName("subtitulo")
+        v.addWidget(t)
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(14)
+        grid.setVerticalSpacing(5)
+        grid.setColumnMinimumWidth(0, 120)
+        grid.setColumnStretch(1, 1)
+        v.addLayout(grid)
+        contenedor.agregar(caja, 0)      # cada grupo, el alto que necesita
+        return grid
+
+    def _acomodar_historial(self, lado_a_lado: bool):
+        """Lado a lado: la lista acompaña el alto del detalle. Uno abajo del otro:
+        la lista tiene alto para unas 8 copias y el detalle sigue debajo."""
+        h = self.historial
+        # Lado a lado, la lista toma el ancho de sus columnas y el detalle el resto
+        h.lay.setStretch(0, 0)
+        h.lay.setStretch(1, 1 if lado_a_lado else 0)
+        self.tree.setMinimumWidth(self._ancho_lista() if lado_a_lado else 0)
+        self.tree.setMaximumWidth(self._ancho_lista() if lado_a_lado else 16777215)
+        # Uno abajo del otro, la página crece hacia abajo y se desplaza: no se estira
+        self._blay.setStretchFactor(h, 1 if lado_a_lado else 0)
+        alto_fila = max(self.tree.sizeHintForRow(0), 24) if self.tree.topLevelItemCount() else 24
+        alto = self.tree.header().sizeHint().height() + alto_fila * _LISTA_FILAS + 6
+        self.tree.setMinimumHeight(max(alto, 220))
+        self.tree.setMaximumHeight(16777215 if lado_a_lado else max(alto, 220))
+        self._acomodar_lado_detalle()
+
+    def _ancho_lista(self) -> int:
+        """Lo que miden las columnas del historial por su contenido (no como hayan
+        quedado estiradas al estar apiladas), para que no se corten."""
+        cab = self.tree.header()
+        natural = sum(max(self.tree.sizeHintForColumn(i), cab.sectionSizeHint(i))
+                      for i in range(cab.count()))
+        return natural + self.tree.verticalScrollBar().sizeHint().width() + 12
+
+    def _acomodar_lado_detalle(self):
+        # isHidden(): lo que se decidió para el panel, aunque su contenedor esté oculto
+        hay = hasattr(self, "panel_copia") and not self.panel_copia.isHidden()
+        # Uno abajo del otro, sin copia elegida no hace falta el aviso: ocupa lugar
+        self.lbl_sin_copia.setVisible(not hay and self.historial.lado_a_lado)
+        self.lado_detalle.setVisible(hay or self.historial.lado_a_lado)
 
     # ------------------------------------------------------------- conexión
     def _set_conexion(self, estado: str, texto: str = ""):
@@ -365,15 +609,21 @@ class DiscosTab(QWidget):
             it = QTreeWidgetItem([disco, r.titulo, self._carpeta(c.get("destino")),
                                   fecha(c.get("actualizado"))])
             it.setData(0, _UUID_ROLE, c["uuid"])
-            it.setToolTip(1, r.detalle)
-            it.setForeground(1, _color(r.tono))
+            it.setData(0, _COPIA_ROLE, c)
+            # Color solo para lo que pide atención: si todo terminó bien, el texto
+            # normal; así un error o una copia en curso se ven de un vistazo.
+            if r.tono != "ok":
+                it.setForeground(1, _color(r.tono))
             self.tree.addTopLevelItem(it)
             if c["uuid"] == sel:
                 it.setSelected(True)
+                self._mostrar_copia(c, traer=False)    # refresco: la lista ya está
         if copias:   # vacía, se quedan los anchos iniciales (si no, los títulos se cortan)
-            for i in range(3):
+            for i in range(4):
                 self.tree.resizeColumnToContents(i)
         self.tree.blockSignals(False)
+        self._decidir_historial()           # la lista pudo cambiar de ancho
+        self._acomodar_historial(self.historial.lado_a_lado)
 
     def _sin_conexion(self, msg):
         self.chk_auto.setEnabled(False)
@@ -382,13 +632,142 @@ class DiscosTab(QWidget):
     def _on_historial_sel(self):
         items = self.tree.selectedItems()
         if not items:
+            self.panel_copia.setVisible(False)
+            self._acomodar_lado_detalle()
             return
         uuid = items[0].data(0, _UUID_ROLE)
         self._log_uuid = uuid
+        self._mostrar_copia(items[0].data(0, _COPIA_ROLE) or {})
         self.txt_log.setPlainText("Cargando…")
         client = self.client
         self._run(lambda: client.log(uuid),
                   lambda texto: uuid == self._log_uuid and self._set_log(texto))
+
+    def _mostrar_copia(self, c: dict, traer: bool = True):
+        """El panel de la copia elegida: estado, qué pasó y qué hacer, sus datos y
+        los archivos copiados (`traer`: pedirlos al NAS; si no, se reusan)."""
+        r = resumir(c)
+        self.lbl_copia_estado.setText(r.titulo)
+        if r.tono == "ok":
+            self.lbl_copia_estado.setStyleSheet("")
+        else:
+            self.lbl_copia_estado.setStyleSheet(f"color: {_color(r.tono).color().name()};")
+        self.lbl_copia_cuando.setText(f"Actualizado el {fecha(c['actualizado'])}"
+                                      if c.get("actualizado") else "")
+        exp = explicar(c)
+        que, hacer = exp if exp else (r.detalle, "")
+        self.lbl_copia_que.setText(que)
+        self.lbl_copia_que.setVisible(bool(que))
+        self.lbl_copia_hacer.setText(f"<b>Qué hacer:</b> {html.escape(hacer)}" if hacer else "")
+        self.lbl_copia_hacer.setVisible(bool(hacer))
+        # Con un problema, qué pasó y qué hacer van en un recuadro que se note
+        problema = bool(exp)
+        self.caja_copia.setObjectName("nonstandard" if problema else "")
+        self.caja_copia.layout().setContentsMargins(*((12, 10, 12, 10) if problema else (0, 0, 0, 0)))
+        self.caja_copia.style().unpolish(self.caja_copia)
+        self.caja_copia.style().polish(self.caja_copia)
+        filas = ficha(c)
+        if c.get("destino"):
+            filas.append(("Carpeta en el NAS", self._carpeta(c["destino"])))
+        self._filas_copia = filas
+        self._pintar_datos(filas)
+        self.panel_copia.setVisible(True)
+        self._acomodar_lado_detalle()
+        QTimer.singleShot(0, self._fijar_alto_panel)
+        guardados = getattr(self, "_copiados", None)
+        if traer or not guardados or guardados[0] != c.get("uuid"):
+            self._pedir_copiados(c.get("uuid"))
+        else:
+            self._agregar_inicio_fin(guardados[1])
+
+    def _pedir_copiados(self, uuid):
+        self.lista_copiados.clear()
+        self.lista_copiados.setVisible(False)
+        self.lbl_copiados_estado.setText("Trayendo la lista del NAS…")
+        self.lbl_copiados_estado.setVisible(True)
+        if not uuid or self.client is None:
+            self.lbl_copiados_estado.setText("No se puede consultar el NAS.")
+            return
+        client = self.client
+
+        def ok(datos):
+            if uuid == self._log_uuid:
+                self._copiados = (uuid, datos)
+                self._mostrar_copiados(datos)
+
+        def fallo(msg):
+            if uuid == self._log_uuid:
+                self.lbl_copiados_estado.setText("No se pudo traer la lista de archivos. "
+                                                 + _amigable(msg))
+        self._run(lambda: client.copiados(uuid), ok, fallo)
+
+    def _mostrar_copiados(self, datos: dict | None):
+        if datos is None:
+            self.lbl_copiados_estado.setText("El NAS todavía no informa la lista de archivos: "
+                                             "hay que actualizar el servicio de la Grabadora.")
+            return
+        filas = filas_copiados(datos)
+        self._agregar_inicio_fin(datos)
+        if not filas:
+            self.lbl_copiados_estado.setText("Esta copia no tiene archivos anotados.")
+            return
+        total, errores = int(datos.get("total") or 0), len(datos.get("errores") or [])
+        txt = "1 archivo copiado" if total == 1 else f"{total} archivos copiados"
+        if errores:
+            txt += " · " + ("1 no se pudo leer" if errores == 1 else f"{errores} no se pudieron leer")
+        if total > len(datos.get("copiados") or []):
+            txt += f" (se muestran los primeros {len(datos['copiados'])})"
+        self.lbl_copiados_estado.setText(txt)
+        rojo = _color("error")
+        for origen, destino, tam, cuando, fallo in filas:
+            it = QTreeWidgetItem([origen, destino, tam, cuando])
+            it.setToolTip(1, destino)            # la ruta entera, si se corta en el medio
+            it.setTextAlignment(2, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            if fallo:
+                for col in range(4):
+                    it.setForeground(col, rojo)
+            self.lista_copiados.addTopLevelItem(it)
+        # Alto justo para lo que hay, hasta 12 archivos; con más, se desplaza adentro
+        fila = max(self.lista_copiados.sizeHintForRow(0), 22)
+        visibles = min(len(filas), _ARCHIVOS_VISIBLES)
+        self.lista_copiados.setFixedHeight(
+            self.lista_copiados.header().sizeHint().height() + fila * visibles + 6)
+        self.lista_copiados.setVisible(True)
+        QTimer.singleShot(0, self._fijar_alto_panel)
+
+    def _agregar_inicio_fin(self, datos: dict | None):
+        """Cuándo se empezó a copiar y cuándo terminó, con los datos de la copia."""
+        if not datos:
+            return
+        extra = [(dato, fecha(valor)) for dato, valor in
+                 (("Empezó", datos.get("inicio")), ("Terminó", datos.get("fin"))) if valor]
+        self._pintar_datos(getattr(self, "_filas_copia", []) + extra)
+
+    def _pintar_datos(self, filas: list[tuple[str, str]]):
+        """Reparte los datos en sus dos grupos: el disco (qué disco es) y la copia
+        (dónde quedó, cuándo, qué se copió, si se verificó y se vació)."""
+        _vaciar(self.grid_disco)
+        _vaciar(self.grid_copia)
+        d = dict(filas)
+        disco = [("Modelo", d.get("Disco")), ("Número de serie", d.get("Número de serie"))]
+        copia = [(k, d.get(k)) for k in ("Carpeta en el NAS", "Empezó", "Terminó", "Archivos",
+                                         "Copiado", "Verificación", "Vaciado")]
+        for grid, pares in ((self.grid_disco, disco), (self.grid_copia, copia)):
+            fila = 0
+            for dato, valor in pares:
+                if not valor:
+                    continue
+                k = QLabel(dato)
+                k.setObjectName("muted")
+                v = QLabel(valor)
+                v.setWordWrap(True)
+                v.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+                # Sin alineación en el valor: con ella Qt no calcula bien el alto de
+                # un texto de varios renglones y los renglones se encimaban.
+                grid.addWidget(k, fila, 0, Qt.AlignmentFlag.AlignTop)
+                grid.addWidget(v, fila, 1)
+                fila += 1
+        self.grid_disco.parentWidget().setVisible(self.grid_disco.count() > 0)
 
     def _set_log(self, texto):
         bar = self.txt_log.verticalScrollBar()
@@ -400,6 +779,7 @@ class DiscosTab(QWidget):
     def _toggle_log(self, visible: bool):
         self.txt_log.setVisible(visible)
         self.btn_log.setText("Ocultar el detalle técnico" if visible else "Ver el detalle técnico")
+        QTimer.singleShot(0, self._fijar_alto_panel)
 
     def _raiz(self) -> str:
         return self._estado.get("destinos_raiz", "/mnt/tank/multimedia")
@@ -737,4 +1117,5 @@ def _title(text):
 def _text(text):
     lbl = QLabel(text)
     lbl.setWordWrap(True)
+    lbl.setMaximumWidth(_TEXTO_MAX_W)       # renglones cómodos de leer aunque sobre ancho
     return lbl

@@ -9,11 +9,12 @@ esta PC y, si faltan, se bajan de la base en segundo plano.
 import ntpath
 import os
 import re
+import threading
 
 from PyQt6.QtCore import Qt, QElapsedTimer, QPoint, QSize, QTimer, pyqtSignal
 from PyQt6.QtGui import QIcon, QPixmap
 from PyQt6.QtWidgets import (
-    QAbstractItemView, QApplication, QSizePolicy,
+    QAbstractItemView, QApplication, QProgressBar, QSizePolicy,
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QListWidgetItem, QFrame, QPushButton, QButtonGroup, QMessageBox,
 )
@@ -25,6 +26,7 @@ from ..servicio_catalogo import servicio, texto_para
 from ..widgets.caja_conexion import CajaConexion
 from ..widgets.media_grid import (
     DragOutListWidget, PATH_ROLE, MEDIA_ID_ROLE, KIND_ROLE, DURATION_ROLE, STATE_ROLE,
+    TAGS_ROLE,
 )
 from ..widgets.tag_bar import TagBar
 from ...utils import open_file
@@ -37,10 +39,25 @@ _GRID_THUMB = 150
 # revisa los archivos en el NAS, y las etiquetas que se pongan esperan detrás.
 _VIVO_ESPERA_MS = 1500
 _VIVO_MINIMO_MS = 20000
+# Si una búsqueda tarda más que esto, se muestra que se están trayendo datos del NAS
+# (antes no: una respuesta rápida no tiene que hacer parpadear nada).
+_CARGANDO_MS = 300
+# Cada cuánto se mira si se conectó o se desconectó el NAS (o un disco) mientras
+# Buscar está a la vista: una pregunta por raíz, fuera del hilo de la interfaz.
+_RAICES_MS = 5000
+# Resultados por página. Al acercarse al final de la grilla se trae la siguiente.
+# Desde afuera de la iglesia cada página es ~1,5 MB de miniaturas la primera vez.
+_PAGINA = 120
+_FALTA_PARA_EL_FINAL = 600     # px: a esta distancia del final se pide la siguiente
+
+
+def _existe(raiz: str) -> bool:
+    return os.path.exists(raiz)
 
 
 _QUALITY = {"low_res": "Baja resolución: puede verse borrosa en la pantalla.",
-            "corrupt": "El archivo parece dañado."}
+            "corrupt": "El archivo parece dañado.",
+            "en_negro": "La imagen está en negro: no muestra nada."}
 
 
 class SearchLineEdit(QLineEdit):
@@ -63,6 +80,8 @@ class SearchLineEdit(QLineEdit):
 class BuscarTab(QWidget):
     # Rutas elegidas en el catálogo para convertir (MainWindow las pasa a Convertir)
     enviarAConvertir = pyqtSignal(list)
+    enviarAPersona = pyqtSignal(list)       # fotos de referencia para el reconocimiento facial
+    _raices_revisadas = pyqtSignal(dict)      # desde el hilo que pregunta por las raíces
 
     def __init__(self, parent=None, srv=None):
         super().__init__(parent)
@@ -88,6 +107,17 @@ class BuscarTab(QWidget):
         self._vivo_ultima = None            # QElapsedTimer de la última puesta al día
         self._desactualizada = False
         self._restaurando = False
+        self._cargando = QTimer(self)
+        self._cargando.setSingleShot(True)
+        self._cargando.timeout.connect(self._mostrar_cargando)
+        self._revisando_raices = False
+        self._raices_timer = QTimer(self)
+        self._raices_timer.setInterval(_RAICES_MS)
+        self._raices_timer.timeout.connect(self._revisar_raices)
+        self._raices_revisadas.connect(self._raices_cambiaron)
+        self._total: int | None = None      # cuántos hay en total para esta búsqueda
+        self._trayendo_mas = False
+        self.grid.verticalScrollBar().valueChanged.connect(lambda _v: self._quizas_traer_mas())
         self.refresh()
 
     def _build_ui(self):
@@ -123,7 +153,8 @@ class BuscarTab(QWidget):
             seg_row.addWidget(b)
             if kind is None:
                 b.setChecked(True)
-        self._kind_group.buttonClicked.connect(lambda _: self._apply_kind_filter())
+        # Filtra en la base: con páginas, filtrar lo ya traído dejaría casi vacío «Videos»
+        self._kind_group.buttonClicked.connect(lambda _: self._do_search())
         row.addWidget(seg)
 
         self.chk_pending = QPushButton("Sugerencias de la IA")
@@ -141,6 +172,18 @@ class BuscarTab(QWidget):
         self.lbl_count.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         row.addWidget(self.lbl_count)
         layout.addLayout(row)
+
+        # Se está trayendo la búsqueda del NAS. Su lugar queda reservado aunque
+        # no se vea, para que la grilla no salte cada vez que aparece.
+        self.barra_cargando = QProgressBar()
+        self.barra_cargando.setRange(0, 0)              # sin porcentaje: solo "trabajando"
+        self.barra_cargando.setTextVisible(False)
+        self.barra_cargando.setAccessibleName("Buscando en el catálogo")
+        pol = self.barra_cargando.sizePolicy()
+        pol.setRetainSizeWhenHidden(True)
+        self.barra_cargando.setSizePolicy(pol)
+        self.barra_cargando.setVisible(False)
+        layout.addWidget(self.barra_cargando)
 
         # Estado de la conexión con el catálogo (no se ve si está todo bien)
         self.conn_box = CajaConexion()
@@ -165,7 +208,7 @@ class BuscarTab(QWidget):
         self.offline_box.setVisible(False)
         layout.addWidget(self.offline_box)
 
-        self.grid = DragOutListWidget(thumb=_GRID_THUMB)
+        self.grid = DragOutListWidget(thumb=_GRID_THUMB, etiquetas=True)
         self.grid.setAccessibleName("Resultados")
         self.grid.itemSelectionChanged.connect(self._on_selection_changed)
         self.grid.itemDoubleClicked.connect(self._open_item)
@@ -184,6 +227,12 @@ class BuscarTab(QWidget):
         self.lbl_seleccion = QLabel("")
         self.lbl_seleccion.setObjectName("muted")
         acciones.addWidget(self.lbl_seleccion, 1)
+        self.btn_persona = QPushButton("Agregar persona…")
+        icons.set_icon(self.btn_persona, "user-plus", 15, "text_2")
+        self.btn_persona.setToolTip("Usa las fotos seleccionadas para que el NAS reconozca a "
+                                    "una persona (nueva o de la lista de Catalogar)")
+        self.btn_persona.clicked.connect(self._mandar_a_persona)
+        acciones.addWidget(self.btn_persona)
         self.btn_convertir = QPushButton("Enviar a Convertir")
         self.btn_convertir.setObjectName("btn_primary")
         icons.set_icon(self.btn_convertir, "wand-sparkles", 15, "on_image")
@@ -207,6 +256,7 @@ class BuscarTab(QWidget):
     def _estado_catalogo(self, estado: str, texto: str):
         self.conn_box.set_estado(estado, texto)
         if estado == "error":
+            self._fin_carga()
             self._results = []
             self.grid.clear()
             self.lbl_count.setText("")
@@ -253,11 +303,53 @@ class BuscarTab(QWidget):
         self._do_search(conservar=True)
         self._reload_known_tags()
 
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self._raices_timer.stop()
+
     def showEvent(self, event):
         super().showEvent(event)
+        self._raices_timer.start()
         if self._desactualizada:
             self._desactualizada = False
             self.cambio_en_el_catalogo()
+
+    # ------------------------------------------------------------- NAS conectado
+    def _revisar_raices(self):
+        """¿Se conectó o se desconectó el NAS (o un disco) de lo que se ve?"""
+        raices = list(getattr(self, "_raices", None) or {})
+        if not raices or self._revisando_raices:
+            return
+        self._revisando_raices = True
+
+        def preguntar():
+            resultado = {r: _existe(r) for r in raices}
+            try:
+                self._raices_revisadas.emit(resultado)
+            except RuntimeError:
+                pass        # la pestaña se cerró mientras se preguntaba
+        threading.Thread(target=preguntar, daemon=True, name="raices").start()
+
+    def _raices_cambiaron(self, ahora: dict):
+        self._revisando_raices = False
+        antes = getattr(self, "_raices", None) or {}
+        if all(antes.get(r) == ok for r, ok in ahora.items()):
+            return
+        self._raices = {**antes, **ahora}
+        self._presentes = {m.path: self._raices.get(storage_root(m.path), False)
+                           for m in getattr(self, "_results", [])}
+        self._repintar_conservando()
+
+    def _repintar_conservando(self):
+        vista = self._vista()
+        self.grid._stop_preview()
+        self._restaurando = True
+        try:
+            self._apply_kind_filter()
+        finally:
+            self._restaurando = False
+        self._volver_a(vista)
+        self._on_selection_changed()
 
     def _vista(self) -> dict:
         """Lo que el operador tiene elegido y dónde está mirando."""
@@ -293,27 +385,98 @@ class BuscarTab(QWidget):
     def _do_search(self, conservar: bool = False):
         self._busqueda += 1
         n = self._busqueda
-        query, pend = self.txt_query.text(), self.chk_pending.isChecked()
+        query, pend, kind = self.txt_query.text(), self.chk_pending.isChecked(), self._kind()
         cache = self._cache
+        # En vivo se vuelve a traer todo lo que ya se estaba viendo, no solo la 1.ª página
+        cuantos = max(_PAGINA, len(getattr(self, "_results", []))) if conservar else _PAGINA
+        self._trayendo_mas = False
 
         def buscar(repo):
             # Todo lo que puede tardar (base, NAS por SMB) pasa en el hilo del catálogo.
-            results = repo.search(query, pending_only=pend)
-            minis, faltan = cache.locales(repo, [m.id for m in results])
-            paths = [m.path for m in results]
-            presentes = availability(paths)
-            raices = {r: os.path.exists(r) for r in {storage_root(p) for p in paths}}
-            return results, minis, faltan, presentes, raices
+            results, total = repo.buscar(query, kind=kind, pending_only=pend, cuantos=cuantos)
+            return _preparar(repo, cache, results) + (total,)
 
-        self._srv.pedir(buscar, ok=lambda r: self._mostrar_busqueda(n, *r, conservar=conservar))
+        if not conservar:
+            self._cargando.start(_CARGANDO_MS)
+        self._srv.pedir(buscar, ok=lambda r: self._mostrar_busqueda(n, *r, conservar=conservar),
+                        error=lambda _e: self._fin_carga() if n == self._busqueda else None)
 
-    def _mostrar_busqueda(self, n, results, minis, faltan, presentes, raices,
+    def _mostrar_cargando(self):
+        self.barra_cargando.setVisible(True)
+        self.lbl_count.setText("Buscando…")
+        if self.grid.count() == 0:
+            self.grid.set_empty_text("Buscando en el catálogo…")
+
+    def _fin_carga(self):
+        self._cargando.stop()
+        self.barra_cargando.setVisible(False)
+
+    def _kind(self) -> str | None:
+        btn = self._kind_group.checkedButton()
+        return btn.property("kind") if btn else None
+
+    def _quizas_traer_mas(self):
+        """Cerca del final de la grilla: la página siguiente, si hay."""
+        sb = self.grid.verticalScrollBar()
+        traidos = len(getattr(self, "_results", []))
+        if (self._trayendo_mas or self._total is None or traidos >= self._total
+                or sb.maximum() - sb.value() > _FALTA_PARA_EL_FINAL):
+            return
+        self._trayendo_mas = True
+        n = self._busqueda
+        query, pend, kind = self.txt_query.text(), self.chk_pending.isChecked(), self._kind()
+        cache = self._cache
+
+        def buscar(repo):
+            results, total = repo.buscar(query, kind=kind, pending_only=pend,
+                                         desde=traidos, cuantos=_PAGINA)
+            return _preparar(repo, cache, results) + (total,)
+
+        def fallo(_e):
+            if n == self._busqueda:
+                self._trayendo_mas = False
+        self._srv.pedir(buscar, ok=lambda r: self._agregar_pagina(n, traidos, *r), error=fallo)
+
+    def _agregar_pagina(self, n, desde, results, minis, faltan, presentes, raices, total):
+        if n != self._busqueda or desde != len(self._results):
+            return                      # cambió la búsqueda mientras tanto
+        self._trayendo_mas = False
+        if total is not None:
+            self._total = total
+        self._results += results
+        self._minis.update(minis)
+        self._bajando |= set(faltan)
+        self._presentes.update(presentes)
+        self._raices.update(raices)
+        self._show_offline([m.path for m in self._results
+                            if not self._presentes[m.path] or m.missing], self._raices)
+        for m in results:
+            self.grid.addItem(self._item(m, self._minis, self._presentes, self._raices,
+                                         self._bajando))
+        self._contar()
+        if faltan:
+            cache = self._cache
+            self._srv.pedir(lambda repo: cache.bajar(repo, faltan),
+                            ok=lambda nuevas: self._llegaron_miniaturas(n, nuevas))
+        QTimer.singleShot(0, self._quizas_traer_mas)     # ventana alta: puede faltar más
+
+    def _contar(self):
+        n, total = self.grid.count(), self._total
+        if total is not None and total > n:
+            self.lbl_count.setText(f"{_miles(n)} de {_miles(total)}")
+        else:
+            self.lbl_count.setText("1 resultado" if n == 1 else f"{_miles(n)} resultados")
+
+    def _mostrar_busqueda(self, n, results, minis, faltan, presentes, raices, total=None,
                           conservar: bool = False):
         if n != self._busqueda:
             return                      # llegó tarde: ya se escribió otra cosa
+        self._fin_carga()
+        self._total = len(results) if total is None else total
         if conservar and _iguales(getattr(self, "_results", None), results) \
                 and presentes == getattr(self, "_presentes", None):
             # Cambió algo que no se ve en la grilla (p. ej. una etiqueta)
+            self._contar()
             self._on_selection_changed()
             return
         vista = self._vista() if conservar else None
@@ -323,20 +486,14 @@ class BuscarTab(QWidget):
         self._presentes = presentes
         self._raices = raices
         if vista is not None:
-            self.grid._stop_preview()
-            self._restaurando = True
-            try:
-                self._apply_kind_filter()
-            finally:
-                self._restaurando = False
-            self._volver_a(vista)
-            self._on_selection_changed()
+            self._repintar_conservando()
         else:
             self._apply_kind_filter()
         if faltan:
             cache = self._cache
             self._srv.pedir(lambda repo: cache.bajar(repo, faltan),
                             ok=lambda nuevas: self._llegaron_miniaturas(n, nuevas))
+        QTimer.singleShot(0, self._quizas_traer_mas)
 
     def _llegaron_miniaturas(self, n, nuevas: dict):
         if n != self._busqueda or not nuevas:
@@ -361,6 +518,39 @@ class BuscarTab(QWidget):
                        getattr(self, "_presentes", None), getattr(self, "_raices", None),
                        getattr(self, "_bajando", None))
 
+    def _item(self, m, minis: dict, present: dict, roots_ok: dict,
+              bajando: set | None) -> QListWidgetItem:
+        """La celda de un resultado: miniatura, nombre y si se puede usar."""
+        item = QListWidgetItem(m.filename)
+        item.setData(PATH_ROLE, m.path)
+        item.setData(MEDIA_ID_ROLE, m.id)
+        item.setData(KIND_ROLE, m.kind)
+        item.setData(DURATION_ROLE, m.duration)
+        item.setData(TAGS_ROLE, m.etiquetas or [])
+        disponible = present[m.path] and not m.missing
+        if not disponible:
+            # No se puede arrastrar a ProPresenter: la miniatura va en gris.
+            # Si falta el disco/NAS entero, el aviso de arriba lo explica una
+            # vez. Si el disco está y el archivo no, la insignia va en la celda.
+            item.setData(STATE_ROLE, "missing" if roots_ok[storage_root(m.path)]
+                         else "offline")
+        icon = _icono(minis.get(m.id))
+        if icon:
+            item.setIcon(icon)
+        elif disponible and m.id in (bajando or ()):
+            item.setData(STATE_ROLE, "loading")     # se está bajando de la base
+        tip = m.folder_origin or ""
+        if m.width and m.height:
+            tip += f"\n{m.width}×{m.height}"
+        if m.quality_flag and m.quality_flag != "ok":
+            tip += "\n" + _QUALITY.get(m.quality_flag, "")
+        if not disponible:
+            tip = (f"No se encuentra el original:\n{m.path}\n"
+                   "Verifique que el NAS o el disco estén conectados. Mientras tanto, no "
+                   "puede usarse en ProPresenter.")
+        item.setToolTip(tip.strip())
+        return item
+
     def _populate(self, results, minis: dict | None = None, present: dict | None = None,
                   raices: dict | None = None, bajando: set | None = None):
         """Llena la grilla. `minis` {id: miniatura local}; `present` {ruta: existe} y
@@ -376,36 +566,8 @@ class BuscarTab(QWidget):
         self._show_offline([m.path for m in results
                             if not present[m.path] or m.missing], roots_ok)
         for m in results:
-            item = QListWidgetItem(m.filename)
-            item.setData(PATH_ROLE, m.path)
-            item.setData(MEDIA_ID_ROLE, m.id)
-            item.setData(KIND_ROLE, m.kind)
-            item.setData(DURATION_ROLE, m.duration)
-            disponible = present[m.path] and not m.missing
-            if not disponible:
-                # No se puede arrastrar a ProPresenter: la miniatura va en gris.
-                # Si falta el disco/NAS entero, el aviso de arriba lo explica una
-                # vez. Si el disco está y el archivo no, la insignia va en la celda.
-                item.setData(STATE_ROLE, "missing" if roots_ok[storage_root(m.path)]
-                             else "offline")
-            icon = _icono(minis.get(m.id))
-            if icon:
-                item.setIcon(icon)
-            elif disponible and m.id in (bajando or ()):
-                item.setData(STATE_ROLE, "loading")     # se está bajando de la base
-            tip = m.folder_origin or ""
-            if m.width and m.height:
-                tip += f"\n{m.width}×{m.height}"
-            if m.quality_flag and m.quality_flag != "ok":
-                tip += "\n" + _QUALITY.get(m.quality_flag, "")
-            if not disponible:
-                tip = (f"No se encuentra el original:\n{m.path}\n"
-                       "Verifique que el NAS o el disco estén conectados. Mientras tanto, no "
-                       "puede usarse en ProPresenter.")
-            item.setToolTip(tip.strip())
-            self.grid.addItem(item)
-        n = len(results)
-        self.lbl_count.setText("1 resultado" if n == 1 else f"{n} resultados")
+            self.grid.addItem(self._item(m, minis, present, roots_ok, bajando))
+        self._contar()
         if self.txt_query.text().strip() or self.chk_pending.isChecked():
             filtro = self._kind_group.checkedButton()
             if filtro is not None and filtro.property("kind"):
@@ -469,7 +631,9 @@ class BuscarTab(QWidget):
             p = it.data(PATH_ROLE)
             if not p:
                 continue
-            if it.data(STATE_ROLE) in ("missing", "offline") or not os.path.exists(p):
+            # Lo decidió la búsqueda (raíz conectada + lo que marcó el NAS): acá
+            # no se pregunta al NAS, que desde el hilo de la interfaz la congela.
+            if it.data(STATE_ROLE) in ("missing", "offline"):
                 faltan += 1
             else:
                 paths.append(p)
@@ -485,6 +649,36 @@ class BuscarTab(QWidget):
         if paths:
             self.enviarAConvertir.emit(paths)
 
+    def _fotos_elegidas(self) -> tuple[list[str], int, int]:
+        """Fotos elegidas que se pueden leer, cuántos videos hay (no sirven como
+        referencia de un rostro) y cuántas fotos no están disponibles."""
+        fotos, videos, faltan = [], 0, 0
+        for it in self.grid.selectedItems():
+            p = it.data(PATH_ROLE)
+            if not p:
+                continue
+            if it.data(KIND_ROLE) != "image":
+                videos += 1
+            elif it.data(STATE_ROLE) in ("missing", "offline"):
+                faltan += 1
+            else:
+                fotos.append(p)
+        return fotos, videos, faltan
+
+    def _mandar_a_persona(self):
+        fotos, videos, faltan = self._fotos_elegidas()
+        avisos = []
+        if videos:
+            avisos.append("los videos no se usan para reconocer personas")
+        if faltan:
+            avisos.append("1 foto no está disponible" if faltan == 1 else
+                          f"{faltan} fotos no están disponibles")
+        if avisos:
+            texto = "; ".join(avisos)
+            self.lbl_seleccion.setText(texto[0].upper() + texto[1:] + " y no se enviaron.")
+        if fotos:
+            self.enviarAPersona.emit(fotos)
+
     def _menu_grilla(self, pos):
         from PyQt6.QtWidgets import QMenu
         if not self.grid.selectedItems():
@@ -492,15 +686,22 @@ class BuscarTab(QWidget):
         menu = QMenu(self)
         accion = menu.addAction("Enviar a Convertir")
         accion.setEnabled(self.btn_convertir.isEnabled())
-        if menu.exec(self.grid.viewport().mapToGlobal(pos)) is accion:
+        persona = menu.addAction("Agregar persona…")
+        persona.setEnabled(self.btn_persona.isEnabled())
+        elegida = menu.exec(self.grid.viewport().mapToGlobal(pos))
+        if elegida is accion:
             self._mandar_a_convertir()
+        elif elegida is persona:
+            self._mandar_a_persona()
 
     def _actualizar_seleccion(self):
         paths, faltan = self._elegidos_disponibles()
         n = len(self.grid.selectedItems())
         self.btn_convertir.setEnabled(bool(paths))
+        self.btn_persona.setEnabled(bool(self._fotos_elegidas()[0]))
         if not n:
-            self.lbl_seleccion.setText("Seleccione fotos o videos para enviarlos a Convertir o asignarles etiquetas.")
+            self.lbl_seleccion.setText("Seleccione fotos o videos para enviarlos a Convertir, asignarles etiquetas "
+                                       "o usarlos para reconocer a una persona.")
         else:
             txt = "1 seleccionado" if n == 1 else f"{n} seleccionados"
             if faltan:
@@ -546,6 +747,7 @@ class BuscarTab(QWidget):
         def listo(_):
             self._reload_known_tags()
             self._on_selection_changed()
+            self._do_search(conservar=True)     # que la grilla muestre la etiqueta ya
 
         def fallo(e):
             self.lbl_seleccion.setText("No se pudo guardar la etiqueta. " + texto_para(e))
@@ -565,11 +767,26 @@ class BuscarTab(QWidget):
         self._srv.pedir(lambda repo: repo.all_tag_names(), ok=self.tag_bar.set_known_tags)
 
 
+def _preparar(repo, cache, results) -> tuple:
+    """Lo que necesita la grilla además de los resultados, en el hilo del catálogo:
+    miniaturas locales, cuáles bajar, y qué raíces (NAS, discos) están conectadas."""
+    minis, faltan = cache.locales(repo, [m.id for m in results])
+    paths = [m.path for m in results]
+    presentes = availability(paths)
+    raices = {r: os.path.exists(r) for r in {storage_root(p) for p in paths}}
+    return results, minis, faltan, presentes, raices
+
+
+def _miles(n: int) -> str:
+    return f"{n:,}".replace(",", ".")
+
+
 def _iguales(antes, ahora) -> bool:
     """Misma grilla: mismos elementos, en el mismo orden y en el mismo estado."""
     if antes is None:
         return False
-    clave = lambda m: (m.id, m.path, m.missing_since, m.quality_flag, m.width, m.height)  # noqa: E731
+    clave = lambda m: (m.id, m.path, m.missing_since, m.quality_flag, m.width, m.height,  # noqa: E731
+                       tuple(m.etiquetas or ()))
     return [clave(m) for m in antes] == [clave(m) for m in ahora]
 
 

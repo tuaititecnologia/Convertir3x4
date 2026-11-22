@@ -12,13 +12,17 @@ from PIL import Image, ImageOps
 from . import video_ffmpeg
 
 THUMB_MAX = 320  # lado mayor de la miniatura, en px
+# Sube cuando cambia cómo se hace la miniatura: el NAS rehace las anteriores
+# (2: los videos ya no usan el primer cuadro, que suele ser negro).
+MINIATURA_VERSION = 2
 
 
-def make_thumb(src_path: str, kind: str) -> bytes | None:
-    """JPEG de la miniatura, o None si el archivo no se puede leer."""
+def make_thumb(src_path: str, kind: str, duracion: float | None = None) -> bytes | None:
+    """JPEG de la miniatura, o None si el archivo no se puede leer. De un video,
+    un cuadro que lo muestre (no el primero, que suele ser negro)."""
     try:
         if kind == "video":
-            img = _first_frame(src_path)
+            img = Image.fromarray(video_ffmpeg.cuadro_representativo(src_path, duracion)).convert("RGB")
         else:
             with Image.open(src_path) as im:
                 im.draft("RGB", (THUMB_MAX * 2, THUMB_MAX * 2))  # JPEG: decodifica achicado
@@ -33,9 +37,13 @@ def make_thumb(src_path: str, kind: str) -> bytes | None:
         return None
 
 
-def _first_frame(path: str) -> Image.Image | None:
-    _, frame = video_ffmpeg.leer(path, cuadro=True)
-    return Image.fromarray(frame).convert("RGB")
+def en_negro(jpeg: bytes | None) -> bool:
+    """¿La miniatura es negra? (foto negra, o video en negro en todos los puntos)."""
+    if not jpeg:
+        return False
+    import numpy as np
+    with Image.open(io.BytesIO(jpeg)) as im:
+        return video_ffmpeg.es_negro(np.asarray(im.convert("L")))
 
 
 REFERENCIA_MAX = 1600  # lado mayor de una foto de referencia de una persona (lo que mira el NAS)

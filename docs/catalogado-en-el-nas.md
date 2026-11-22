@@ -136,6 +136,14 @@ Etiquetas más propuestas: acción social (1.109), predicación (1.030), alabanz
 
 A las 17:00 se pasó el NAS a la v0.7.1 (esquema 3, cambios en vivo).
 
+## Imágenes en negro (esquema 5)
+
+En la primera pasada, 139 de los 145 videos que la IA marcó «logo» tenían la miniatura negra: era el primer cuadro, y las grabaciones empiezan en negro. En todo el catálogo había 140 videos con miniatura negra y una sola foto negra.
+
+- **Miniatura de video:** el primer cuadro que no sea negro entre el 10 %, el 30 % y el 50 % de la duración (`video_ffmpeg.cuadro_representativo`). Probado con 10 de esos videos reales: los 10 quedaron con imagen (escenario, alabanza), unos 2,5 s cada uno leyendo por SMB.
+- **En negro:** oscuro y parejo (brillo medio < 16 y variación < 8, de 0 a 255). Una foto así, o un video negro en los tres puntos, queda con calidad `en_negro`, que pesa más que la baja resolución. La IA no los analiza.
+- **Lo ya catalogado:** `media.miniatura_version` y `thumbs.MINIATURA_VERSION = 2`. En la pasada siguiente a instalar la versión, el NAS rehace una vez la miniatura de cada video desde el archivo (unos 1.700, de una a dos horas esa noche). Las fotos se revisan desde la miniatura guardada, sin leer el archivo. Se descarta lo que la IA había sugerido sobre la miniatura vieja, sin confirmar, y se vuelve a analizar; lo que confirmó una persona queda.
+
 ## Para decidir
 
 - **Transcripción de los videos** (idea del 21/11/2026): buscar por lo que se dice en los cultos. Whisper local. El NAS saca el audio (lectura de disco, poco procesador) y la transcripción corre en la PC de edición o en el NAS con una placa de video. Hay placas viejas disponibles. Antes de decidir hay que confirmar el modelo, la memoria de video y la fuente del NAS. Sin confirmar todavía: TrueNAS 25.10 parece soportar NVIDIA solo desde GTX 16xx/RTX 20xx, y una AMD de la serie HD 7000 o posterior podría andar por Vulkan con whisper.cpp. El texto entraría en `search_doc`, con los tiempos de cada frase para abrir el video en ese minuto.

@@ -83,11 +83,13 @@ class Repo:
         row = self._q("SELECT * FROM media WHERE id = %s", (media_id,)).fetchone()
         return self._media(row) if row else None
 
-    def upsert_media(self, m: Media, miniatura: bytes | None = None) -> int:
+    def upsert_media(self, m: Media, miniatura: bytes | None = None,
+                     miniatura_version: int | None = None) -> int:
         """Inserta o actualiza por ruta. Devuelve el id.
 
         Si el medio estaba como faltante y vuelve a su ruta, deja de faltar.
-        `miniatura` (JPEG) se guarda en la misma transacción."""
+        `miniatura` (JPEG) se guarda en la misma transacción, con la versión de
+        la regla con que se hizo (ver thumbs.MINIATURA_VERSION)."""
         rel = m.rel_path if m.rel_path is not None else self.rel(m.path)
         if rel is None:
             raise ValueError(f"fuera de la raíz del catálogo: {m.path}")
@@ -104,6 +106,9 @@ class Repo:
                 values).fetchone()["id"]
             if miniatura is not None:
                 self._guardar_miniatura(media_id, miniatura)
+            if miniatura_version is not None:
+                self._q("UPDATE media SET miniatura_version = %s WHERE id = %s",
+                        (miniatura_version, media_id))
             self._actualizar_busqueda([media_id])
         m.id = media_id
         m.missing_since = None
@@ -158,16 +163,36 @@ class Repo:
     # ------------------------------------------------------------- faltantes y movidos
     def estado_carpeta(self, carpeta: str) -> dict[str, dict]:
         """Lo catalogado dentro de `carpeta` (relativa; "" = todo):
-        {rel_path: {id, file_mtime, size_bytes, missing_since}}."""
+        {rel_path: {id, kind, duration, file_mtime, size_bytes, missing_since,
+        quality_flag, miniatura_version}}."""
+        cols = ("id, rel_path, kind, duration, file_mtime, size_bytes, missing_since, "
+                "quality_flag, miniatura_version")
         if carpeta:
             rows = self._q(
-                "SELECT id, rel_path, file_mtime, size_bytes, missing_since FROM media "
+                f"SELECT {cols} FROM media "
                 "WHERE rel_path = %s OR starts_with(rel_path, %s)",
                 (carpeta, carpeta + "/"))
         else:
-            rows = self._q(
-                "SELECT id, rel_path, file_mtime, size_bytes, missing_since FROM media")
+            rows = self._q(f"SELECT {cols} FROM media")
         return {r["rel_path"]: r for r in rows}
+
+    def rehacer_miniatura(self, media_id: int, jpeg: bytes | None, version: int,
+                          calidad: str | None = None):
+        """Miniatura nueva (cambió cómo se hacen). Lo que la IA sugirió mirando la
+        vieja se descarta y se vuelve a analizar; lo que confirmó una persona queda."""
+        with self.conn.transaction():
+            if jpeg:
+                self._guardar_miniatura(media_id, jpeg)
+            self._q("UPDATE media SET miniatura_version = %s, "
+                    "quality_flag = COALESCE(%s, quality_flag) WHERE id = %s",
+                    (version, calidad, media_id))
+            self._q("DELETE FROM media_tag WHERE media_id = %s AND source = 'ia' "
+                    "AND NOT confirmed", (media_id,))
+            self._q("DELETE FROM ai_result WHERE media_id = %s", (media_id,))
+            self._actualizar_busqueda([media_id])
+
+    def marcar_miniatura_al_dia(self, media_id: int, version: int):
+        self._q("UPDATE media SET miniatura_version = %s WHERE id = %s", (version, media_id))
 
     def marcar_faltantes(self, ids: list[int]) -> list[int]:
         """Anota que estos medios ya no están en su ruta. No se borran.
@@ -517,7 +542,7 @@ class Repo:
         rows = self._q(
             "SELECT m.*, a.model AS ai_model, a.media_id AS ai_id FROM media m "
             "LEFT JOIN ai_result a ON a.media_id = m.id "
-            "WHERE m.quality_flag <> 'corrupt' AND m.missing_since IS NULL "
+            "WHERE m.quality_flag NOT IN ('corrupt', 'en_negro') AND m.missing_since IS NULL "
             "AND (a.media_id IS NULL OR a.model IS DISTINCT FROM %s "
             "     OR COALESCE(a.people_sig, '') <> %s) ORDER BY m.id",
             (model, people_sig)).fetchall()
@@ -540,6 +565,51 @@ class Repo:
             (media_id, model, people_sig, media_type, ", ".join(people), raw_json))
 
     # ------------------------------------------------------------- búsqueda
+    def buscar(self, query: str, *, kind: str | None = None, pending_only: bool = False,
+               desde: int = 0, cuantos: int = 120) -> tuple[list[Media], int | None]:
+        """Una página de la búsqueda de Buscar, y cuántos hay en total.
+
+        Mismas reglas que `_search` (palabras primero, por relevancia; después
+        los fragmentos; los que faltan de su ruta al final), pero en UNA consulta
+        con el orden resuelto en la base, así cada página sigue a la anterior sin
+        repetir ni saltear. `kind` ('image'/'video') filtra en la base. No trae
+        `search_doc` (el índice de texto: ~40 % de cada fila) y sí las etiquetas
+        de cada uno, para la grilla. El total es None
+        si se pidió una página después del final.
+        """
+        where, params = [], []
+        terms = [t for t in (query or "").split() if t]
+        tsq = _to_tsquery(query) if terms else None
+        if terms:
+            conds = []
+            if tsq:
+                conds.append("m.search_doc @@ to_tsquery('catalogo', %s)")
+                params.append(tsq)
+            conds.append("(" + " AND ".join(
+                "texto_nombre(m.filename, m.folder_origin) LIKE sin_acentos(lower(%s))"
+                for _ in terms) + ")")
+            params += [f"%{_escape_like(t)}%" for t in terms]
+            where.append("(" + " OR ".join(conds) + ")")
+        if kind:
+            where.append("m.kind = %s")
+            params.append(kind)
+        if pending_only:
+            where.append("EXISTS (SELECT 1 FROM media_tag mt "
+                         "WHERE mt.media_id = m.id AND NOT mt.confirmed)")
+        orden = "m.missing_since IS NOT NULL"
+        if tsq:
+            orden += (", (m.search_doc @@ to_tsquery('catalogo', %s)) DESC, "
+                      "ts_rank(m.search_doc, to_tsquery('catalogo', %s)) DESC")
+            params += [tsq, tsq]
+        orden += ", m.filename, m.id"
+        rows = self._q(
+            f"SELECT {_COLUMNAS_MEDIA}, {_ETIQUETAS_MEDIA}, count(*) OVER () AS total FROM media m "
+            + ("WHERE " + " AND ".join(where) + " " if where else "")
+            + f"ORDER BY {orden} LIMIT %s OFFSET %s",
+            params + [cuantos, desde]).fetchall()
+        total = rows[0]["total"] if rows else (0 if desde == 0 else None)
+        return [self._media(r) for r in rows], total
+
     def search(self, query: str, limit: int = 500,
                pending_only: bool = False) -> list[Media]:
         """Ver `_search`. Con `pending_only`, solo medios con tags de la IA sin confirmar."""
@@ -613,6 +683,18 @@ def sello_de(jpeg: bytes) -> str:
     return hashlib.md5(jpeg).hexdigest()
 
 
+# Todas las columnas de `media` que lee _row_to_media (sin search_doc).
+_COLUMNAS_MEDIA = ", ".join("m." + c for c in (
+    "id", "rel_path", "filename", "folder_origin", "kind", "width", "height", "aspect",
+    "duration", "codec", "size_bytes", "file_mtime", "sha256", "phash", "status",
+    "quality_flag", "missing_since"))
+# Las etiquetas de cada medio, para la grilla: [[nombre, confirmada], ...]
+_ETIQUETAS_MEDIA = (
+    "(SELECT COALESCE(json_agg(json_build_array(t.name, mt.confirmed) "
+    "ORDER BY mt.confirmed DESC, t.name), '[]') FROM media_tag mt "
+    "JOIN tag t ON t.id = mt.tag_id WHERE mt.media_id = m.id) AS etiquetas")
+
+
 def _row_to_media(row, raiz: str) -> Media:
     return Media(
         id=row["id"],
@@ -633,6 +715,7 @@ def _row_to_media(row, raiz: str) -> Media:
         status=row["status"],
         quality_flag=row["quality_flag"],
         missing_since=row["missing_since"],
+        etiquetas=[(n, c) for n, c in row["etiquetas"]] if "etiquetas" in row else None,
     )
 
 

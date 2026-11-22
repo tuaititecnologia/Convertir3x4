@@ -73,6 +73,17 @@ class PanelClient:
         (puede tardar); después responde de memoria mientras siga enchufado."""
         return self._pedir("GET", f"/v1/contenido?uuid={uuid}", timeout=200)
 
+    def copiados(self, uuid: str) -> dict | None:
+        """Los archivos que se copiaron de ese disco (y los que no se pudieron
+        leer), con cuándo empezó y terminó. None si el NAS todavía no lo informa
+        (servicio de la Grabadora anterior a la versión 2)."""
+        try:
+            return self._pedir("GET", f"/v1/copiados?uuid={uuid}", timeout=20)
+        except PanelError as e:
+            if str(e).lower().startswith("no existe"):
+                return None
+            raise
+
     def log(self, uuid: str, lineas: int = 300) -> str:
         return self._pedir("GET", f"/v1/log?uuid={uuid}&lineas={lineas}").get("texto", "")
 
@@ -117,7 +128,8 @@ FASES = {
     "DETENIDA": "Detenida",
     "ERROR": "Error",
     "VERIFICACION_FALLIDA": "Verificación fallida",
-    "FORMATEADO": "Vacío",
+    # Se copió todo y después se vació el disco («Vacío» solo no decía que se copió)
+    "FORMATEADO": "Copia y vaciado completo",
 }
 
 
@@ -176,7 +188,7 @@ def resumir(copia: dict | None, tarea: dict | None = None, disco: dict | None = 
     if not copia:
         f = (disco or {}).get("formateado")
         if f:
-            return Resumen("Vacío", f"Se borró el {fecha(f.get('fecha'))}, después de copiar "
+            return Resumen(FASES["FORMATEADO"], f"Se vació el {fecha(f.get('fecha'))}, después de copiar "
                            f"{f.get('archivos', '?')} archivos. Listo para volver a grabar.", None, "ok")
         return Resumen("Sin copiar", "Este disco nunca se copió al NAS.", None, "neutro")
     fase = copia.get("fase") or ""
@@ -203,7 +215,8 @@ def resumir(copia: dict | None, tarea: dict | None = None, disco: dict | None = 
             det += f" {copia['error']}"
         return Resumen(titulo, det, None, "ok")
     if fase == "FORMATEADO":
-        return Resumen(titulo, "Vacío y listo para volver a grabar.", None, "ok")
+        return Resumen(titulo, "Todo se copió al NAS y el disco quedó vacío, listo para volver "
+                       "a grabar.", None, "ok")
     if fase == "CON_ERRORES":
         return Resumen(titulo, f"{errores} archivos no se pudieron leer. El disco no se borrará: "
                        "comuníquese con el administrador del NAS para intentar recuperarlos.",
@@ -215,6 +228,147 @@ def resumir(copia: dict | None, tarea: dict | None = None, disco: dict | None = 
 
 
 # ------------------------------------------------------------------ contenido del disco
+_AVISAR = "Si vuelve a pasar, avise al responsable del NAS."
+
+# Qué escribe copiar-disco.py (CDLM-Freenas) en `error`, y cómo se lo explica al
+# operador: (fragmento del texto técnico, qué pasó, qué hacer). El primero que
+# coincide gana. Los textos del NAS no llevan tildes.
+_ERRORES = (
+    ("se desconecto",
+     "El disco se desconectó en medio de la copia.",
+     "Vuelva a conectarlo y haga clic en «Copiar…»: sigue desde donde quedó."),
+    ("no hay lugar",
+     "En el NAS no queda lugar para esta copia. No se copió nada más.",
+     "Avise al responsable del NAS para que libere espacio. El disco no se toca."),
+    ("solo lectura",
+     "El NAS no pudo abrir el disco de forma segura, así que no lo copió para no "
+     "arriesgar lo grabado.",
+     "Desconéctelo y vuelva a conectarlo. " + _AVISAR),
+    ("no se pudo montar",
+     "El NAS no pudo abrir el disco.",
+     "Desconéctelo, vuelva a conectarlo y pruebe de nuevo. Si sigue igual, el disco puede "
+     "estar dañado: avise al responsable del NAS."),
+    ("no coinciden",
+     "Al comparar el disco con lo copiado, hay archivos que no coinciden. Por eso el disco "
+     "no se vació.",
+     "Haga clic en «Copiar…» para copiarlo de nuevo y después vuelva a verificar. " + _AVISAR),
+    ("no se pudieron copiar",
+     "Algunos archivos del disco no se pudieron leer. El resto está en el NAS.",
+     "Pruebe «Volver a intentar lo que falló…». El disco no se borra hasta que esté todo "
+     "copiado. " + _AVISAR),
+    ("detenida a mano",
+     "Alguien detuvo la copia.",
+     "Haga clic en «Copiar…» para continuar desde donde se detuvo."),
+)
+_NO_SE_FORMATEO = (
+    ("verificacion fallo",
+     "al compararlo con lo copiado, algunos archivos no coincidieron"),
+    ("copia corriendo", "todavía había una copia en marcha"),
+    ("esta montado", "otro programa lo estaba usando"),
+    ("se monto mientras", "otro programa empezó a usarlo"),
+    ("ya no es el disco", "se cambió el disco mientras tanto"),
+    ("no es un disco usb", "no está conectado por USB"),
+)
+
+
+def explicar(copia: dict | None) -> tuple[str, str] | None:
+    """(qué pasó, qué hacer) para una copia con error, en palabras del operador.
+    None si la copia no tuvo problemas. Lo que no se reconoce se explica en
+    general y remite al detalle técnico."""
+    if not copia:
+        return None
+    fase = copia.get("fase") or ""
+    error = (copia.get("error") or "").lower()
+    if fase == "TERMINADO" and error.startswith("no se formateo"):
+        motivo = next((m for clave, m in _NO_SE_FORMATEO if clave in error), None)
+        return ("La copia está completa, pero el disco no se vació para volver a grabar"
+                + (f": {motivo}." if motivo else "."),
+                "Pruebe «Verificar» y después «Formatear…». Mientras tanto, lo grabado está "
+                "en el disco y en el NAS.")
+    if fase not in ("ERROR", "CON_ERRORES", "VERIFICACION_FALLIDA", "DETENIDA") and not error:
+        return None
+    for clave, que, hacer in _ERRORES:
+        if clave in error:
+            return que, hacer
+    if fase == "DETENIDA":
+        return _ERRORES[-1][1], _ERRORES[-1][2]
+    return ("La copia se interrumpió por un problema en el NAS.",
+            "Pruebe de nuevo con «Copiar…». " + _AVISAR + " Muéstrele el detalle técnico.")
+
+
+def _capacidad(texto) -> str:
+    """'894.3G' (lsblk) -> '894 GB'."""
+    t = str(texto or "").strip().upper()
+    unidades = {"G": "GB", "T": "TB", "M": "MB"}
+    if t[-1:] in unidades:
+        try:
+            v = float(t[:-1])
+        except ValueError:
+            return t
+        return (f"{v:.0f}" if v >= 10 else f"{v:.1f}".replace(".", ",")) + " " + unidades[t[-1]]
+    return t
+
+
+def ficha(copia: dict) -> list[tuple[str, str]]:
+    """Todo lo que se sabe de una copia, en renglones (dato, valor) para el panel
+    del historial. Sin rutas del sistema ni identificadores técnicos."""
+    fase = copia.get("fase") or ""
+    filas: list[tuple[str, str]] = []
+    disco = " · ".join(x for x in (copia.get("modelo"), _capacidad(copia.get("tamano"))) if x)
+    if disco:
+        filas.append(("Disco", disco))
+    if copia.get("serie"):
+        filas.append(("Número de serie", str(copia["serie"])))
+    total = int(copia.get("archivos") or 0)
+    pendientes = int(copia.get("pendientes") or 0)
+    errores = int(copia.get("errores") or 0)
+    if total:
+        if pendientes:
+            txt = f"{total - pendientes} de {total} copiados"
+        else:
+            txt = "1 copiado" if total == 1 else f"{total} copiados"
+        if errores:
+            txt += " · " + ("1 con error" if errores == 1 else f"{errores} con error")
+        filas.append(("Archivos", txt))
+    falta = float(copia.get("falta_gb") or 0)
+    if falta or copia.get("corriendo"):
+        hecho = float(copia.get("copiado_gb") or 0)
+        filas.append(("Copiado", f"{_gb(hecho)} de {_gb(hecho + falta)}"))
+    v = copia.get("verificado")
+    if v:
+        fallos = len(v.get("fallos") or [])
+        if fallos:
+            txt = (f"El {fecha(v.get('fecha'))}: " + ("1 archivo no coincide" if fallos == 1 else
+                                                     f"{fallos} archivos no coinciden"))
+        else:
+            txt = (f"El {fecha(v.get('fecha'))}: los {v.get('archivos', '?')} archivos coinciden "
+                   "con lo copiado")
+        filas.append(("Verificación", txt))
+    elif fase in ("TERMINADO", "FORMATEADO"):
+        filas.append(("Verificación", "No se verificó"))
+    if fase == "FORMATEADO":
+        filas.append(("Vaciado", f"El {fecha(copia.get('actualizado'))}. Listo para volver a "
+                                 "grabar"))
+    elif fase == "TERMINADO":
+        filas.append(("Vaciado", "No: lo grabado sigue también en el disco"))
+    if copia.get("actualizado"):
+        filas.append(("Última novedad", fecha(copia["actualizado"])))
+    return filas
+
+
+def filas_copiados(datos: dict) -> list[tuple[str, str, str, str, bool]]:
+    """La lista de archivos del panel: (en el disco, en el NAS, tamaño, copiado,
+    no se pudo leer). Primero los que fallaron, para que se vean."""
+    filas = [(e.get("origen") or "", "", "", "No se pudo leer", True)
+             for e in datos.get("errores") or []]
+    for c in sorted(datos.get("copiados") or [], key=lambda c: c.get("origen") or ""):
+        tam = c.get("bytes")
+        filas.append((c.get("origen") or "", c.get("destino") or "",
+                      _gb(tam / 1e9) if isinstance(tam, (int, float)) else "",
+                      fecha(c.get("fecha")), False))
+    return filas
+
+
 def _dia(ts) -> str:
     import time as _t
     lt = _t.localtime(ts)

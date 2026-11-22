@@ -426,11 +426,23 @@ CREATE TRIGGER person_reference_aviso_cambio AFTER UPDATE ON person_reference
     EXECUTE FUNCTION avisar_cambio_catalogo();
 """
 
+# Imágenes en negro: videos que empiezan en negro (la miniatura era el primer
+# cuadro y la IA la tomaba por un «logo») y fotos negras. `en_negro` se suma a
+# los estados de calidad y la IA no los etiqueta. `miniatura_version` deja que
+# el NAS rehaga una vez las miniaturas hechas con la regla vieja.
+_V5 = r"""
+ALTER TABLE media DROP CONSTRAINT media_quality_flag_check;
+ALTER TABLE media ADD CONSTRAINT media_quality_flag_check
+    CHECK (quality_flag IN ('ok', 'low_res', 'corrupt', 'en_negro'));
+ALTER TABLE media ADD COLUMN miniatura_version smallint NOT NULL DEFAULT 1;
+"""
+
 MIGRACIONES: list[tuple[int, str]] = [
     (1, _V1),
     (2, _V2),
     (3, _V3),
     (4, _V4),
+    (5, _V5),
 ]
 CANAL_CAMBIOS = "catalogo"
 VERSION_ESQUEMA = MIGRACIONES[-1][0]

@@ -18,7 +18,7 @@ from .ui.tabs.tab_buscar import BuscarTab
 from .ui.tabs.tab_motor import MotorTab
 from .ui.tabs.tab_discos import DiscosTab
 
-_RAIL_WIDTH = 76
+_RAIL_WIDTH = 80      # «Grabadora» (56 px a 11 px) tiene que entrar sin cortarse
 
 
 class NavButton(QToolButton):
@@ -103,6 +103,7 @@ class MainWindow(QMainWindow):
         self.stack.currentChanged.connect(self._on_tab_changed)
         self.discos_tab.pendientes.connect(self._aviso_grabadora)
         self.buscar_tab.enviarAConvertir.connect(self._a_convertir)
+        self.buscar_tab.enviarAPersona.connect(self._a_persona)
         self._restore_geometry()
 
     def _build_rail(self, modules) -> QFrame:
@@ -184,6 +185,12 @@ class MainWindow(QMainWindow):
         """Desde Buscar: lo elegido pasa a Convertir y se muestra Convertir."""
         self.convert_tab.recibir(paths)
         self.show_module(self.stack.indexOf(self.convert_tab))
+
+    def _a_persona(self, paths: list[str]):
+        """Desde Buscar: fotos de una persona para el reconocimiento facial. Se
+        muestra Catalogar, donde está la lista de personas y el resultado."""
+        self.show_module(self.stack.indexOf(self.motor_tab))
+        self.motor_tab.recibir_fotos_de_persona(paths)
 
     def show_module(self, index: int):
         self._nav.button(index).setChecked(True)

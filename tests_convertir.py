@@ -4,6 +4,7 @@ Los videos de prueba los genera el ffmpeg de la app. Nada baja de internet: la
 descarga real se probó a mano (ver docs/convertir-fotos-y-videos.md).
 """
 
+import datetime
 import os
 import sys
 
@@ -762,7 +763,9 @@ class TestDeBuscarAConvertir:
         perdido = str(tmp_path / "no_esta.jpg")
         t._populate([Media(path=media["photo"], filename="foto.jpg", kind="image", id=1),
                      Media(path=media["video"], filename="video.mp4", kind="video", id=2),
-                     Media(path=perdido, filename="no_esta.jpg", kind="image", id=3)])
+                     # el NAS lo marcó como faltante en su última pasada
+                     Media(path=perdido, filename="no_esta.jpg", kind="image", id=3,
+                           missing_since=datetime.datetime(2026, 11, 20).astimezone())])
         app.processEvents()
         return t
 
@@ -789,3 +792,21 @@ class TestDeBuscarAConvertir:
         assert tab.list_widget.count() == 2
         assert tab.lbl_status.text() == "Se agregó 1 elemento desde Buscar. 1 ya estaba en la lista."
         assert tab.btn_convert.text() == "Crear 2 fotos"
+
+    def test_agregar_persona_manda_solo_las_fotos_disponibles(self, app, media, tmp_path):
+        t = self._buscar(app, media, tmp_path)
+        recibidos = []
+        t.enviarAPersona.connect(recibidos.append)
+        t.grid.item(1).setSelected(True)                # solo el video: no sirve
+        app.processEvents()
+        assert not t.btn_persona.isEnabled()
+        for i in range(3):
+            t.grid.item(i).setSelected(True)
+        app.processEvents()
+        assert t.btn_persona.isEnabled()
+        t.btn_persona.click()
+        assert recibidos == [[media["photo"]]]
+        assert t.lbl_seleccion.text() == ("Los videos no se usan para reconocer personas; "
+                                          "1 foto no está disponible y no se enviaron.")
+        t.close()
+        t.deleteLater()

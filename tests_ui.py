@@ -314,28 +314,17 @@ class TestAvailability:
         assert not any(result.values())
         assert calls == ["\\\\NAS\\fotos"]
 
-    def test_lee_cada_carpeta_una_vez_y_no_archivo_por_archivo(self, monkeypatch, tmp_path):
-        # Por Netbird cada consulta al NAS tarda ~80 ms: 500 resultados en 24
-        # carpetas tienen que ser 24 lecturas, no 500.
-        import unicodedata
+    def test_no_pregunta_al_nas_por_cada_archivo(self, monkeypatch, tmp_path):
+        # Por Netbird cada consulta al NAS tarda ~80 ms: 500 resultados no pueden
+        # ser 500 consultas. Lo que falta lo marca el NAS (missing_since).
         from convertir3x4.catalog import ubicacion
-        for carpeta in ("a", "b"):
-            (tmp_path / carpeta).mkdir()
-        (tmp_path / "a" / "1.jpg").write_bytes(b"x")
-        # macOS (SMB) devuelve los acentos descompuestos; la base los tiene compuestos
-        (tmp_path / "b" / unicodedata.normalize("NFD", "Niños.mp4")).write_bytes(b"x")
-        leidas = []
-        real = ubicacion.os.listdir
-        monkeypatch.setattr(ubicacion.os, "listdir", lambda d: (leidas.append(d), real(d))[1])
+        preguntas = []
         monkeypatch.setattr(ubicacion.os.path, "exists",
-                            lambda p: pytest.fail(f"preguntó por {p}") if p.endswith((".jpg", ".mp4"))
-                            else True)
-        paths = ([str(tmp_path / "a" / "1.jpg"), str(tmp_path / "a" / "2.jpg")]
-                 + [str(tmp_path / "b" / unicodedata.normalize("NFC", "Niños.mp4"))]
-                 + [str(tmp_path / "c" / "no.jpg")])          # carpeta que ya no está
-        res = ubicacion.availability(paths)
-        assert list(res.values()) == [True, False, True, False]
-        assert sorted(leidas) == sorted(str(tmp_path / c) for c in "abc")
+                            lambda p: preguntas.append(p) or True)
+        monkeypatch.setattr(ubicacion.os, "listdir", lambda d: pytest.fail("listó " + d))
+        paths = [f"/Volumes/multimedia/evento{i % 24}/{i}.jpg" for i in range(500)]
+        assert all(ubicacion.availability(paths).values())
+        assert preguntas == ["/Volumes/multimedia"]
 
     def test_missing_originals_are_marked_in_buscar(self, app, tmp_path, sin_catalogo):
         from convertir3x4.ui.tabs.tab_buscar import BuscarTab
@@ -508,6 +497,87 @@ class TestBuscarConCatalogo:
         t.close()
         t.deleteLater()
         srv.cerrar()
+
+
+class TestBuscarCargando:
+    """Mientras se trae la búsqueda del NAS se ve que está trabajando."""
+
+    def test_muestra_que_busca_solo_si_tarda(self, app, monkeypatch):
+        from convertir3x4.ui.tabs import tab_buscar
+
+        class Lento:            # el NAS contesta cuando la prueba quiere
+            estado, texto = "ok", ""
+
+            class _S:
+                def connect(self, *_a):
+                    pass
+            estado_cambiado = _S()
+
+            def __init__(self):
+                self.pendientes = []
+
+            def pedir(self, fn, ok=None, error=None):
+                self.pendientes.append((fn, ok))
+                return len(self.pendientes)
+
+        monkeypatch.setattr(tab_buscar, "_CARGANDO_MS", 50)
+        srv = Lento()
+        t = tab_buscar.BuscarTab(srv=srv)
+        t.resize(900, 600)
+        t.show()
+        t.txt_query.setText("culto")
+        t._do_search()
+        assert not t.barra_cargando.isVisible()          # rápido: no parpadea
+        assert _esperar(app, lambda: t.barra_cargando.isVisible(), 2)
+        assert t.lbl_count.text() == "Buscando…"
+        assert "Buscando en el catálogo" in t.grid._empty_text
+        altura = t.grid.geometry().top()
+        # llega la respuesta de la última búsqueda
+        fn, ok = srv.pendientes[-1]
+        ok(([], {}, [], {}, {}))
+        assert not t.barra_cargando.isVisible()
+        assert t.lbl_count.text() == "0 resultados"
+        assert t.grid.geometry().top() == altura          # la grilla no salta
+        t.close()
+        t.deleteLater()
+
+
+class TestBuscarPorPaginas:
+    def test_trae_de_a_paginas_al_bajar(self, app, pg_cfg, tmp_path, monkeypatch):
+        from convertir3x4.catalog.db import conectar
+        from convertir3x4.catalog.models import Media
+        from convertir3x4.catalog.repo import Repo
+        from convertir3x4.ui.servicio_catalogo import ServicioCatalogo
+        from convertir3x4.ui.tabs import tab_buscar
+
+        monkeypatch.setattr(tab_buscar, "catalog_thumb_dir", lambda: str(tmp_path / "cache"))
+        monkeypatch.setattr(tab_buscar, "_PAGINA", 40)
+        abrir = lambda: Repo(conectar(pg_cfg), str(tmp_path))      # noqa: E731
+        with abrir() as r:
+            for i in range(100):
+                r.upsert_media(Media(path=str(tmp_path / f"f{i:03}.jpg"), filename=f"f{i:03}.jpg",
+                                     kind="video" if i % 10 == 0 else "image"))
+        srv = ServicioCatalogo(abrir=abrir)
+        t = tab_buscar.BuscarTab(srv=srv)
+        try:
+            t.resize(700, 500)
+            t.show()
+            assert _esperar(app, lambda: t.grid.count() == 40)
+            assert t.lbl_count.text() == "40 de 100"
+            t.grid.verticalScrollBar().setValue(t.grid.verticalScrollBar().maximum())
+            assert _esperar(app, lambda: t.grid.count() >= 80)
+            nombres = [t.grid.item(i).text() for i in range(t.grid.count())]
+            assert nombres == [f"f{i:03}.jpg" for i in range(len(nombres))]   # en orden, sin repetir
+            t.grid.verticalScrollBar().setValue(t.grid.verticalScrollBar().maximum())
+            assert _esperar(app, lambda: t.grid.count() == 100)
+            assert t.lbl_count.text() == "100 resultados"
+            # el filtro va a la base: están los 10 videos, no solo los de la 1.ª página
+            next(b for b in t._kind_group.buttons() if b.property("kind") == "video").click()
+            assert _esperar(app, lambda: t.lbl_count.text() == "10 resultados")
+        finally:
+            t.close()
+            t.deleteLater()
+            srv.cerrar()
 
 
 class TestBuscarEnVivo:
@@ -780,6 +850,71 @@ class TestCatalogarEnElNas:
             tab.deleteLater()
             srv.cerrar()
 
+    def test_fotos_desde_buscar_van_a_la_persona(self, app, pg_cfg, tmp_path, monkeypatch):
+        from PIL import Image
+        from convertir3x4.catalog.db import conectar
+        from convertir3x4.catalog.repo import Repo
+        from convertir3x4.ui.servicio_catalogo import ServicioCatalogo
+        from convertir3x4.ui.tabs import tab_motor
+
+        abrir = lambda: Repo(conectar(pg_cfg), str(tmp_path))      # noqa: E731
+        with abrir() as r:
+            r.add_person("Juan Carlos Bazán")
+        fotos = []
+        for nombre in ("culto1.jpg", "culto2.jpg"):
+            fotos.append(str(tmp_path / nombre))
+            Image.new("RGB", (800, 600), "blue").save(fotos[-1])
+        ofrecidos = []
+
+        def elegir(_self, nombres, n):
+            ofrecidos.append((nombres, n))
+            return "  juan carlos   BAZÁN "              # otras mayúsculas: la misma persona
+        monkeypatch.setattr(tab_motor.MotorTab, "_elegir_persona", elegir)
+        monkeypatch.setattr(tab_motor, "abrir_repo", abrir)
+        srv = ServicioCatalogo(abrir=abrir)
+        tab = tab_motor.MotorTab(srv=srv)
+        try:
+            tab.recibir_fotos_de_persona(fotos)
+            assert _esperar(app, lambda: "se enviaron 2 fotos al NAS" in tab.lbl_people_status.text())
+            assert ofrecidos == [(["Juan Carlos Bazán"], 2)]
+            assert tab.lbl_people_status.text().startswith("Juan Carlos Bazán:")
+            with abrir() as r:
+                gente = r.list_persons()
+            assert [(p["name"], p["pendientes"]) for p in gente] == [("Juan Carlos Bazán", 2)]
+        finally:
+            tab.deleteLater()
+            srv.cerrar()
+
+    def test_fotos_desde_buscar_sin_nombre_no_envia(self, app, pg_cfg, tmp_path, monkeypatch):
+        from convertir3x4.catalog.db import conectar
+        from convertir3x4.catalog.repo import Repo
+        from convertir3x4.ui.servicio_catalogo import ServicioCatalogo
+        from convertir3x4.ui.tabs import tab_motor
+
+        abrir = lambda: Repo(conectar(pg_cfg), str(tmp_path))      # noqa: E731
+        llamado = []
+        monkeypatch.setattr(tab_motor.MotorTab, "_elegir_persona",
+                            lambda *a: llamado.append(1) or None)   # canceló
+        monkeypatch.setattr(tab_motor.MotorTab, "enviar_referencias",
+                            lambda *a: pytest.fail("envió sin nombre"))
+        srv = ServicioCatalogo(abrir=abrir)
+        tab = tab_motor.MotorTab(srv=srv)
+        try:
+            tab.recibir_fotos_de_persona([str(tmp_path / "x.jpg")])
+            assert _esperar(app, lambda: llamado == [1])
+        finally:
+            tab.deleteLater()
+            srv.cerrar()
+
+    def test_buscar_agregar_persona_abre_catalogar(self, app, window, monkeypatch):
+        recibidas = []
+        monkeypatch.setattr(window.motor_tab, "recibir_fotos_de_persona", recibidas.append)
+        window.show_module(0)
+        window.buscar_tab.enviarAPersona.emit(["/fotos/a.jpg"])
+        app.processEvents()
+        assert window.stack.currentWidget() is window.motor_tab
+        assert recibidas == [["/fotos/a.jpg"]]
+
     def test_personas_la_pc_sube_y_el_nas_procesa(self, app, pg_cfg, tmp_path, monkeypatch):
         import numpy as np
         from PIL import Image
@@ -826,3 +961,68 @@ class TestCatalogarEnElNas:
         finally:
             tab.deleteLater()
             srv.cerrar()
+
+
+def test_los_nombres_de_la_barra_lateral_entran_enteros(window):
+    # «Grabadora» se veía «Gra…ora»: el texto más el margen del botón no entraba.
+    for b in window._nav.buttons() + [window.btn_help]:
+        assert b.fontMetrics().horizontalAdvance(b.text()) <= b.width() - 8, b.text()
+
+
+def test_buscar_nota_solo_que_se_conecto_el_nas(app, sin_catalogo, monkeypatch):
+    from convertir3x4.catalog.models import Media
+    from convertir3x4.ui.tabs import tab_buscar
+    from convertir3x4.ui.widgets.media_grid import STATE_ROLE
+    t = tab_buscar.BuscarTab(srv=sin_catalogo)
+    t.show()
+    m = Media(path="/Volumes/NAS_PRUEBA/evento/a.jpg", filename="a.jpg", kind="image", id=1)
+    t._mostrar_busqueda(t._busqueda, [m], {}, [], {m.path: False},
+                        {"/Volumes/NAS_PRUEBA": False})
+    t.grid.item(0).setSelected(True)
+    assert t.grid.item(0).data(STATE_ROLE) == "offline" and t.offline_box.isVisibleTo(t)
+    conectado = []
+    monkeypatch.setattr(tab_buscar, "_existe", lambda r: (conectado.append(r), True)[1])
+    t._revisar_raices()                         # lo que hace el reloj cada 5 s
+    assert _esperar(app, lambda: t.grid.item(0).data(STATE_ROLE) is None, 5)
+    assert conectado == ["/Volumes/NAS_PRUEBA"]  # una pregunta por raíz, no por archivo
+    assert not t.offline_box.isVisibleTo(t)
+    assert t.grid.item(0).isSelected()           # no se pierde lo elegido
+    t.close()
+    t.deleteLater()
+
+
+def test_la_grilla_de_buscar_muestra_las_etiquetas(app, sin_catalogo):
+    from convertir3x4.catalog.models import Media
+    from convertir3x4.ui.tabs.tab_buscar import BuscarTab
+    from convertir3x4.ui.widgets.media_grid import TAGS_ROLE
+    t = BuscarTab(srv=sin_catalogo)
+    t.resize(700, 500)
+    t.show()
+    m = Media(path="/a.jpg", filename="a.jpg", kind="image", id=1,
+              etiquetas=[("predicación", False)])
+    t._populate([m], {}, {"/a.jpg": True}, {"/": True})
+    app.processEvents()
+    it = t.grid.item(0)
+    assert it.data(TAGS_ROLE) == [("predicación", False)]
+    rect = t.grid.visualItemRect(it)
+    img = t.grid.viewport().grab().toImage()
+    dpr = img.devicePixelRatio()
+    # el renglón de las etiquetas, abajo de la celda: hay violeta de la IA
+    colores = [img.pixelColor(int(x * dpr), int(y * dpr))
+               for y in range(rect.bottom() - 22, rect.bottom() - 4)
+               for x in range(rect.left(), rect.right())]
+    # el texto en violeta (tono de T.ia) y el fondo del chip no negro (rgba mal leído)
+    assert any(c.hslHue() in range(240, 290) and c.lightness() > 110 for c in colores)
+    assert QColor(0, 0, 0) not in colores
+    t.close()
+    t.deleteLater()
+
+
+def test_qcolor_entiende_los_colores_con_transparencia():
+    from convertir3x4.ui.style import DARK, LIGHT, qcolor
+    for paleta in (DARK, LIGHT):
+        for nombre, valor in paleta.items():
+            if isinstance(valor, str) and valor.startswith(("#", "rgba")):
+                assert qcolor(valor).isValid(), nombre
+    c = qcolor("rgba(150, 110, 240, 0.16)")
+    assert (c.red(), c.green(), c.blue(), round(c.alphaF(), 2)) == (150, 110, 240, 0.16)

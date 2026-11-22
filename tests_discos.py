@@ -57,7 +57,7 @@ def test_resumir_terminado_corriendo_es_auto_formateando():
 def test_resumir_disco_formateado_con_uuid_nuevo():
     r = resumir(None, None, {"admitido": True, "formateado": {"fecha": "2026-11-15 11:38:12",
                                                               "archivos": 39}})
-    assert r.titulo == "Vacío" and "39 archivos" in r.detalle
+    assert r.titulo == "Copia y vaciado completo" and "39 archivos" in r.detalle
 
 
 def test_resumir_ntfs_y_tarea_fallida():
@@ -245,9 +245,10 @@ def test_detalle_tecnico_escondido_por_defecto():
     from convertir3x4.ui.tabs.tab_discos import DiscosTab
     t = DiscosTab()
     t._timer.stop()
-    assert not t.txt_log.isVisibleTo(t)
+    # va al pie de la copia elegida, escondido detrás de un enlace
+    assert not t.txt_log.isVisibleTo(t.panel_copia)
     t.btn_log.setChecked(True)
-    assert t.txt_log.isVisibleTo(t)
+    assert t.txt_log.isVisibleTo(t.panel_copia)
     t.deleteLater()
 
 
@@ -440,3 +441,253 @@ def test_sin_conexion_se_ve_y_se_puede_reintentar(tab_discos):
     assert t._estado_conexion == "ok" and t.body.isEnabled()
     assert not t.btn_retry.isVisibleTo(t)
     assert t.lbl_sin_discos.isVisibleTo(t)
+
+
+# ---------------------------------------------------------------- errores explicados
+@pytest.mark.parametrize("copia, que, hacer", [
+    ({"fase": "ERROR", "error": "el disco se desconecto (/dev/sdh2 ya no existe)"},
+     "se desconectó", "«Copiar…»"),
+    ({"fase": "ERROR", "error": "faltan copiar 123 bytes y no hay lugar en /mnt/tank/x"},
+     "no queda lugar", "responsable del NAS"),
+    ({"fase": "ERROR", "error": "no se pudo montar /dev/sdb1"}, "no pudo abrir", "vuelva a conectarlo"),
+    ({"fase": "VERIFICACION_FALLIDA", "error": "3 archivos no coinciden con el pool; ver copia.log"},
+     "no coinciden", "verificar"),
+    ({"fase": "CON_ERRORES", "errores": 2,
+      "error": "2 archivos no se pudieron copiar; ver errores.jsonl"}, "no se pudieron leer",
+     "Volver a intentar"),
+    ({"fase": "DETENIDA", "error": "detenida a mano"}, "detuvo", "continuar"),
+    ({"fase": "TERMINADO", "error": "no se formateo: /dev/sdb1 esta montado; desmontarlo primero"},
+     "otro programa", "Formatear"),
+    ({"fase": "ERROR", "error": "algo que nadie previó: errno 5"}, "problema en el NAS",
+     "detalle técnico"),
+])
+def test_explica_los_errores_en_palabras_del_operador(copia, que, hacer):
+    from convertir3x4.nas.copias import explicar
+    q, h = explicar(copia)
+    assert que in q and hacer in h
+    for palabra in ("pool", "/dev/", "/mnt/", "montar", "montado", "errores.jsonl", "copia.log",
+                    "uuid", "errno"):
+        assert palabra not in (q + " " + h).lower(), palabra
+
+
+@pytest.mark.parametrize("copia", [
+    None, {"fase": "TERMINADO"}, {"fase": "FORMATEADO"}, {"fase": "COPIANDO", "corriendo": True}])
+def test_sin_problemas_no_hay_explicacion(copia):
+    from convertir3x4.nas.copias import explicar
+    assert explicar(copia) is None
+
+
+def test_ficha_de_una_copia_sin_vocabulario_tecnico():
+    from convertir3x4.nas.copias import ficha
+    formateada = {"fase": "FORMATEADO", "actualizado": "2026-11-21 20:38:01", "uuid": "25B6-1F03",
+                  "tipo": "exfat", "destino": "/mnt/tank/multimedia/Historial/Reuniones",
+                  "particion": "/dev/sdh2", "modelo": "MSI S270 960GB", "serie": "5112510",
+                  "tamano": "894.3G", "archivos": 32, "pendientes": 0, "errores": 0,
+                  "verificado": {"fecha": "2026-11-21 20:38:01", "archivos": 32, "fallos": []}}
+    assert dict(ficha(formateada)) == {
+        "Disco": "MSI S270 960GB · 894 GB", "Número de serie": "5112510",
+        "Archivos": "32 copiados",
+        "Verificación": "El 21/11/2026 20:38: los 32 archivos coinciden con lo copiado",
+        "Vaciado": "El 21/11/2026 20:38. Listo para volver a grabar",
+        "Última novedad": "21/11/2026 20:38"}
+    cortada = {"fase": "ERROR", "modelo": "ADATA SU630", "tamano": "447.1G", "archivos": 20,
+               "pendientes": 20, "falta_gb": 404.0, "copiado_gb": 7.4, "errores": 1}
+    f = dict(ficha(cortada))
+    assert f["Archivos"] == "0 de 20 copiados · 1 con error"
+    assert f["Copiado"] == "7,4 GB de 411 GB"
+    texto = " ".join(v for _, v in ficha(formateada) + ficha(cortada)).lower()
+    for palabra in ("/dev/", "/mnt/", "exfat", "uuid", "25b6"):
+        assert palabra not in texto, palabra
+
+
+def test_historial_muestra_la_copia_completa_al_elegirla():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PyQt6.QtWidgets import QApplication, QLabel
+    app = QApplication.instance() or QApplication([])
+    from convertir3x4.ui.tabs.tab_discos import DiscosTab
+    t = DiscosTab()
+    t._timer.stop()
+    t._llenar_historial([
+        {"uuid": "135E-0818", "modelo": "ADATA SU630", "fase": "ERROR", "archivos": 20,
+         "pendientes": 20, "destino": "/mnt/tank/multimedia/Reuniones",
+         "error": "el disco se desconecto (/dev/sdh2 ya no existe)", "actualizado": "2026-09-28"},
+        {"uuid": "17AA-1F10", "modelo": "Disco 2", "fase": "FORMATEADO"}])
+    it = t.tree.topLevelItem(0)
+    assert all(not it.toolTip(col) for col in range(4))      # lo del aviso pasó al panel
+    assert not t.panel_copia.isVisibleTo(t)
+    it.setSelected(True)
+    app.processEvents()
+    assert t.panel_copia.isVisibleTo(t)
+    assert t.lbl_copia_estado.text() == "Error"
+    assert "se desconectó en medio de la copia" in t.lbl_copia_que.text()
+    assert "Qué hacer:" in t.lbl_copia_hacer.text()
+    assert _pares(t.grid_disco) == [("Modelo", "ADATA SU630")]
+    copia = _pares(t.grid_copia)
+    assert copia[0] == ("Carpeta en el NAS", "Reuniones")
+    assert ("Archivos", "0 de 20 copiados") in copia
+    assert not any("/dev/" in v or "/mnt/" in v for _, v in copia)
+    # una copia sin problemas: su estado, sin «Qué hacer»
+    t.tree.topLevelItem(1).setSelected(True)
+    it.setSelected(False)
+    app.processEvents()
+    assert t.lbl_copia_estado.text() == "Copia y vaciado completo"
+    assert not t.lbl_copia_hacer.isVisibleTo(t)
+    t.deleteLater()
+
+
+def test_panel_copiados_lista_lo_copiado_sin_rutas_del_nas(panel):
+    d = panel["raiz"] / UUID
+    raiz = str(panel["multimedia"])
+    (d / "copiados.jsonl").write_text("\n".join(json.dumps(x) for x in [
+        {"origen": "HyperDeck_0002.mp4", "tamano": 4_100_000_000, "mtime": 1,
+         "destino": f"{raiz}/Historial/Reuniones/2026-11-15_HyperDeck_0002.mp4",
+         "fecha": "2026-11-15 11:20:00"},
+        {"origen": "HyperDeck_0001.mp4", "tamano": 8_200_000_000, "mtime": 1,
+         "destino": f"{raiz}/Historial/Reuniones/2026-11-15_HyperDeck_0001.mp4",
+         "fecha": "2026-11-15 11:10:00"},
+        # «Copiar lo nuevo» volvió a anotarlo: vale el último renglón
+        {"origen": "HyperDeck_0001.mp4", "tamano": 8_200_000_000, "mtime": 1,
+         "destino": f"{raiz}/Historial/Reuniones/2026-11-15_HyperDeck_0001.mp4",
+         "fecha": "2026-11-15 11:30:00"}]) + "\n")
+    (d / "errores.jsonl").write_text(json.dumps({"origen": "HyperDeck_0003.mp4",
+                                                 "error": "stat: Input/output error"}) + "\n")
+    (d / "copia.log").write_text("[2026-11-15 11:00:01] ==== inicio: /dev/sdh2 ...\n"
+                                 "[2026-11-15 11:37:00] ==== fin OK: 39 archivos\n"
+                                 # «Copiar lo nuevo» más tarde: no cambia cuándo empezó
+                                 "[2026-11-21 20:37:37] ==== inicio: /dev/sdh2 ...\n"
+                                 "[2026-11-21 20:37:38] ==== fin OK: 39 archivos\n")
+    c = PanelClient([panel["url"]], panel["token"])
+    datos = c.copiados(UUID)
+    assert datos["total"] == 2 and datos["inicio"] == "2026-11-15 11:00:01"
+    assert datos["fin"] == "2026-11-21 20:37:38"
+    from convertir3x4.nas.copias import filas_copiados
+    filas = filas_copiados(datos)
+    assert filas[0] == ("HyperDeck_0003.mp4", "", "", "No se pudo leer", True)
+    assert filas[1] == ("HyperDeck_0001.mp4", "Historial/Reuniones/2026-11-15_HyperDeck_0001.mp4",
+                        "8,2 GB", "15/11/2026 11:30", False)
+    assert all("/mnt/" not in f[1] and raiz not in f[1] for f in filas)
+
+
+def test_cliente_copiados_con_un_nas_viejo_devuelve_none(monkeypatch):
+    from convertir3x4.nas import copias
+    c = copias.PanelClient(["http://x"], "t")
+    monkeypatch.setattr(c, "_pedir", lambda *a, **k: (_ for _ in ()).throw(
+        copias.PanelError("No existe")))
+    assert c.copiados("ABCD-1234") is None
+
+
+def test_detalle_muestra_los_archivos_copiados():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PyQt6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    from convertir3x4.ui.tabs.tab_discos import DiscosTab
+    t = DiscosTab()
+    t._timer.stop()
+    t._log_uuid = "A"
+    t._mostrar_copia({"uuid": "A", "fase": "FORMATEADO", "modelo": "MSI"}, traer=False)
+    t._mostrar_copiados({"total": 1, "inicio": "2026-11-15 11:00:01", "fin": "2026-11-15 11:37:00",
+                         "copiados": [{"origen": "HyperDeck_0001.mp4", "bytes": 8_200_000_000,
+                                       "destino": "Historial/Reuniones/a.mp4",
+                                       "fecha": "2026-11-15 11:30:00"}],
+                         "errores": [{"origen": "HyperDeck_0003.mp4", "error": "x"}]})
+    assert t.lista_copiados.topLevelItemCount() == 2
+    assert t.lista_copiados.topLevelItem(1).text(1) == "Historial/Reuniones/a.mp4"
+    assert "1 archivo copiado · 1 no se pudo leer" == t.lbl_copiados_estado.text()
+    copia = _pares(t.grid_copia)
+    assert ("Empezó", "15/11/2026 11:00") in copia and ("Terminó", "15/11/2026 11:37") in copia
+    t._mostrar_copiados(None)
+    assert "actualizar el servicio de la Grabadora" in t.lbl_copiados_estado.text()
+    t.deleteLater()
+
+
+def _pares(grid):
+    """(dato, valor) de una grilla de datos, por renglón."""
+    filas = {}
+    for i in range(grid.count()):
+        fila, col, _, _ = grid.getItemPosition(i)
+        filas.setdefault(fila, {})[col] = grid.itemAt(i).widget().text()
+    return [(f[0], f[1]) for _, f in sorted(filas.items())]
+
+
+def _grabadora_con_historial(app, ancho, alto):
+    from PyQt6.QtTest import QTest
+    from convertir3x4.ui.tabs.tab_discos import DiscosTab
+    t = DiscosTab()
+    t._timer.stop()
+    t.resize(ancho, alto)
+    t.show()
+    t._llenar_historial([{"uuid": f"U{i}", "modelo": f"Disco {i}", "fase": "FORMATEADO",
+                          "destino": "/mnt/tank/multimedia/Historial/Reuniones",
+                          "actualizado": "2026-11-21 20:38"} for i in range(10)])
+    t._log_uuid = "U0"
+    t._mostrar_copia({"uuid": "U0", "fase": "FORMATEADO", "modelo": "MSI", "archivos": 40},
+                     traer=False)
+    t._mostrar_copiados({"total": 40, "copiados": [
+        {"origen": f"HyperDeck_{i:04}.mp4", "bytes": 1, "destino": "x", "fecha": "2026-11-01"}
+        for i in range(40)], "errores": []})
+    QTest.qWait(200)
+    return t
+
+
+def test_ventana_ancha_lista_y_detalle_lado_a_lado():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PyQt6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    t = _grabadora_con_historial(app, 1500, 900)
+    assert t.historial.lado_a_lado
+    lista = t.tree.mapTo(t, t.tree.rect().topRight())
+    panel = t.panel_copia.mapTo(t, t.panel_copia.rect().topLeft())
+    assert panel.x() > lista.x() and abs(panel.y() - lista.y()) < 4      # al lado
+    # la lista toma el ancho de sus columnas: no se corta ninguna
+    cab = t.tree.header()
+    assert sum(cab.sectionSize(i) for i in range(4)) <= t.tree.viewport().width() + 2
+    # nada se encima: cada parte del detalle empieza donde termina la anterior
+    partes = [t.caja_copia, t.datos_copia, t.lista_copiados, t.btn_log]
+    ys = [(w.mapTo(t.panel_copia, w.rect().topLeft()).y(), w.height()) for w in partes]
+    for (y1, h1), (y2, _) in zip(ys, ys[1:]):
+        assert y2 >= y1 + h1
+    t.close()
+    t.deleteLater()
+
+
+def test_ventana_angosta_detalle_debajo_y_la_pagina_se_desplaza():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PyQt6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    t = _grabadora_con_historial(app, 900, 700)
+    assert not t.historial.lado_a_lado
+    lista = t.tree.mapTo(t.historial, t.tree.rect().bottomLeft())
+    panel = t.panel_copia.mapTo(t.historial, t.panel_copia.rect().topLeft())
+    assert panel.y() > lista.y()                                         # debajo
+    assert t.tree.height() < 400                                         # unas 8 copias
+    assert t.scroll.verticalScrollBar().maximum() > 0                    # se desplaza
+    # sin copia elegida, el aviso no ocupa lugar en este modo
+    t.tree.clearSelection()
+    t._on_historial_sel()
+    assert not t.lado_detalle.isVisibleTo(t)
+    t.close()
+    t.deleteLater()
+
+
+def test_achicar_y_agrandar_la_ventana_con_nombres_largos():
+    # Con nombres reales la lista es ancha: el modo lo decide el ancho de la ventana
+    # (antes decidía el del historial, que no bajaba de su mínimo y nunca cambiaba)
+    # y al volver a agrandar no queda una barra horizontal.
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PyQt6.QtWidgets import QApplication
+    from PyQt6.QtTest import QTest
+    app = QApplication.instance() or QApplication([])
+    t = _grabadora_con_historial(app, 1500, 900)
+    t._llenar_historial([{"uuid": f"U{i}", "modelo": "KINGSTON SA400S37960G",
+                          "fase": "FORMATEADO", "destino": "/mnt/tank/multimedia/Historial/Reuniones",
+                          "actualizado": "2026-11-21 20:38"} for i in range(10)])
+    cambios = []
+    t.historial.cambio.connect(cambios.append)
+    for ancho, lado in ((1500, True), (1000, False), (1500, True), (1000, False)):
+        t.resize(ancho, 900)
+        QTest.qWait(150)
+        assert t.historial.lado_a_lado is lado, ancho
+        assert t.scroll.horizontalScrollBar().maximum() == 0, ancho
+    assert cambios == [False, True, False]          # un cambio por vez, sin ir y venir
+    t.close()
+    t.deleteLater()

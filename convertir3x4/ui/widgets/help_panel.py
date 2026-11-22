@@ -29,6 +29,11 @@ HELP = [
         ("Enviar a Convertir", "Seleccione uno o varios elementos y elija «Enviar a "
                                "Convertir» (o use el menú del botón derecho). Se agregan a "
                                "la grilla de Convertir ya seleccionados."),
+        ("Agregar persona", "Seleccione de 3 a 5 fotos de una persona y elija «Agregar "
+                            "persona» (o use el menú del botón derecho). Elija a alguien de "
+                            "la lista o escriba un nombre nuevo. Se usa el rostro más grande "
+                            "de cada foto: elija fotos en las que la persona aparezca sola o "
+                            "en primer plano."),
         ("Etiquetas", "Seleccione uno o varios elementos (con Shift o " + _MOD + ") y "
                       "escriba la etiqueta abajo. Si no existe, se crea."),
         ("Sugerencias de la IA", "Las etiquetas violetas son sugerencias de la IA. Haga "
@@ -43,7 +48,9 @@ HELP = [
                             "lista al catalogar. Todo queda como sugerencia hasta que se "
                             "confirma en Buscar."),
         ("Personas", "Solo se reconoce a las personas de la lista. Cargue de 3 a 5 fotos "
-                     "por persona en las que el rostro se vea con claridad."),
+                     "por persona en las que el rostro se vea con claridad y sea el más "
+                     "grande de la foto. También puede elegirlas en Buscar, con «Agregar "
+                     "persona»."),
     ]),
     ("Convertir", [
         ("Agregar", "Agregue fotos o videos de la PC o del NAS, o pegue el enlace de un "

@@ -54,6 +54,8 @@ convertir3x4/
                          already decided (USB + exFAT + only HyperDeck_NNNN files), never re-checked here
                          contenido()/resumir_contenido(): root of a plugged disk via the NAS
                          /v1/contenido (needs panel-copias.py + copiar-disco.py `contenido`, CDLM-Freenas)
+                         explicar(): what happened / what to do for each copiar-disco.py error; ficha(): copy
+                         data rows; copiados()/filas_copiados(): files copied (panel v2 /v1/copiados, None if older)
   app.py                 MainWindow: left nav rail (Buscar/Catalogar/Convertir/Grabadora, Ctrl+1..4 via
                          QShortcut) + QStackedWidget; owns window geometry + closeEvent.
   config.py              constants (APP_VERSION, ASPECT_RATIOS, VIDEO_*, etc.)
@@ -98,7 +100,10 @@ convertir3x4/
                            `App` aliases it in the shim.
     tabs/tab_discos.py     DiscosTab, shown as "Grabadora" (operators call the HyperDeck recorder
                            "la grabadora"; never say HyperDeck/Discos in UI): its disks plugged into the NAS, copy progress, Copiar/Detener/
-                           Verificar/Formatear, auto mode, history + log. Polls every 3 s while visible and every 20 s in the background (started by
+                           Verificar/Formatear, auto mode, history + copy detail (state, explanation, data, copied files,
+                           log). Adaptive: history and detail side by side only if the list's natural width + 480 px fit
+                           (decided by the scroll viewport width, with hysteresis), otherwise stacked; whole tab scrolls.
+                           Polls every 3 s while visible and every 20 s in the background (started by
                            __main__, not tests) to show a badge on the rail for unseen disks.
                            Dev without NAS: CDLM_PANEL_URLS / CDLM_PANEL_TOKEN (see tests_discos.py)
     tabs/convert_workers.py  ThumbWorker / ConvertWorker / DownloadWorker (QThread, cancellable)
@@ -125,12 +130,17 @@ convertir3x4/
     repo.py              Repo(conn, raiz): ALL SQL lives here. Paths stored as rel_path (relative to raiz, "/");
                          Media.path = full path on this PC. Missing files get missing_since (never auto-deleted);
                          mover() keeps tags. tomar_carpeta(): advisory lock per folder
+                         buscar(): one paged query for Buscar (two-layer search, missing last, kind filter, total,
+                         tags per item, no search_doc); Buscar loads 120 at a time as you scroll
     rutas.py             a_relativa / a_completa (UNC, drive letters, posix)
     cache_miniaturas.py  local copy of DB thumbnails as <id>-<sello>.jpg; Buscar reads from disk
-    thumbs.py            PIL thumbnail -> JPEG bytes (no Qt → safe in worker threads)
-    video_ffmpeg.py      video metadata + first frame via imageio-ffmpeg directly (imageio picks by extension
+    thumbs.py            PIL thumbnail -> JPEG bytes (no Qt → safe in worker threads). Videos use the first
+                         non-black frame at 10/30/50 %; en_negro() flags black thumbs (quality 'en_negro', schema v5,
+                         AI skips them). Bump MINIATURA_VERSION when thumbs change: the NAS redoes them once
+    video_ffmpeg.py      video metadata + frames via imageio-ffmpeg directly (imageio picks by extension
                          and refuses .mts/.m2t)
-    ubicacion.py         storage_root / availability: one exists() per root, never per file (offline NAS)
+    ubicacion.py         storage_root / availability: one exists() per ROOT only (offline NAS, ~80 ms per SMB stat
+                         over Netbird); deleted/moved files come from the NAS (missing_since)
   engine/                the engine — cheap→expensive cascade (Qt-free):
     inventory.py         scan() folders for media (reports unreadable dirs); kind_for()
     probe.py             technical metadata: PIL for images, imageio (bundled ffmpeg, NO ffprobe) for video.
