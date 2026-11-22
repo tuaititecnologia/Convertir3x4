@@ -17,7 +17,7 @@ from PyQt6.QtGui import QBrush, QColor, QFontDatabase
 from PyQt6.QtWidgets import (
     QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QFrame, QGridLayout, QHBoxLayout,
     QInputDialog, QLabel, QLineEdit, QListWidget, QMessageBox, QPlainTextEdit, QProgressBar,
-    QPushButton, QSplitter, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QPushButton, QScrollArea, QSplitter, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from ...nas.copias import (
@@ -42,7 +42,7 @@ def _tono(tono: str) -> str:
     return getattr(T, _TONOS.get(tono, "text_3"))
 _UUID_ROLE = Qt.ItemDataRole.UserRole
 _COPIA_ROLE = Qt.ItemDataRole.UserRole + 1      # el estado completo de la copia (dict)
-_HISTORIAL_MIN_H = 170   # px: unas 5 copias del historial siempre a la vista
+_HISTORIAL_MIN_H = 420   # px: historial y detalle; si la ventana es más baja, se desplaza
 
 
 def _cliente_desde(settings: QSettings) -> PanelClient:
@@ -78,14 +78,19 @@ class DiscosTab(QWidget):
 
     # ------------------------------------------------------------- UI
     def _build_ui(self):
-        outer = QHBoxLayout(self)
-        outer.setContentsMargins(32, 28, 32, 24)
+        # Toda la pestaña se puede desplazar si la ventana es baja. Los textos y las
+        # tarjetas de los discos quedan a un ancho cómodo de leer; el historial y su
+        # detalle usan todo el ancho.
+        afuera = QVBoxLayout(self)
+        afuera.setContentsMargins(0, 0, 0, 0)
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
+        afuera.addWidget(self.scroll)
         content = QWidget()
-        content.setMaximumWidth(_CONTENT_MAX_W)
-        outer.addWidget(content, 1)
-        outer.addStretch(0)
+        self.scroll.setWidget(content)
         lay = QVBoxLayout(content)
-        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setContentsMargins(32, 28, 32, 24)
         lay.setSpacing(10)
 
         # En Multimedia le dicen "la grabadora": este módulo es para sus discos, no
@@ -121,7 +126,11 @@ class DiscosTab(QWidget):
         self.btn_config.setAccessibleName("Conexión con el NAS")
         self.btn_config.clicked.connect(self._configurar)
         row.addWidget(self.btn_config)
-        lay.addLayout(row)
+        fila_conexion = QWidget()
+        fila_conexion.setLayout(row)
+        row.setContentsMargins(0, 0, 0, 0)
+        fila_conexion.setMaximumWidth(_CONTENT_MAX_W)
+        lay.addWidget(fila_conexion)
 
         # Todo lo que depende del NAS: deshabilitado (gris) hasta que conecta
         self.body = QWidget()
@@ -140,12 +149,15 @@ class DiscosTab(QWidget):
 
         blay.addSpacing(14)
         blay.addWidget(_title("Discos conectados al NAS"))
-        self.cards_box = QVBoxLayout()
+        tarjetas = QWidget()
+        tarjetas.setMaximumWidth(_CONTENT_MAX_W)
+        self.cards_box = QVBoxLayout(tarjetas)
+        self.cards_box.setContentsMargins(0, 0, 0, 0)
         self.cards_box.setSpacing(8)
         self.lbl_sin_discos = QLabel("No hay discos conectados al NAS. Conecte el disco de la grabadora para copiarlo.")
         self.lbl_sin_discos.setObjectName("muted")
         self.cards_box.addWidget(self.lbl_sin_discos)
-        blay.addLayout(self.cards_box)
+        blay.addWidget(tarjetas)
 
         blay.addSpacing(14)
         blay.addWidget(_title("Historial de copias"))
@@ -157,12 +169,23 @@ class DiscosTab(QWidget):
         for col, ancho in enumerate((170, 170, 290)):
             self.tree.setColumnWidth(col, ancho)
         self.tree.itemSelectionChanged.connect(self._on_historial_sel)
-        # Historial arriba y detalle abajo, con un divisor que se puede mover: el
-        # detalle no le quita al historial más de lo que el operador quiera.
-        self.split_historial = QSplitter(Qt.Orientation.Vertical)
+        # Historial a la izquierda y detalle a la derecha, con un divisor que se
+        # puede mover: usa el ancho de la ventana y no aplasta ninguno de los dos.
+        self.split_historial = QSplitter(Qt.Orientation.Horizontal)
         self.split_historial.setChildrenCollapsible(False)
-        self.tree.setMinimumHeight(_HISTORIAL_MIN_H)
+        self.split_historial.setMinimumHeight(_HISTORIAL_MIN_H)
+        self.tree.setMinimumWidth(380)
         self.split_historial.addWidget(self.tree)
+        self.lado_detalle = QWidget()
+        ld = QVBoxLayout(self.lado_detalle)
+        ld.setContentsMargins(0, 0, 0, 0)
+        self.lbl_sin_copia = QLabel("Elija una copia del historial para ver todo lo que se "
+                                    "sabe de ella: qué pasó, los datos del disco y los "
+                                    "archivos copiados.")
+        self.lbl_sin_copia.setObjectName("muted")
+        self.lbl_sin_copia.setWordWrap(True)
+        self.lbl_sin_copia.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ld.addWidget(self.lbl_sin_copia, 1)
 
         # La copia elegida, completa: estado, qué pasó y qué hacer, y sus datos
         self.panel_copia = QFrame()
@@ -203,7 +226,11 @@ class DiscosTab(QWidget):
         self.lista_copiados.setVisible(False)
         pc.addWidget(self.lista_copiados)
         self.panel_copia.setVisible(False)
-        self.split_historial.addWidget(self.panel_copia)
+        self.panel_copia.setMinimumWidth(420)
+        ld.addWidget(self.panel_copia, 1)
+        self.split_historial.addWidget(self.lado_detalle)
+        self.split_historial.setStretchFactor(0, 4)
+        self.split_historial.setStretchFactor(1, 5)
         blay.addWidget(self.split_historial, 3)
 
         # El registro del NAS es técnico: le sirve a quien administra el NAS, no al
@@ -435,6 +462,7 @@ class DiscosTab(QWidget):
         items = self.tree.selectedItems()
         if not items:
             self.panel_copia.setVisible(False)
+            self.lbl_sin_copia.setVisible(True)
             return
         uuid = items[0].data(0, _UUID_ROLE)
         self._log_uuid = uuid
@@ -462,12 +490,8 @@ class DiscosTab(QWidget):
                          ("Carpeta en el NAS", self._carpeta(c["destino"])))
         self._filas_copia = filas
         self._pintar_datos(filas)
-        if not self.panel_copia.isVisible():
-            self.panel_copia.setVisible(True)
-            # Al abrirse: 40 % para el historial (como mínimo 5 filas), el resto al detalle
-            alto = max(self.split_historial.height(), 2 * _HISTORIAL_MIN_H)
-            arriba = max(_HISTORIAL_MIN_H, int(alto * 0.4))
-            self.split_historial.setSizes([arriba, alto - arriba])
+        self.lbl_sin_copia.setVisible(False)
+        self.panel_copia.setVisible(True)
         guardados = getattr(self, "_copiados", None)
         if traer or not guardados or guardados[0] != c.get("uuid"):
             self._pedir_copiados(c.get("uuid"))
@@ -896,4 +920,5 @@ def _title(text):
 def _text(text):
     lbl = QLabel(text)
     lbl.setWordWrap(True)
+    lbl.setMaximumWidth(_CONTENT_MAX_W)     # renglones cómodos de leer aunque sobre ancho
     return lbl

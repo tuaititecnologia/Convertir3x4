@@ -601,24 +601,31 @@ def test_detalle_muestra_los_archivos_copiados():
     t.deleteLater()
 
 
-def test_el_detalle_no_aplasta_el_historial():
+def test_historial_y_detalle_lado_a_lado_y_la_pestana_se_desplaza():
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     from PyQt6.QtWidgets import QApplication
     app = QApplication.instance() or QApplication([])
-    from convertir3x4.ui.tabs.tab_discos import DiscosTab, _HISTORIAL_MIN_H
+    from convertir3x4.ui.tabs.tab_discos import DiscosTab, _CONTENT_MAX_W
     t = DiscosTab()
     t._timer.stop()
-    t.resize(1200, 800)
+    t.resize(1500, 600)                 # ventana ancha y baja
     t.show()
     t._llenar_historial([{"uuid": f"U{i}", "modelo": f"Disco {i}", "fase": "FORMATEADO"}
                          for i in range(8)])
+    app.processEvents()
+    assert t.lbl_sin_copia.isVisibleTo(t) and not t.panel_copia.isVisibleTo(t)
     t._log_uuid = "U0"
     t._mostrar_copia({"uuid": "U0", "fase": "FORMATEADO", "modelo": "MSI"}, traer=False)
     t._mostrar_copiados({"total": 40, "copiados": [
         {"origen": f"HyperDeck_{i:04}.mp4", "bytes": 1, "destino": "x", "fecha": "2026-11-01"}
         for i in range(40)], "errores": []})
     app.processEvents()
-    assert t.tree.height() >= _HISTORIAL_MIN_H
-    assert t.split_historial.sizes()[1] > 0
+    # el detalle va a la derecha del historial y el historial usa más que el ancho del texto
+    arbol = t.tree.mapTo(t, t.tree.rect().topRight())
+    panel = t.panel_copia.mapTo(t, t.panel_copia.rect().topLeft())
+    assert panel.x() > arbol.x()
+    assert t.split_historial.width() > _CONTENT_MAX_W
+    # baja: se puede desplazar en lugar de aplastar
+    assert t.scroll.verticalScrollBar().maximum() > 0
     t.close()
     t.deleteLater()
