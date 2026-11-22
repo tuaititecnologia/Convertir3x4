@@ -22,7 +22,7 @@ from PyQt6.QtWidgets import (
     QListWidgetItem, QInputDialog, QScrollArea,
 )
 
-from ...appdata import abrir_repo, config_catalogo
+from ...appdata import abrir_repo, catalog_ref_dir, config_catalogo
 from ...catalog import rutas
 from ...catalog.db import CatalogoNoConfigurado
 from ...catalog import referencias
@@ -359,6 +359,18 @@ class MotorTab(QWidget):
         cabeza.addWidget(self.lbl_persona_estado)
         pc.addLayout(cabeza)
 
+        # Mientras se trae la persona del NAS: arriba, donde se mira al hacer clic
+        self.barra_persona = QProgressBar()
+        self.barra_persona.setRange(0, 0)              # sin porcentaje: solo "trabajando"
+        self.barra_persona.setTextVisible(False)
+        self.barra_persona.setAccessibleName("Trayendo los datos de la persona")
+        self.barra_persona.setVisible(False)
+        pc.addWidget(self.barra_persona)
+        self.lbl_persona_cargando = QLabel("Trayendo los datos de la persona…")
+        self.lbl_persona_cargando.setWordWrap(True)
+        self.lbl_persona_cargando.setVisible(False)
+        pc.addWidget(self.lbl_persona_cargando)
+
         # Cómo está y qué hacer. Si hay un problema, en un recuadro que se note.
         self.caja_persona = QFrame()
         cj = QVBoxLayout(self.caja_persona)
@@ -387,10 +399,9 @@ class MotorTab(QWidget):
         self.lista_fotos = QVBoxLayout()
         self.lista_fotos.setSpacing(10)
         pc.addLayout(self.lista_fotos)
-        self.lbl_persona_cargando = QLabel("Trayendo las fotos del NAS…")
-        self.lbl_persona_cargando.setObjectName("muted")
-        pc.addWidget(self.lbl_persona_cargando)
         panel.setVisible(False)
+        self._celdas_foto: dict[int, tuple[QLabel, QLabel]] = {}
+        self._cache_refs = None
         self._revision_clave = None
         self._persona_detalle: int | None = None
         self._fila_elegida: dict | None = None
@@ -440,33 +451,100 @@ class MotorTab(QWidget):
             self.caja_persona.setVisible(False)
             self.lbl_persona_catalogo.setText("")
             vaciar(self.lista_fotos)
+            self._celdas_foto = {}
+            self.lbl_fotos_ayuda.setVisible(False)
+            self.lbl_persona_cargando.setText("Trayendo los datos de la persona…")
             self.lbl_persona_cargando.setVisible(True)
+            self.barra_persona.setVisible(True)
             self.panel_persona.setVisible(True)
             self._acomodar_lado_detalle()
         self._pedir_detalle()
 
+    def _cache(self):
+        if self._cache_refs is None:
+            from ...catalog.cache_referencias import CacheReferencias
+            self._cache_refs = CacheReferencias(catalog_ref_dir())
+        return self._cache_refs
+
     def _pedir_detalle(self):
-        """Lee la persona y juzga sus fotos (con las imágenes) fuera del hilo de
-        la interfaz."""
+        """Lee la persona y juzga sus fotos fuera del hilo de la interfaz. En dos
+        pasos: primero los datos sin las fotos (llegan enseguida) con las
+        imágenes que ya están en la caché de esta PC; después, las que faltan."""
         pid = self._persona_detalle
         if pid is None:
             return
+        cache = self._cache()
 
         def leer(repo):
-            d = repo.detalle_persona(pid)
-            return None if d is None else referencias.revisar(d)
+            d = repo.detalle_persona(pid, fotos=False)
+            if d is None:
+                return None, []
+            rev = referencias.revisar(d, imagenes=False)
+            refs = {r["id"]: r for r in d["referencias"]}
+            faltan = []
+            for f in rev.fotos:
+                ref = refs[f.id]
+                if not ref["tiene_foto"]:
+                    continue
+                guardada = cache.leer(ref)
+                if guardada:
+                    f.miniatura, f.cara = guardada
+                else:
+                    faltan.append(ref)
+            return rev, faltan
 
-        def ok(rev):
-            if pid == self._persona_detalle:
-                self._mostrar_revision(rev)
+        def ok(res):
+            rev, faltan = res
+            if pid != self._persona_detalle:
+                return
+            self._mostrar_revision(rev, pendientes={r["id"] for r in faltan})
+            if faltan:
+                self._pedir_imagenes(pid, faltan)
 
         def error(e):
             if pid == self._persona_detalle:
+                self.barra_persona.setVisible(False)
                 self.lbl_persona_cargando.setText(texto_para(e))
                 self.lbl_persona_cargando.setVisible(True)
         self._srv.pedir(leer, ok=ok, error=error)
 
-    def _mostrar_revision(self, rev):
+    def _pedir_imagenes(self, pid: int, refs: list[dict]):
+        """Trae del NAS las fotos que esta PC todavía no tiene y arma sus imágenes."""
+        cache = self._cache()
+
+        def leer(repo):
+            fotos = repo.fotos_de_referencia([r["id"] for r in refs])
+            out = {}
+            for r in refs:
+                if r["id"] in fotos:
+                    mini, cara = referencias.imagenes_de({**r, "foto": fotos[r["id"]]})
+                    cache.guardar(r, mini, cara)
+                    out[r["id"]] = (mini, cara)
+            return out
+
+        def ok(imagenes):
+            if pid != self._persona_detalle:
+                return
+            for ref_id, celdas in self._celdas_foto.items():
+                if ref_id in imagenes:
+                    for lbl, datos in zip(celdas, imagenes[ref_id]):
+                        _poner_imagen(lbl, datos)
+                elif any(lbl.pixmap().isNull() and lbl.text() for lbl in celdas):
+                    for lbl in celdas:
+                        lbl.setText("")            # ya no viene: sin imagen
+            self.lbl_fotos_ayuda.setVisible(
+                any(c[1].pixmap() is not None and not c[1].pixmap().isNull()
+                    for c in self._celdas_foto.values()))
+
+        def error(_e):
+            for celdas in self._celdas_foto.values():
+                for lbl in celdas:
+                    if lbl.text():
+                        lbl.setText("")
+        self._srv.pedir(leer, ok=ok, error=error)
+
+    def _mostrar_revision(self, rev, pendientes: set[int] = frozenset()):
+        self.barra_persona.setVisible(False)
         if rev is None:                     # la quitaron desde la otra PC
             self.panel_persona.setVisible(False)
             self._acomodar_lado_detalle()
@@ -497,11 +575,12 @@ class MotorTab(QWidget):
         self.caja_persona.setVisible(bool(que or rev.hacer))
         self.lbl_persona_catalogo.setText(referencias.texto_catalogo(rev))
         vaciar(self.lista_fotos)
+        self._celdas_foto = {}
         for f in rev.fotos:
-            self.lista_fotos.addWidget(self._fila_foto(f))
+            self.lista_fotos.addWidget(self._fila_foto(f, f.id in pendientes))
         self.lbl_fotos_ayuda.setVisible(any(f.cara for f in rev.fotos))
 
-    def _fila_foto(self, f) -> QFrame:
+    def _fila_foto(self, f, pendiente: bool = False) -> QFrame:
         """Una foto de referencia: la foto con el rostro marcado, el rostro, qué
         se vio y el botón para quitarla."""
         fila = QFrame()
@@ -509,16 +588,21 @@ class MotorTab(QWidget):
         h = QHBoxLayout(fila)
         h.setContentsMargins(0, 0, 0, 0)
         h.setSpacing(12)
+        celdas = []
         for datos, lado in ((f.miniatura, referencias.MINI_LADO),
                             (f.cara, referencias.CARA_LADO)):
             img = QLabel()
             img.setFixedSize(lado, lado)
             img.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
-            pm = QPixmap()
-            if datos and pm.loadFromData(datos):
-                pm.setDevicePixelRatio(2.0)      # las imágenes vienen al doble (pantallas 2x)
-                img.setPixmap(pm)
+            if pendiente:
+                img.setObjectName("muted")
+                img.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                img.setText("Cargando…")
+            else:
+                _poner_imagen(img, datos)
+            celdas.append(img)
             h.addWidget(img, 0, Qt.AlignmentFlag.AlignTop)
+        self._celdas_foto[f.id] = tuple(celdas)
         texto = QVBoxLayout()
         texto.setSpacing(3)
         nombre = QLabel(f.archivo or "Foto sin nombre")
@@ -907,3 +991,13 @@ class MotorTab(QWidget):
         self._srv.pedir(lambda repo: repo.delete_person(pid),
                         ok=lambda _: self._refresh_people(),
                         error=lambda e: self._set_people_status(texto_para(e)))
+
+
+def _poner_imagen(lbl: QLabel, datos: bytes | None):
+    """Muestra un JPEG del detalle de la persona (vienen al doble: pantallas 2x)."""
+    lbl.setText("")
+    lbl.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
+    pm = QPixmap()
+    if datos and pm.loadFromData(datos):
+        pm.setDevicePixelRatio(2.0)
+        lbl.setPixmap(pm)

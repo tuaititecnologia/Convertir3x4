@@ -346,6 +346,31 @@ class TestDetallePersona:
         repo.delete_person(pid)
         assert repo.detalle_persona(pid) is None
 
+    def test_detalle_sin_fotos_y_fotos_aparte(self, repo):
+        """Por Netbird, traer las fotos (≈270 KB cada una) demoraba el detalle: se
+        piden aparte, y el sello identifica la foto para la caché de la PC."""
+        pid = repo.add_person("Juan Carlos Bazán")
+        repo.subir_fotos_de_referencia("Juan Carlos Bazán", [("a.jpg", b"x"), ("b.jpg", b"y")], pid)
+        refs = repo.detalle_persona(pid, fotos=False)["referencias"]
+        assert [r["foto"] for r in refs] == [None, None]
+        assert all(r["tiene_foto"] for r in refs)
+        assert refs[0]["sello_foto"] != refs[1]["sello_foto"]
+        assert repo.fotos_de_referencia([r["id"] for r in refs]) == {refs[0]["id"]: b"x",
+                                                                       refs[1]["id"]: b"y"}
+        assert repo.fotos_de_referencia([]) == {}
+
+    def test_cache_de_imagenes_de_referencia(self, temp_dir):
+        from convertir3x4.catalog.cache_referencias import CacheReferencias
+        cache = CacheReferencias(os.path.join(temp_dir, "refs"))
+        ref = {"id": 7, "caja": (1, 2, 3, 4), "sello_foto": "abc"}
+        assert cache.leer(ref) is None
+        cache.guardar(ref, b"mini", b"cara")
+        assert cache.leer(ref) == (b"mini", b"cara")
+        assert cache.leer({**ref, "caja": (5, 6, 7, 8)}) is None       # el NAS movió el recuadro
+        assert cache.leer({**ref, "sello_foto": "otra"}) is None        # mismo id, otra base
+        cache.guardar({**ref, "id": 8}, b"mini", None)
+        assert cache.leer({**ref, "id": 8}) == (b"mini", None)
+
 
 # --------------------------------------------------------------- modelos reales
 _MODELS = os.environ.get("CDLM_MODELS")

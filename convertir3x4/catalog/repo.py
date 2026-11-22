@@ -531,21 +531,29 @@ class Repo:
         self._q("UPDATE person_reference SET caras = %s, cara_caja = %s, confianza = %s "
                 "WHERE id = %s", (caras, list(caja) if caja else None, confianza, ref_id))
 
-    def detalle_persona(self, person_id: int) -> dict | None:
+    def detalle_persona(self, person_id: int, fotos: bool = True) -> dict | None:
         """Todo lo de una persona para el detalle de Catalogar: sus fotos de
         referencia (con la foto, la firma y lo que vio el NAS) y cuántos medios
-        del catálogo tienen su nombre. None si ya no existe."""
+        del catálogo tienen su nombre. None si ya no existe.
+
+        `fotos=False` no trae las fotos (unos 270 KB cada una: por Netbird, 9
+        fotos tardan más de 2 s); `tiene_foto` dice si hay, para pedirlas después
+        con `fotos_de_referencia`, y `sello_foto` (md5) identifica la foto para la
+        caché local, aunque el mismo id exista en otra base."""
         p = self._q("SELECT id, name FROM person WHERE id = %s", (person_id,)).fetchone()
         if p is None:
             return None
+        col = "foto" if fotos else "NULL::bytea AS foto"
         refs = [{"id": r["id"], "archivo": os.path.basename((r["source_path"] or "").replace("\\", "/")),
                  "ruta": r["source_path"] or "", "estado": r["estado"],
                  "foto": bytes(r["foto"]) if r["foto"] is not None else None,
+                 "tiene_foto": r["sello_foto"] is not None, "sello_foto": r["sello_foto"],
                  "firma": bytes(r["embedding"]) if r["embedding"] is not None else None,
                  "caras": r["caras"], "caja": tuple(r["cara_caja"]) if r["cara_caja"] else None,
                  "confianza": r["confianza"]}
                 for r in self._q(
-                    "SELECT id, source_path, estado, foto, embedding, caras, cara_caja, confianza "
+                    f"SELECT id, source_path, estado, {col}, md5(foto) AS sello_foto, "
+                    "embedding, caras, cara_caja, confianza "
                     "FROM person_reference WHERE person_id = %s ORDER BY id", (person_id,))]
         n = self._q(
             "SELECT COUNT(*) FILTER (WHERE mt.confirmed) AS confirmadas,"
@@ -554,6 +562,14 @@ class Repo:
             (self.normalize_tag(p["name"]),)).fetchone()
         return {"id": p["id"], "name": p["name"], "referencias": refs,
                 "confirmadas": n["confirmadas"], "sugeridas": n["sugeridas"]}
+
+    def fotos_de_referencia(self, ids: list[int]) -> dict[int, bytes]:
+        """{id: JPEG} de las fotos de referencia pedidas que tienen foto."""
+        if not ids:
+            return {}
+        return {r["id"]: bytes(r["foto"]) for r in self._q(
+            "SELECT id, foto FROM person_reference WHERE id = ANY(%s) AND foto IS NOT NULL",
+            (list(ids),))}
 
     def quitar_referencia(self, ref_id: int):
         """Saca una foto de referencia. Las etiquetas que ya se pusieron quedan."""

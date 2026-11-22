@@ -434,7 +434,7 @@ QComboBox::drop-down {{ border: none; width: 24px; }}
 QComboBox::down-arrow {{ {f"image: url({flecha});" if flecha else ""} width: 14px; height: 14px; }}
 QComboBox QAbstractItemView {{
     background-color: {T.raised}; color: {T.text}; border: 1px solid {T.border_strong};
-    selection-background-color: {T.accent_soft}; outline: none;
+    selection-background-color: {T.accent_soft}; selection-color: {T.text}; outline: none;
 }}
 
 QCheckBox {{ color: {T.text_2}; spacing: 8px; background: transparent; }}

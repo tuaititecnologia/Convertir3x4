@@ -125,6 +125,22 @@ class TestTheme:
         leaked = [c for c in re.findall(r"#[0-9a-fA-F]{6}|rgba\([^)]*\)", qss) if c in dark_only]
         assert not leaked, leaked
 
+    def test_seleccion_suave_lleva_su_color_de_texto(self):
+        # Con fondo de selección suave y sin color de texto, Qt usa el blanco del
+        # resaltado: en el tema claro, la persona elegida de la lista no se leía
+        import re
+        from convertir3x4.ui.style import build_stylesheet, use_palette
+        for modo in ("light", "dark"):
+            use_palette(modo)
+            try:
+                qss = build_stylesheet()
+            finally:
+                use_palette("dark")
+            for regla in re.findall(r"\{[^{}]*\}", qss):
+                if "selection-background-color" in regla and (
+                        LIGHT["accent_soft"] in regla or DARK["accent_soft"] in regla):
+                    assert "selection-color" in regla, (modo, regla)
+
     def test_inter_is_loaded(self, app):
         assert app.font().family() == "Inter"
 
@@ -933,6 +949,7 @@ class TestCatalogarEnElNas:
         monkeypatch.setattr(tab_motor.QFileDialog, "getOpenFileNames",
                             staticmethod(lambda *a, **k: (fotos, "")))
         monkeypatch.setattr(tab_motor, "abrir_repo", abrir)
+        monkeypatch.setattr(tab_motor, "catalog_ref_dir", lambda: str(tmp_path / "refs"))
         # la PC no baja ni carga modelos
         monkeypatch.setattr(ai_models, "ensure", lambda *a, **k: pytest.fail("bajó modelos"))
         srv = ServicioCatalogo(abrir=abrir)
@@ -971,6 +988,22 @@ class TestCatalogarEnElNas:
             textos = [lbl.text() for lbl in tab.panel_persona.findChildren(QLabel)]
             assert "Sirve" in textos and "No se encontró un rostro" in textos
             assert "Todavía ninguna foto del catálogo" in tab.lbl_persona_catalogo.text()
+            assert tab.barra_persona.isHidden()
+            # Las imágenes llegan en un segundo paso y quedan en la caché de la PC
+            fila = tab.lista_fotos.itemAt(0).widget()
+            assert _esperar(app, lambda: any(not lbl.pixmap().isNull()
+                                             for lbl in fila.findChildren(QLabel)))
+            assert tab.lbl_fotos_ayuda.isVisibleTo(tab)
+            assert list((tmp_path / "refs").iterdir())
+            # Otra vez la misma persona: las imágenes salen de la caché, sin traer fotos
+            from convertir3x4.catalog.repo import Repo as _Repo
+            monkeypatch.setattr(_Repo, "fotos_de_referencia",
+                                lambda *a: pytest.fail("trajo las fotos otra vez"))
+            tab.lst_people.clearSelection()
+            tab.lst_people.item(0).setSelected(True)
+            assert tab.barra_persona.isVisibleTo(tab)          # se ve que está trayendo
+            assert _esperar(app, lambda: tab.lista_fotos.count() == 2
+                            and tab.barra_persona.isHidden())
             fila = tab.lista_fotos.itemAt(0).widget()
             assert any(not lbl.pixmap().isNull() for lbl in fila.findChildren(QLabel))
             # Quitar la foto sin rostro (confirmando)

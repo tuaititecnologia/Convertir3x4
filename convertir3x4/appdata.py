@@ -72,6 +72,13 @@ def thumb_dir() -> str:
     return d
 
 
+def catalog_ref_dir() -> str:
+    """Caché local de las imágenes del detalle de las personas (Catalogar)."""
+    d = os.path.join(thumb_dir(), "referencias")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
 def catalog_thumb_dir() -> str:
     """Caché local de las miniaturas del catálogo (la original está en la base)."""
     d = os.path.join(thumb_dir(), "catalogo")
