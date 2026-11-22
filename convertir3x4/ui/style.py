@@ -430,6 +430,7 @@ QFrame#sidebar, QFrame#panel {{
 QFrame#separator {{ background-color: {T.border}; border: none; }}
 QLabel#group_title {{ color: {T.text_3}; font-size: 11px; font-weight: 600; letter-spacing: 1px; }}
 QLabel#section_title {{ color: {T.text}; font-weight: 600; }}
+QLabel#subtitulo {{ color: {T.text_2}; font-weight: 600; font-size: 12px; }}
 QLabel#muted {{ color: {T.text_3}; }}
 QLabel#bg_preview {{
     background-color: {T.raised}; border: 1px dashed {T.border_strong}; border-radius: {T.radius_sm}px;

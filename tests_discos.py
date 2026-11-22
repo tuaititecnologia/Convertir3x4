@@ -245,9 +245,10 @@ def test_detalle_tecnico_escondido_por_defecto():
     from convertir3x4.ui.tabs.tab_discos import DiscosTab
     t = DiscosTab()
     t._timer.stop()
-    assert not t.txt_log.isVisibleTo(t)
+    # va al pie de la copia elegida, escondido detrás de un enlace
+    assert not t.txt_log.isVisibleTo(t.panel_copia)
     t.btn_log.setChecked(True)
-    assert t.txt_log.isVisibleTo(t)
+    assert t.txt_log.isVisibleTo(t.panel_copia)
     t.deleteLater()
 
 
@@ -520,13 +521,11 @@ def test_historial_muestra_la_copia_completa_al_elegirla():
     assert t.lbl_copia_estado.text() == "Error"
     assert "se desconectó en medio de la copia" in t.lbl_copia_que.text()
     assert "Qué hacer:" in t.lbl_copia_hacer.text()
-    datos = [t.grid_copia.itemAt(i).widget().text() for i in range(t.grid_copia.count())]
-    assert datos[:4] == ["Disco", "ADATA SU630", "Carpeta en el NAS", "Reuniones"]
-    # en dos columnas: la mitad de renglones
-    filas = {t.grid_copia.getItemPosition(i)[0] for i in range(t.grid_copia.count())}
-    assert len(filas) == (len(datos) // 2 + 1) // 2
-    assert "0 de 20 copiados" in datos
-    assert not any("/dev/" in d or "/mnt/" in d for d in datos)
+    assert _pares(t.grid_disco) == [("Modelo", "ADATA SU630")]
+    copia = _pares(t.grid_copia)
+    assert copia[0] == ("Carpeta en el NAS", "Reuniones")
+    assert ("Archivos", "0 de 20 copiados") in copia
+    assert not any("/dev/" in v or "/mnt/" in v for _, v in copia)
     # una copia sin problemas: su estado, sin «Qué hacer»
     t.tree.topLevelItem(1).setSelected(True)
     it.setSelected(False)
@@ -594,38 +593,77 @@ def test_detalle_muestra_los_archivos_copiados():
     assert t.lista_copiados.topLevelItemCount() == 2
     assert t.lista_copiados.topLevelItem(1).text(1) == "Historial/Reuniones/a.mp4"
     assert "1 archivo copiado · 1 no se pudo leer" == t.lbl_copiados_estado.text()
-    datos = [t.grid_copia.itemAt(i).widget().text() for i in range(t.grid_copia.count())]
-    assert datos[-4:] == ["Empezó", "15/11/2026 11:00", "Terminó", "15/11/2026 11:37"]
+    copia = _pares(t.grid_copia)
+    assert ("Empezó", "15/11/2026 11:00") in copia and ("Terminó", "15/11/2026 11:37") in copia
     t._mostrar_copiados(None)
     assert "actualizar el servicio de la Grabadora" in t.lbl_copiados_estado.text()
     t.deleteLater()
 
 
-def test_historial_y_detalle_lado_a_lado_y_la_pestana_se_desplaza():
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    from PyQt6.QtWidgets import QApplication
-    app = QApplication.instance() or QApplication([])
-    from convertir3x4.ui.tabs.tab_discos import DiscosTab, _CONTENT_MAX_W
+def _pares(grid):
+    """(dato, valor) de una grilla de datos, por renglón."""
+    filas = {}
+    for i in range(grid.count()):
+        fila, col, _, _ = grid.getItemPosition(i)
+        filas.setdefault(fila, {})[col] = grid.itemAt(i).widget().text()
+    return [(f[0], f[1]) for _, f in sorted(filas.items())]
+
+
+def _grabadora_con_historial(app, ancho, alto):
+    from PyQt6.QtTest import QTest
+    from convertir3x4.ui.tabs.tab_discos import DiscosTab
     t = DiscosTab()
     t._timer.stop()
-    t.resize(1500, 600)                 # ventana ancha y baja
+    t.resize(ancho, alto)
     t.show()
-    t._llenar_historial([{"uuid": f"U{i}", "modelo": f"Disco {i}", "fase": "FORMATEADO"}
-                         for i in range(8)])
-    app.processEvents()
-    assert t.lbl_sin_copia.isVisibleTo(t) and not t.panel_copia.isVisibleTo(t)
+    t._llenar_historial([{"uuid": f"U{i}", "modelo": f"Disco {i}", "fase": "FORMATEADO",
+                          "destino": "/mnt/tank/multimedia/Historial/Reuniones",
+                          "actualizado": "2026-11-21 20:38"} for i in range(10)])
     t._log_uuid = "U0"
-    t._mostrar_copia({"uuid": "U0", "fase": "FORMATEADO", "modelo": "MSI"}, traer=False)
+    t._mostrar_copia({"uuid": "U0", "fase": "FORMATEADO", "modelo": "MSI", "archivos": 40},
+                     traer=False)
     t._mostrar_copiados({"total": 40, "copiados": [
         {"origen": f"HyperDeck_{i:04}.mp4", "bytes": 1, "destino": "x", "fecha": "2026-11-01"}
         for i in range(40)], "errores": []})
-    app.processEvents()
-    # el detalle va a la derecha del historial y el historial usa más que el ancho del texto
-    arbol = t.tree.mapTo(t, t.tree.rect().topRight())
+    QTest.qWait(200)
+    return t
+
+
+def test_ventana_ancha_lista_y_detalle_lado_a_lado():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PyQt6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    t = _grabadora_con_historial(app, 1500, 900)
+    assert t.historial.lado_a_lado
+    lista = t.tree.mapTo(t, t.tree.rect().topRight())
     panel = t.panel_copia.mapTo(t, t.panel_copia.rect().topLeft())
-    assert panel.x() > arbol.x()
-    assert t.split_historial.width() > _CONTENT_MAX_W
-    # baja: se puede desplazar en lugar de aplastar
-    assert t.scroll.verticalScrollBar().maximum() > 0
+    assert panel.x() > lista.x() and abs(panel.y() - lista.y()) < 4      # al lado
+    # la lista toma el ancho de sus columnas: no se corta ninguna
+    cab = t.tree.header()
+    assert sum(cab.sectionSize(i) for i in range(4)) <= t.tree.viewport().width() + 2
+    # nada se encima: cada parte del detalle empieza donde termina la anterior
+    partes = [t.caja_copia, t.datos_copia, t.lista_copiados, t.btn_log]
+    ys = [(w.mapTo(t.panel_copia, w.rect().topLeft()).y(), w.height()) for w in partes]
+    for (y1, h1), (y2, _) in zip(ys, ys[1:]):
+        assert y2 >= y1 + h1
+    t.close()
+    t.deleteLater()
+
+
+def test_ventana_angosta_detalle_debajo_y_la_pagina_se_desplaza():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PyQt6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    t = _grabadora_con_historial(app, 900, 700)
+    assert not t.historial.lado_a_lado
+    lista = t.tree.mapTo(t.historial, t.tree.rect().bottomLeft())
+    panel = t.panel_copia.mapTo(t.historial, t.panel_copia.rect().topLeft())
+    assert panel.y() > lista.y()                                         # debajo
+    assert t.tree.height() < 400                                         # unas 8 copias
+    assert t.scroll.verticalScrollBar().maximum() > 0                    # se desplaza
+    # sin copia elegida, el aviso no ocupa lugar en este modo
+    t.tree.clearSelection()
+    t._on_historial_sel()
+    assert not t.lado_detalle.isVisibleTo(t)
     t.close()
     t.deleteLater()
