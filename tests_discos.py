@@ -550,11 +550,14 @@ def test_panel_copiados_lista_lo_copiado_sin_rutas_del_nas(panel):
     (d / "errores.jsonl").write_text(json.dumps({"origen": "HyperDeck_0003.mp4",
                                                  "error": "stat: Input/output error"}) + "\n")
     (d / "copia.log").write_text("[2026-11-15 11:00:01] ==== inicio: /dev/sdh2 ...\n"
-                                 "[2026-11-15 11:37:00] ==== fin OK: 39 archivos\n")
+                                 "[2026-11-15 11:37:00] ==== fin OK: 39 archivos\n"
+                                 # «Copiar lo nuevo» más tarde: no cambia cuándo empezó
+                                 "[2026-11-21 20:37:37] ==== inicio: /dev/sdh2 ...\n"
+                                 "[2026-11-21 20:37:38] ==== fin OK: 39 archivos\n")
     c = PanelClient([panel["url"]], panel["token"])
     datos = c.copiados(UUID)
     assert datos["total"] == 2 and datos["inicio"] == "2026-11-15 11:00:01"
-    assert datos["fin"] == "2026-11-15 11:37:00"
+    assert datos["fin"] == "2026-11-21 20:37:38"
     from convertir3x4.nas.copias import filas_copiados
     filas = filas_copiados(datos)
     assert filas[0] == ("HyperDeck_0003.mp4", "", "", "No se pudo leer", True)
