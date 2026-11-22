@@ -529,3 +529,72 @@ class TestCarpetas:
         finally:
             d.deleteLater()
             srv.cerrar()
+
+
+# --------------------------------------------------------------- pantallas guardadas
+class TestPantallas:
+    def test_proporcion(self):
+        from convertir3x4.ui.widgets.pantallas import describir, proporcion
+        assert proporcion(4.5, 1.2) == (15, 4)
+        assert proporcion(1920, 1080) == (16, 9)
+        assert proporcion(8, 9) == (8, 9)
+        w, h = proporcion(1000, 1)                  # muy alargada: igual números chicos
+        assert w <= 100 and h >= 1
+        assert describir({"nombre": "Primavera", "ancho": 4.5, "alto": 1.2}) == \
+            "Primavera · 4,5 × 1,2 (15:4)"
+        assert describir({"nombre": "LED", "ancho": 8, "alto": 9}) == "LED · 8 × 9"
+
+    def test_guardar_cambiar_quitar(self, repo):
+        a = repo.guardar_pantalla("  Evento de   primavera ", 4.5, 1.2)
+        assert repo.pantallas() == [{"id": a, "nombre": "Evento de primavera",
+                                     "ancho": 4.5, "alto": 1.2}]
+        with pytest.raises(ValueError, match="ya hay"):
+            repo.guardar_pantalla("evento de primavera", 1, 1)
+        with pytest.raises(ValueError):
+            repo.guardar_pantalla("", 1, 1)
+        with pytest.raises(ValueError):
+            repo.guardar_pantalla("x", 0, 1)
+        repo.guardar_pantalla("Primavera", 5, 1.25, pantalla_id=a)
+        assert repo.pantallas()[0]["nombre"] == "Primavera"
+        repo.quitar_pantalla(a)
+        assert repo.pantallas() == []
+
+    def test_el_engranaje_ofrece_las_guardadas(self, qapp, pg_cfg, tmp_path):
+        import time
+        from convertir3x4.catalog.db import conectar
+        from convertir3x4.ui.servicio_catalogo import ServicioCatalogo
+        from convertir3x4.ui.widgets.advanced_dialog import AdvancedDialog, SessionOptions
+
+        def abrir():
+            return Repo(conectar(pg_cfg), str(tmp_path))
+        with abrir() as r:
+            r.guardar_pantalla("Evento de primavera", 4.5, 1.2)
+        srv = ServicioCatalogo(abrir=abrir)
+        d = AdvancedDialog(SessionOptions(), srv=srv)
+        try:
+            t = time.time()
+            while d.combo_ratio.findText("Evento de primavera", flags=__import__(
+                    "PyQt6.QtCore", fromlist=["Qt"]).Qt.MatchFlag.MatchStartsWith) < 0 \
+                    and time.time() - t < 10:
+                qapp.processEvents()
+            i = d.combo_ratio.findText("Evento de primavera · 4,5 × 1,2 (15:4)")
+            assert i >= 0
+            assert d.combo_ratio.currentIndex() == 0        # sigue en el LED (8:9)
+            d.combo_ratio.setCurrentIndex(i)
+            o = d.options()
+            assert o.aspect == (15, 4) and o.pantalla == "Evento de primavera"
+            assert o.changes()[0] == "Pantalla «Evento de primavera»"
+            # Al volver a abrir con esa elección, queda elegida
+            d2 = AdvancedDialog(o, srv=srv)
+            t = time.time()
+            while d2._nombre_elegido() != "Evento de primavera" and time.time() - t < 10:
+                qapp.processEvents()
+            assert d2.options().pantalla == "Evento de primavera"
+        finally:
+            srv.cerrar()
+
+    def test_sin_catalogo_solo_las_de_siempre(self, qapp):
+        from convertir3x4.ui.widgets.advanced_dialog import AdvancedDialog, SessionOptions
+        d = AdvancedDialog(SessionOptions())
+        assert not d.btn_guardar_pantalla.isVisibleTo(d)
+        assert d.options().pantalla is None and d.options().aspect == (8, 9)

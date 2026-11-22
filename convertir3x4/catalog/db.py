@@ -461,6 +461,7 @@ CREATE TRIGGER person_reference_aviso_cambio AFTER UPDATE ON person_reference
 # - Fotos de referencia elegidas en Buscar: la PC manda el medio y el NAS lee
 #   el archivo (`foto` queda vacía hasta que el NAS la completa).
 # - La lista de carpetas que se catalogan pasa a la base (`carpeta_catalogada`).
+# - Pantallas guardadas de Convertir, compartidas por las PCs (`pantalla`).
 _V7 = r"""
 ALTER TABLE catalogado_pedido
     ADD COLUMN pasos text[],
@@ -493,6 +494,18 @@ INSERT INTO carpeta_catalogada (ruta)
     SELECT DISTINCT unnest(carpetas) FROM catalogado_estado ON CONFLICT DO NOTHING;
 CREATE TRIGGER carpeta_catalogada_aviso AFTER INSERT OR DELETE ON carpeta_catalogada
     FOR EACH ROW EXECUTE FUNCTION avisar_cambio_catalogo();
+
+-- Pantallas guardadas de Convertir (p. ej. «Evento de primavera · 4,5 × 1,2 m»),
+-- compartidas por las PCs. La medida puede ser en metros, centímetros o píxeles:
+-- lo que importa es la proporción. Las de siempre (8:9 del LED…) están en el código.
+CREATE TABLE pantalla (
+    id      bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    nombre  text NOT NULL,
+    ancho   numeric NOT NULL CHECK (ancho > 0),
+    alto    numeric NOT NULL CHECK (alto > 0),
+    creada  timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX pantalla_nombre ON pantalla (lower(nombre));
 """
 
 MIGRACIONES: list[tuple[int, str]] = [

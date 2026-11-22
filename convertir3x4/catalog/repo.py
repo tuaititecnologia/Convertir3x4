@@ -386,6 +386,35 @@ class Repo:
             self._q("DELETE FROM carpeta_catalogada WHERE ruta = %s", (ruta,))
         return ids
 
+    # ------------------------------------------------- pantallas guardadas (Convertir)
+    def pantallas(self) -> list[dict]:
+        """[{id, nombre, ancho, alto}] por nombre. Medidas como float."""
+        return [{"id": r["id"], "nombre": r["nombre"], "ancho": float(r["ancho"]),
+                 "alto": float(r["alto"])}
+                for r in self._q("SELECT id, nombre, ancho, alto FROM pantalla ORDER BY lower(nombre)")]
+
+    def guardar_pantalla(self, nombre: str, ancho: float, alto: float,
+                         pantalla_id: int | None = None) -> int:
+        """Crea (o cambia, con `pantalla_id`) una pantalla. Lanza ValueError si
+        falta el nombre, la medida no sirve o el nombre ya existe."""
+        nombre = " ".join((nombre or "").split())
+        if not nombre:
+            raise ValueError("falta el nombre")
+        if not (ancho and alto and ancho > 0 and alto > 0):
+            raise ValueError("la medida tiene que ser mayor que cero")
+        try:
+            if pantalla_id is None:
+                return self._q("INSERT INTO pantalla (nombre, ancho, alto) VALUES (%s, %s, %s) "
+                               "RETURNING id", (nombre, ancho, alto)).fetchone()["id"]
+            self._q("UPDATE pantalla SET nombre = %s, ancho = %s, alto = %s WHERE id = %s",
+                    (nombre, ancho, alto, pantalla_id))
+            return pantalla_id
+        except psycopg.errors.UniqueViolation as e:
+            raise ValueError(f"ya hay una pantalla «{nombre}»") from e
+
+    def quitar_pantalla(self, pantalla_id: int):
+        self._q("DELETE FROM pantalla WHERE id = %s", (pantalla_id,))
+
     def pedidos_abiertos(self) -> list[dict]:
         return self._q(
             "SELECT id, carpeta, pasos, rehacer, pedido_por, creado, empezado FROM catalogado_pedido"
