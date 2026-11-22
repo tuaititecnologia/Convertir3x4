@@ -92,11 +92,21 @@ Pasar a «Hecho» o reescribir lo que quedó viejo:
 
 ## También en esta versión (decisión 1)
 
-Cada uno se define con el usuario al llegar, porque varios tienen detalles abiertos en `pendientes.md`:
-- Sacar una carpeta entera del catálogo (⚙ de Catalogar, con confirmación).
-- Avisar al desconectar discos locales (revisión por raíz en segundo plano).
-- «Sigo vivo» del catalogador a Zabbix (repo CDLM-Freenas).
-- «Dejar lugar para texto» como elección propia en Convertir.
-- Pantallas guardadas (el pedido llegó cortado: falta el detalle).
-- Receta de audio para videos muy desparejos (hay que validarla con videos reales y con el agente de ProPresenter).
-- Transcribir los videos (Whisper local; «Para decidir» en `catalogado-en-el-nas.md`). Si suma columnas, entran en el mismo esquema 7.
+Definido el 22/11/2026:
+- **Carpetas que se catalogan desde la app** (⚙ de Catalogar), guardadas en la base (`carpeta_catalogada`). Sin lista en el compose ni en `catalogo.ini`. La migración copia la lista que publicaba el NAS. Al quitar una carpeta se ofrece sacar también sus fotos y videos del catálogo. Esto reemplaza «sacar una carpeta entera del catálogo». **Hecho.**
+- **Pantallas guardadas** (nombre y medida), compartidas por las PCs en la base (`pantalla`). Se eligen en «Proporción» del ⚙ de Convertir y se administran con «Pantallas guardadas…». **Hecho.**
+- **Avisar cuando se cae el NAS en Buscar:** ya estaba hecho (revisa la raíz cada 5 s en un hilo aparte).
+
+Quedan afuera:
+- «Sigo vivo» a Zabbix (decisión del usuario: por ahora no).
+- Receta de audio para videos desparejos (queda pendiente).
+- Transcribir los videos: falta decidir el equipo (ver `pendientes.md`).
+- «Dejar lugar para texto»: falta que el usuario lo defina.
+
+## Al instalar
+
+1. Respaldo de la base.
+2. Etiqueta v0.8.0 y la imagen del catalogador.
+3. En el compose del NAS: cambiar la etiqueta y **sacar `CDLM_CATALOGO_CARPETAS`** (la lista ya está en la base).
+4. Instalar el .exe nuevo en las dos PCs (el esquema 7 deja afuera a la v0.7.x).
+5. La primera noche completa las fechas; las tiras de los videos que ya estaban se arman de noche o con «Catalogar ▾ → Miniaturas».
