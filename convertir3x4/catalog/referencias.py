@@ -183,7 +183,7 @@ def texto_catalogo(rev: Revision) -> str:
     if not total:
         return ("Todavía ninguna foto del catálogo tiene su nombre. Las sugerencias "
                 "aparecen después de la próxima pasada del NAS (todas las noches, o con "
-                "«Catalogar ahora»).")
+                "«Catalogar»).")
     t = ("1 foto o video del catálogo tiene su nombre" if total == 1 else
          f"{total} fotos y videos del catálogo tienen su nombre")
     partes = []

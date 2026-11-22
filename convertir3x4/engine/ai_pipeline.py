@@ -48,21 +48,31 @@ def reference_embedding(engine: faces_mod.FaceEngine, path: str) -> bytes | None
     return None if v is None else faces_mod.to_blob(v)
 
 
-def run_ai(repo: Repo, models_dir: str, progress_cb=None, threads: int = 4) -> AIStats:
-    """`progress_cb(done, total, path)` opcional."""
+def run_ai(repo: Repo, models_dir: str, progress_cb=None, threads: int = 4,
+           carpetas: list[str] | None = None, escenas: bool = True,
+           personas: bool = True, rehacer: bool = False) -> AIStats:
+    """`progress_cb(done, total, path)` opcional. `carpetas` (relativas) limita a
+    esas carpetas; `escenas` / `personas`: qué partes correr; `rehacer`: también
+    lo ya analizado. Una parte que no se corrió queda como estaba (su modelo o
+    su firma de personas no se marcan al día)."""
     sig = repo.people_signature()
     refs = {name: [faces_mod.from_blob(b) for b in blobs]
             for name, blobs in repo.person_reference_blobs().items()}
-    todo = repo.media_for_ai(AI_MODEL, sig)
+    todo = repo.pendientes_de_ia(AI_MODEL, sig, carpetas=carpetas, escenas=escenas,
+                                 personas=personas, rehacer=rehacer)
     stats = AIStats()
     total = len(todo)
     if not total:
         return stats
 
-    clf = SceneClassifier(models_dir, threads) if any(s for _, s in todo) else None
-    face_engine = faces_mod.FaceEngine(models_dir) if refs else None
+    clf = SceneClassifier(models_dir, threads) if any(p.escena for p in todo) else None
+    face_engine = faces_mod.FaceEngine(models_dir) if refs and any(p.caras for p in todo) \
+        else None
 
-    for i, (m, need_scene) in enumerate(todo, 1):
+    for i, p in enumerate(todo, 1):
+        m = p.media
+        modelo = AI_MODEL if p.escena else p.modelo
+        firma = sig if p.caras else p.firma
         # Video: se analiza su miniatura (la de la base).
         if m.kind == "video":
             jpeg = repo.miniatura(m.id)
@@ -83,25 +93,27 @@ def run_ai(repo: Repo, models_dir: str, progress_cb=None, threads: int = 4) -> A
             continue
 
         raw = _previous_raw(repo, m.id)
-        if need_scene:
+        if p.escena:
             ranked = clf.classify(img)
-            raw["scene"] = [[n, round(p, 3)] for n, p in ranked[:3]]
+            raw["scene"] = [[n, round(pr, 3)] for n, pr in ranked[:3]]
             tag = best_tag(ranked)
             raw["scene_tag"] = tag
             if tag and repo.suggest_tag(m.id, tag):
                 stats.scene_tags += 1
 
-        people: dict[str, float] = {}
-        if face_engine is not None:
-            n_faces, people = face_engine.recognize(img, refs)
-            raw["faces"] = n_faces
-            for name in people:
-                if repo.suggest_tag(m.id, name, kind="persona"):
-                    stats.people_tags += 1
-        raw["people"] = {n: round(s, 3) for n, s in people.items()}
+        if p.caras:
+            people: dict[str, float] = {}
+            if face_engine is not None:
+                n_faces, people = face_engine.recognize(img, refs)
+                raw["faces"] = n_faces
+                for name in people:
+                    if repo.suggest_tag(m.id, name, kind="persona"):
+                        stats.people_tags += 1
+            raw["people"] = {n: round(s, 3) for n, s in people.items()}
 
-        repo.save_ai_result(m.id, AI_MODEL, sig, raw.get("scene_tag"),
-                            sorted(people), json.dumps(raw, ensure_ascii=False))
+        repo.save_ai_result(m.id, modelo, firma, raw.get("scene_tag"),
+                            sorted(raw.get("people") or {}),
+                            json.dumps(raw, ensure_ascii=False))
         stats.analyzed += 1
         _progress(progress_cb, i, total, m.path)
 

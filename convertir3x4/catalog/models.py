@@ -33,6 +33,11 @@ class Media:
     # Etiquetas para mostrar en la grilla: [(nombre, confirmada)], confirmadas
     # primero. Solo las trae Repo.buscar (None: no se pidieron).
     etiquetas: list | None = None
+    # Cuándo se tomó (EXIF de la foto o metadatos del video; None si no dice)
+    # y dónde (GPS, solo algunas fotos de teléfono).
+    tomada: datetime | None = None
+    lat: float | None = None
+    lon: float | None = None
 
     @property
     def is_video(self) -> bool:

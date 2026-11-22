@@ -186,11 +186,12 @@ class MainWindow(QMainWindow):
         self.convert_tab.recibir(paths)
         self.show_module(self.stack.indexOf(self.convert_tab))
 
-    def _a_persona(self, paths: list[str]):
+    def _a_persona(self, paths: list[str], media_ids: list | None = None):
         """Desde Buscar: fotos de una persona para el reconocimiento facial. Se
-        muestra Catalogar, donde está la lista de personas y el resultado."""
+        muestra Catalogar, donde está la lista de personas y el resultado. Con
+        los ids del catálogo, el NAS lee los archivos (no viajan por la red)."""
         self.show_module(self.stack.indexOf(self.motor_tab))
-        self.motor_tab.recibir_fotos_de_persona(paths)
+        self.motor_tab.recibir_fotos_de_persona(paths, media_ids or None)
 
     def show_module(self, index: int):
         self._nav.button(index).setChecked(True)

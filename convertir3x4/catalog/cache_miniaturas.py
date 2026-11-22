@@ -71,3 +71,35 @@ def _borrar(ruta: str):
         os.remove(ruta)
     except OSError:
         pass
+
+
+class CacheTiras:
+    """Lo mismo para las tiras de cuadros de los videos (vista previa al pasar
+    el puntero en Buscar). Se piden de a una, cuando el puntero pasa por el
+    video: no se bajan todas al buscar."""
+
+    def __init__(self, carpeta: str):
+        self.carpeta = carpeta
+        os.makedirs(carpeta, exist_ok=True)
+
+    def ruta(self, media_id: int, sello: str) -> str:
+        return os.path.join(self.carpeta, f"{media_id}-{sello[:16]}-tira.jpg")
+
+    def asegurar(self, repo: Repo, media_id: int) -> str | None:
+        """Ruta local de la tira (la baja si hace falta), o None si no tiene."""
+        sello = repo.sellos_tira([media_id]).get(media_id)
+        if sello is None:
+            return None
+        r = self.ruta(media_id, sello)
+        if os.path.exists(r):
+            return r
+        par = repo.tiras([media_id]).get(media_id)
+        if par is None:
+            return None
+        for viejo in glob.glob(os.path.join(self.carpeta, f"{media_id}-*-tira.jpg")):
+            _borrar(viejo)
+        tmp = r + ".tmp"
+        with open(tmp, "wb") as f:
+            f.write(par[1])
+        os.replace(tmp, r)
+        return r

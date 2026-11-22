@@ -14,20 +14,21 @@ import threading
 from PyQt6.QtCore import Qt, QElapsedTimer, QPoint, QSize, QTimer, pyqtSignal
 from PyQt6.QtGui import QIcon, QPixmap
 from PyQt6.QtWidgets import (
-    QAbstractItemView, QApplication, QProgressBar, QSizePolicy,
+    QAbstractItemView, QApplication, QComboBox, QProgressBar, QSizePolicy,
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QListWidgetItem, QFrame, QPushButton, QButtonGroup, QMessageBox,
 )
 
 from ...appdata import catalog_thumb_dir
-from ...catalog.cache_miniaturas import CacheMiniaturas
+from ...catalog.cache_miniaturas import CacheMiniaturas, CacheTiras
 from ...catalog.ubicacion import availability, friendly_root, storage_root  # noqa: F401
 from ..servicio_catalogo import servicio, texto_para
 from ..widgets.caja_conexion import CajaConexion
 from ..widgets.media_grid import (
     DragOutListWidget, PATH_ROLE, MEDIA_ID_ROLE, KIND_ROLE, DURATION_ROLE, STATE_ROLE,
-    TAGS_ROLE,
+    STORYBOARD_ROLE, TAGS_ROLE,
 )
+from ..widgets.dialogos import confirmar
 from ..widgets.tag_bar import TagBar
 from ...utils import open_file
 from .. import icons
@@ -80,13 +81,15 @@ class SearchLineEdit(QLineEdit):
 class BuscarTab(QWidget):
     # Rutas elegidas en el catálogo para convertir (MainWindow las pasa a Convertir)
     enviarAConvertir = pyqtSignal(list)
-    enviarAPersona = pyqtSignal(list)       # fotos de referencia para el reconocimiento facial
+    enviarAPersona = pyqtSignal(list, list)  # fotos de referencia (rutas, ids del catálogo)
     _raices_revisadas = pyqtSignal(dict)      # desde el hilo que pregunta por las raíces
 
     def __init__(self, parent=None, srv=None):
         super().__init__(parent)
         self._srv = srv or servicio()
         self._cache = CacheMiniaturas(catalog_thumb_dir())
+        self._cache_tiras = CacheTiras(catalog_thumb_dir())
+        self._tiras: dict[int, str | None] = {}     # id → tira local (None: no tiene)
         self._busqueda = 0          # solo se muestra la respuesta de la última búsqueda
         self._seleccion = 0         # idem para los tags de la selección
         self._debounce = QTimer(self)
@@ -157,6 +160,17 @@ class BuscarTab(QWidget):
         self._kind_group.buttonClicked.connect(lambda _: self._do_search())
         row.addWidget(seg)
 
+        self.cmb_orden = QComboBox()
+        self.cmb_orden.setAccessibleName("Orden de los resultados")
+        self.cmb_orden.setToolTip("Orden de los resultados. La fecha es la de la toma, si "
+                                  "la foto o el video la tiene.")
+        for clave, texto in (("relevancia", "Más parecidos primero"),
+                             ("nuevas", "Más recientes primero"),
+                             ("viejas", "Más antiguos primero")):
+            self.cmb_orden.addItem(texto, clave)
+        self.cmb_orden.currentIndexChanged.connect(lambda _: self._do_search())
+        row.addWidget(self.cmb_orden)
+
         self.chk_pending = QPushButton("Sugerencias de la IA")
         self.chk_pending.setObjectName("toggle_chip")
         self.chk_pending.setCheckable(True)
@@ -209,6 +223,7 @@ class BuscarTab(QWidget):
         layout.addWidget(self.offline_box)
 
         self.grid = DragOutListWidget(thumb=_GRID_THUMB, etiquetas=True)
+        self.grid.pedir_tira = self._pedir_tira
         self.grid.setAccessibleName("Resultados")
         self.grid.itemSelectionChanged.connect(self._on_selection_changed)
         self.grid.itemDoubleClicked.connect(self._open_item)
@@ -274,6 +289,8 @@ class BuscarTab(QWidget):
     def cambio_en_el_catalogo(self):
         """Llegó un aviso del NAS (algo se catalogó, otra PC etiquetó…). Se juntan
         los avisos seguidos y se pone al día sin que el operador haga nada."""
+        # Un video sin tira puede tenerla ahora (el NAS la armó): se vuelve a preguntar
+        self._tiras = {k: v for k, v in self._tiras.items() if v is not None}
         if not self.isVisible():
             self._desactualizada = True     # se pone al día cuando se vuelva a ver
             return
@@ -386,6 +403,7 @@ class BuscarTab(QWidget):
         self._busqueda += 1
         n = self._busqueda
         query, pend, kind = self.txt_query.text(), self.chk_pending.isChecked(), self._kind()
+        orden = self.cmb_orden.currentData()
         cache = self._cache
         # En vivo se vuelve a traer todo lo que ya se estaba viendo, no solo la 1.ª página
         cuantos = max(_PAGINA, len(getattr(self, "_results", []))) if conservar else _PAGINA
@@ -393,7 +411,8 @@ class BuscarTab(QWidget):
 
         def buscar(repo):
             # Todo lo que puede tardar (base, NAS por SMB) pasa en el hilo del catálogo.
-            results, total = repo.buscar(query, kind=kind, pending_only=pend, cuantos=cuantos)
+            results, total = repo.buscar(query, kind=kind, pending_only=pend, cuantos=cuantos,
+                                         orden=orden)
             return _preparar(repo, cache, results) + (total,)
 
         if not conservar:
@@ -425,11 +444,12 @@ class BuscarTab(QWidget):
         self._trayendo_mas = True
         n = self._busqueda
         query, pend, kind = self.txt_query.text(), self.chk_pending.isChecked(), self._kind()
+        orden = self.cmb_orden.currentData()
         cache = self._cache
 
         def buscar(repo):
             results, total = repo.buscar(query, kind=kind, pending_only=pend,
-                                         desde=traidos, cuantos=_PAGINA)
+                                         desde=traidos, cuantos=_PAGINA, orden=orden)
             return _preparar(repo, cache, results) + (total,)
 
         def fallo(_e):
@@ -527,6 +547,8 @@ class BuscarTab(QWidget):
         item.setData(KIND_ROLE, m.kind)
         item.setData(DURATION_ROLE, m.duration)
         item.setData(TAGS_ROLE, m.etiquetas or [])
+        if self._tiras.get(m.id):
+            item.setData(STORYBOARD_ROLE, self._tiras[m.id])
         disponible = present[m.path] and not m.missing
         if not disponible:
             # No se puede arrastrar a ProPresenter: la miniatura va en gris.
@@ -540,6 +562,8 @@ class BuscarTab(QWidget):
         elif disponible and m.id in (bajando or ()):
             item.setData(STATE_ROLE, "loading")     # se está bajando de la base
         tip = m.folder_origin or ""
+        if m.tomada:
+            tip += "\n" + _fecha_de_toma(m.tomada)
         if m.width and m.height:
             tip += f"\n{m.width}×{m.height}"
         if m.quality_flag and m.quality_flag != "ok":
@@ -653,6 +677,7 @@ class BuscarTab(QWidget):
         """Fotos elegidas que se pueden leer, cuántos videos hay (no sirven como
         referencia de un rostro) y cuántas fotos no están disponibles."""
         fotos, videos, faltan = [], 0, 0
+        self._ids_elegidos = []
         for it in self.grid.selectedItems():
             p = it.data(PATH_ROLE)
             if not p:
@@ -663,6 +688,7 @@ class BuscarTab(QWidget):
                 faltan += 1
             else:
                 fotos.append(p)
+                self._ids_elegidos.append(it.data(MEDIA_ID_ROLE))
         return fotos, videos, faltan
 
     def _mandar_a_persona(self):
@@ -677,7 +703,7 @@ class BuscarTab(QWidget):
             texto = "; ".join(avisos)
             self.lbl_seleccion.setText(texto[0].upper() + texto[1:] + " y no se enviaron.")
         if fotos:
-            self.enviarAPersona.emit(fotos)
+            self.enviarAPersona.emit(fotos, list(self._ids_elegidos))
 
     def _menu_grilla(self, pos):
         from PyQt6.QtWidgets import QMenu
@@ -755,13 +781,69 @@ class BuscarTab(QWidget):
         self._srv.pedir(hacer, ok=listo, error=fallo)
 
     def _apply_tag_to_selection(self, name: str):
+        ids = self._selected_ids()
         self._cambiar_tags("apply_tag", name)
+        if ids:
+            self._ofrecer_a_hermanas(ids, name)
+
+    def _ofrecer_a_hermanas(self, ids: list[int], name: str):
+        """Después de etiquetar: si hay fotos y videos de la misma carpeta y del
+        mismo día de toma sin esa etiqueta, se ofrece ponérsela (p. ej. el nombre
+        de un evento). Se pregunta siempre: nunca se agrega sola."""
+        def ok(hermanas):
+            if not hermanas:
+                return
+            n = len(hermanas)
+            cuales = "la otra foto o video" if n == 1 else f"las otras {n} fotos y videos"
+            if not confirmar(self, "Misma etiqueta", f"¿Agregar «{name}» también a {cuales} "
+                             "de esta carpeta?",
+                             "Son de la misma carpeta y, si se sabe la fecha de la toma, del "
+                             "mismo día. No se agrega a los que alguien se la quitó.",
+                             "Agregar a 1 más" if n == 1 else f"Agregar a {n} más",
+                             cancelar="Solo a lo elegido"):
+                return
+
+            def hacer(repo):
+                for mid in hermanas:
+                    repo.apply_tag(mid, name)
+
+            def listo(_):
+                self.lbl_seleccion.setText(f"Se agregó «{name}» a {n} más." if n > 1 else
+                                           f"Se agregó «{name}» a 1 más.")
+                self._do_search(conservar=True)
+
+            self._srv.pedir(hacer, ok=listo, error=lambda e: self.lbl_seleccion.setText(
+                "No se pudo guardar la etiqueta. " + texto_para(e)))
+        self._srv.pedir(lambda repo: repo.hermanas(ids, name), ok=ok)
 
     def _remove_tag_from_selection(self, name: str):
         self._cambiar_tags("remove_tag", name)
 
     def _confirm_tag_on_selection(self, name: str):
         self._cambiar_tags("confirm_tag", name)
+
+    # ------------------------------------------------------------- vista previa
+    def _pedir_tira(self, item):
+        """El puntero pasó por un video sin tira: se trae de la base (una vez) y
+        queda en esta PC. Si el NAS todavía no la armó, no se muestra nada."""
+        mid = item.data(MEDIA_ID_ROLE)
+        if mid is None or mid in self._tiras:
+            return
+        self._tiras[mid] = None                  # pedida: no se vuelve a pedir
+        cache = self._cache_tiras
+
+        def ok(ruta):
+            if not ruta:
+                return
+            self._tiras[mid] = ruta
+            for i in range(self.grid.count()):
+                it = self.grid.item(i)
+                if it.data(MEDIA_ID_ROLE) == mid:
+                    it.setData(STORYBOARD_ROLE, ruta)
+                    self.grid.empezar_vista_previa(it)
+                    break
+        self._srv.pedir(lambda repo: cache.asegurar(repo, mid), ok=ok,
+                        error=lambda _e: self._tiras.pop(mid, None))
 
     def _reload_known_tags(self):
         self._srv.pedir(lambda repo: repo.all_tag_names(), ok=self.tag_bar.set_known_tags)
@@ -775,6 +857,12 @@ def _preparar(repo, cache, results) -> tuple:
     presentes = availability(paths)
     raices = {r: os.path.exists(r) for r in {storage_root(p) for p in paths}}
     return results, minis, faltan, presentes, raices
+
+
+def _fecha_de_toma(f) -> str:
+    """«Tomada el 14/07/2019 a las 10:31», en la hora de esta PC."""
+    local = f.astimezone() if f.tzinfo else f
+    return f"Tomada el {local:%d/%m/%Y} a las {local:%H:%M}"
 
 
 def _miles(n: int) -> str:

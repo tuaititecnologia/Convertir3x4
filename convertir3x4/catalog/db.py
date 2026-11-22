@@ -347,7 +347,7 @@ CREATE TABLE person_reference (
 # El catalogado corre en el NAS (docs/catalogado-en-el-nas.md). Las PCs lo
 # piden y lo miran a través de estas dos tablas.
 _V2 = r"""
--- Un pedido de catalogar: «Catalogar ahora» (carpeta NULL = todas las de la
+-- Un pedido de catalogar: «Catalogar» (carpeta NULL = todas las de la
 -- lista) o una subcarpeta desde el ⚙. El catalogador del NAS lo toma, lo marca
 -- empezado y lo cierra con el resultado (o el error).
 CREATE TABLE catalogado_pedido (
@@ -456,6 +456,37 @@ CREATE TRIGGER person_reference_aviso_cambio AFTER UPDATE ON person_reference
     EXECUTE FUNCTION avisar_cambio_catalogo();
 """
 
+# v0.8.0 (docs/plan-v0.8.md):
+# - Catalogar por partes: el pedido dice qué pasos correr (NULL = todos) y si
+#   se rehace lo ya hecho.
+# - Fecha de toma y ubicación de fotos y videos. `metadatos_version` deja que
+#   el NAS complete una vez lo ya catalogado (como `miniatura_version`).
+# - Tira de cuadros de los videos (vista previa al pasar el puntero en
+#   Buscar): la hace el NAS y va en la base, como la miniatura.
+# - Fotos de referencia elegidas en Buscar: la PC manda el medio y el NAS lee
+#   el archivo (`foto` queda vacía hasta que el NAS la completa).
+_V7 = r"""
+ALTER TABLE catalogado_pedido
+    ADD COLUMN pasos text[],
+    ADD COLUMN rehacer boolean NOT NULL DEFAULT false;
+
+ALTER TABLE media
+    ADD COLUMN tomada timestamptz,
+    ADD COLUMN lat double precision,
+    ADD COLUMN lon double precision,
+    ADD COLUMN metadatos_version smallint NOT NULL DEFAULT 0;
+CREATE INDEX media_tomada ON media (tomada);
+
+CREATE TABLE tira (
+    media_id bigint PRIMARY KEY REFERENCES media(id) ON DELETE CASCADE,
+    jpeg     bytea NOT NULL,
+    sello    text NOT NULL
+);
+
+ALTER TABLE person_reference
+    ADD COLUMN media_id bigint REFERENCES media(id) ON DELETE SET NULL;
+"""
+
 MIGRACIONES: list[tuple[int, str]] = [
     (1, _V1),
     (2, _V2),
@@ -463,6 +494,7 @@ MIGRACIONES: list[tuple[int, str]] = [
     (4, _V4),
     (5, _V5),
     (6, _V6),
+    (7, _V7),
 ]
 CANAL_CAMBIOS = "catalogo"
 VERSION_ESQUEMA = MIGRACIONES[-1][0]

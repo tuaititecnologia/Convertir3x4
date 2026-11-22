@@ -26,11 +26,11 @@ from dataclasses import dataclass, field
 
 import psycopg
 
-from ..catalog import rutas, thumbs
+from ..catalog import rutas, thumbs, tiras
 from ..catalog.db import CatalogoNoDisponible
 from ..catalog.models import Media
 from ..catalog.repo import Repo
-from . import inventory, probe as probe_mod, dedup
+from . import inventory, metadatos, probe as probe_mod, dedup
 
 
 class CatalogoOcupado(Exception):
@@ -55,19 +55,40 @@ class Stage0Stats:
     moved: int = 0          # reaparecieron en otra ruta (conservan sus tags)
     en_negro: int = 0       # fotos negras o videos en negro (no se etiquetan)
     miniaturas_rehechas: int = 0   # hechas con una regla vieja (thumbs.MINIATURA_VERSION)
+    metadatos: int = 0      # fecha y lugar completados en lo ya catalogado
+    tiras: int = 0          # tiras de cuadros de videos ya catalogados
     missing: int = 0        # dejaron de estar en esta pasada y no reaparecieron
     ocupadas: list[str] = field(default_factory=list)      # otra PC las catalogaba
     inexistentes: list[str] = field(default_factory=list)  # no están en el NAS
     incompletas: list[str] = field(default_factory=list)   # no se pudieron leer enteras
 
 
+@dataclass
+class Opciones:
+    """Qué hace la pasada con lo que ya está catalogado y no cambió (lo nuevo
+    o cambiado siempre se procesa entero, con su fecha, miniatura y tira).
+
+    - `miniaturas`: rehacer las hechas con una regla vieja.
+    - `tiras_faltantes`: armar las tiras de los videos que no tienen (≈3,5 s
+      por video en el NAS: la primera vez son horas, por eso solo de noche o
+      si se pide «Miniaturas»).
+    - `rehacer_metadatos` / `rehacer_miniaturas`: también lo que está al día.
+    """
+    miniaturas: bool = True
+    tiras_faltantes: bool = True
+    rehacer_metadatos: bool = False
+    rehacer_miniaturas: bool = False
+
+
 def catalogar(repo: Repo, carpetas: list[str], status: str = "library",
-              progress_cb=None, bloqueo: str | None = None) -> Stage0Stats:
+              progress_cb=None, bloqueo: str | None = None,
+              opciones: Opciones | None = None) -> Stage0Stats:
     """Cataloga `carpetas` (relativas a `repo.raiz`). `progress_cb(hechos, total, ruta)`.
 
     `bloqueo`: carpeta cuyo bloqueo se toma en lugar de cada una (para catalogar
     a mano una subcarpeta de una carpeta de la lista sin chocar con la pasada
     nocturna de esa carpeta)."""
+    opciones = opciones or Opciones()
     stats = Stage0Stats()
     tomadas: list[str] = []
     marcados: list[int] = []
@@ -106,7 +127,7 @@ def catalogar(repo: Repo, carpetas: list[str], status: str = "library",
             for path in paths:
                 hechos += 1
                 stats.scanned += 1
-                mid = _procesar(repo, path, existentes, status, stats)
+                mid = _procesar(repo, path, existentes, status, stats, opciones)
                 if mid is not None:
                     agregados.add(mid)
                 if progress_cb:
@@ -144,7 +165,7 @@ def run_stage0(repo: Repo, root: str, status: str = "library",
 
 
 def _procesar(repo: Repo, path: str, existentes: dict, status: str,
-              stats: Stage0Stats) -> int | None:
+              stats: Stage0Stats, opciones: Opciones | None = None) -> int | None:
     """Un archivo. Devuelve el id si se agregó uno nuevo."""
     try:
         st = os.stat(path)
@@ -154,12 +175,11 @@ def _procesar(repo: Repo, path: str, existentes: dict, status: str,
     size, mtime = st.st_size, int(st.st_mtime)
     previo = existentes.get(rel)
 
+    opciones = opciones or Opciones()
     if previo is not None and previo["file_mtime"] == mtime and previo["size_bytes"] == size:
         if previo["missing_since"] is not None:
             repo.marcar_presente(previo["id"])
-        if previo["miniatura_version"] < thumbs.MINIATURA_VERSION \
-                and previo["quality_flag"] != "corrupt":
-            _rehacer_miniatura(repo, path, previo, stats)
+        _mantener(repo, path, previo, stats, opciones)
         stats.skipped += 1
         return None
 
@@ -199,8 +219,13 @@ def _procesar(repo: Repo, path: str, existentes: dict, status: str,
         status=status,
         quality_flag=calidad,
     )
+    md = metadatos.leer(path, kind) if pr.quality_flag != "corrupt" else metadatos.Metadatos()
+    media.tomada, media.lat, media.lon = md.tomada, md.lat, md.lon
+    tira = tiras.hacer_tira(path, pr.duration) \
+        if kind == "video" and calidad in ("ok", "low_res") else None
     mid = repo.upsert_media(media, miniatura=miniatura,
-                            miniatura_version=thumbs.MINIATURA_VERSION)
+                            miniatura_version=thumbs.MINIATURA_VERSION,
+                            metadatos_version=metadatos.METADATOS_VERSION, tira=tira)
     if previo is None:
         stats.added += 1
         return mid
@@ -208,12 +233,35 @@ def _procesar(repo: Repo, path: str, existentes: dict, status: str,
     return None
 
 
-def _rehacer_miniatura(repo: Repo, path: str, previo: dict, stats: Stage0Stats):
-    """Un archivo que no cambió pero cuya miniatura se hizo con una regla vieja.
-    Las fotos se rehacen desde la miniatura guardada (no hace falta leer el
-    archivo: solo se mira si es negra); los videos, desde el archivo."""
-    if previo["kind"] == "video":
-        jpeg = thumbs.make_thumb(path, "video", previo["duration"])
+def _mantener(repo: Repo, path: str, previo: dict, stats: Stage0Stats, op: Opciones):
+    """Un archivo que no cambió: completa lo que le falte (fecha y lugar,
+    miniatura con regla vieja, tira) o lo rehace si se pidió."""
+    if previo["quality_flag"] == "corrupt":
+        return
+    if op.rehacer_metadatos or previo.get("metadatos_version", 0) < metadatos.METADATOS_VERSION:
+        md = metadatos.leer(path, previo["kind"])
+        repo.guardar_metadatos(previo["id"], md.tomada, md.lat, md.lon,
+                               metadatos.METADATOS_VERSION)
+        stats.metadatos += 1
+    if op.rehacer_miniaturas or (op.miniaturas
+                                 and previo["miniatura_version"] < thumbs.MINIATURA_VERSION):
+        _rehacer_miniatura(repo, path, previo, stats, desde_el_archivo=op.rehacer_miniaturas)
+    if previo["kind"] == "video" and previo["quality_flag"] != "en_negro" and (
+            op.rehacer_miniaturas or (op.tiras_faltantes and not previo.get("tiene_tira"))):
+        jpeg = tiras.hacer_tira(path, previo["duration"])
+        if jpeg:
+            repo.guardar_tira(previo["id"], jpeg)
+            stats.tiras += 1
+
+
+def _rehacer_miniatura(repo: Repo, path: str, previo: dict, stats: Stage0Stats,
+                       desde_el_archivo: bool = False):
+    """Un archivo que no cambió pero cuya miniatura se hizo con una regla vieja
+    (o se pidió rehacerla). Las fotos se rehacen desde la miniatura guardada
+    (no hace falta leer el archivo: solo se mira si es negra), salvo que se pida
+    `desde_el_archivo`; los videos, siempre desde el archivo."""
+    if previo["kind"] == "video" or desde_el_archivo:
+        jpeg = thumbs.make_thumb(path, previo["kind"], previo["duration"])
     else:
         jpeg = None
     negro = thumbs.en_negro(jpeg if jpeg is not None else repo.miniatura(previo["id"]))

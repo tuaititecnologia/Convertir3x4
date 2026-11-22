@@ -10,7 +10,10 @@
 import os
 
 from PyQt6.QtCore import Qt, QPoint, QRect, QRectF, QSize, QTimer, QUrl, QMimeData, pyqtSignal
-from PyQt6.QtGui import QPainter, QPainterPath, QPen, QColor, QDrag, QFont, QFontMetrics, QIcon, QImage, QPixmap
+from PyQt6.QtGui import (
+    QPainter, QPainterPath, QPen, QColor, QCursor, QDrag, QFont, QFontMetrics, QIcon, QImage,
+    QPixmap,
+)
 from PyQt6.QtWidgets import (
     QApplication, QListWidget, QListWidgetItem, QAbstractItemView,
     QStyledItemDelegate, QStyle,
@@ -354,6 +357,9 @@ class _HoverPreview:
     """
 
     def _init_hover(self):
+        # Si un video no tiene tira todavía, se llama a esto con su celda (Buscar
+        # la trae de la base y después la pone en STORYBOARD_ROLE).
+        self.pedir_tira = None
         self._hover_row = -1
         self._hover_frame = 0
         self._sprites: dict[str, QPixmap] = {}
@@ -367,11 +373,22 @@ class _HoverPreview:
         if row == self._hover_row:
             return
         self._stop_preview()
+        if item is not None and not item.data(STORYBOARD_ROLE) and self.pedir_tira \
+                and item.data(KIND_ROLE) == "video" and item.data(STATE_ROLE) is None:
+            self.pedir_tira(item)
         if item is not None and item.data(STORYBOARD_ROLE) and item.data(STATE_ROLE) != "working":
             self._hover_row = row
             self._hover_frame = 0
             self._next_preview_frame()
             self._hover_timer.start()
+
+    def empezar_vista_previa(self, item):
+        """La tira de `item` acaba de llegar: si el puntero sigue encima, arranca."""
+        if self.row(item) == self._hover_row or self._hover_row == -1:
+            pos = self.viewport().mapFromGlobal(QCursor.pos())
+            if self.itemAt(pos) is item:
+                self._hover_row = -2          # fuerza a _hover_at a recalcular
+                self._hover_at(pos)
 
     def _stop_preview(self):
         self._hover_timer.stop()

@@ -42,8 +42,10 @@ HELP = [
     ]),
     ("Catalogar", [
         ("Agregar al catálogo", "El NAS revisa las carpetas todas las noches. Para no "
-                                "esperar, haga clic en «Catalogar ahora»: solo se agrega "
-                                "lo que todavía no estaba."),
+                                "esperar, haga clic en «Catalogar»: solo se agrega "
+                                "lo que todavía no estaba. Con la flecha ▾ puede elegir "
+                                "una sola carpeta o qué hacer (por ejemplo, solo "
+                                "buscar a las personas)."),
         ("Análisis con IA", "El NAS sugiere etiquetas y reconoce a las personas de la "
                             "lista al catalogar. Todo queda como sugerencia hasta que se "
                             "confirma en Buscar."),

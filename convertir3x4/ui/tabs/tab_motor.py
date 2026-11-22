@@ -2,7 +2,7 @@
 
 El catalogado y el análisis con IA corren en el NAS (convertir3x4/catalogador.py,
 docs/catalogado-en-el-nas.md): todas las noches y cuando alguien lo pide desde
-acá. Esta pestaña solo pide («Catalogar ahora», o una subcarpeta desde el ⚙) y
+acá. Esta pestaña solo pide («Catalogar», o por partes con su flecha ▾) y
 muestra lo que el NAS informa en la base. Mientras se ve, consulta cada 3 s.
 
 También administra la lista de personas reconocibles: esta PC sube las fotos de
@@ -230,7 +230,7 @@ class MotorTab(QWidget):
         cab = QHBoxLayout()
         cab.addWidget(self._title("Catálogo de fotos y videos"))
         cab.addStretch()
-        # Lo que casi nunca se usa (una subcarpeta, limpiar) va escondido en el ⚙
+        # Lo que casi nunca se usa (limpiar, sacar una carpeta) va escondido en el ⚙
         self.btn_avanzado = QPushButton()
         self.btn_avanzado.setObjectName("btn_icon")
         icons.set_icon(self.btn_avanzado, "settings", 16, "text_2")
@@ -250,16 +250,19 @@ class MotorTab(QWidget):
             "catálogo las fotos y videos nuevos, para encontrarlos luego en Buscar. También "
             "sugiere etiquetas (bautismo, alabanza, placa, flyer…) y reconoce a las personas "
             "de la lista; las sugerencias se confirman en Buscar. Si necesita antes algo "
-            "recién copiado, use «Catalogar ahora»."))
+            "recién copiado, use «Catalogar»; con su flecha puede elegir una sola carpeta "
+            "o qué hacer."))
         self.lbl_carpetas = QLabel()
         self.lbl_carpetas.setWordWrap(True)
         self.lbl_carpetas.setTextFormat(Qt.TextFormat.PlainText)
         layout.addWidget(self.lbl_carpetas)
 
-        self.btn_run = QPushButton("Catalogar ahora")
-        self.btn_run.setObjectName("btn_primary")
-        self.btn_run.clicked.connect(self._pedir_todo)
-        layout.addLayout(self._left(self.btn_run))
+        from ..widgets.catalogar_por_partes import BotonCatalogar
+        self.boton_catalogar = BotonCatalogar()
+        self.boton_catalogar.todo.connect(self._pedir_todo)
+        self.boton_catalogar.partes.connect(self._abrir_partes)
+        self.btn_run = self.boton_catalogar.principal
+        layout.addLayout(self._left(self.boton_catalogar))
 
         # Lo que informa el NAS, pegado a la acción que lo dispara
         self.progress = QProgressBar()
@@ -643,7 +646,6 @@ class MotorTab(QWidget):
     def _abrir_avanzado(self):
         from ..widgets.catalogo_avanzado import CatalogoAvanzado
         dlg = CatalogoAvanzado(self, carpetas=self._carpetas)
-        dlg.catalogarCarpeta.connect(self.catalogar_una_carpeta)
         dlg.catalogChanged.connect(self.refresh)
         dlg.catalogChanged.connect(self.catalogChanged.emit)
         dlg.exec()
@@ -810,7 +812,7 @@ class MotorTab(QWidget):
     def _update_buttons(self):
         busy = self._worker is not None and self._worker.isRunning()
         sin_catalogo = self._srv.estado == "error"
-        self.btn_run.setEnabled(not sin_catalogo and bool(self._carpetas)
+        self.boton_catalogar.setEnabled(not sin_catalogo and bool(self._carpetas)
                                 and not self._trabajando and not self._pedidos)
         self.btn_add_person.setEnabled(not busy and not sin_catalogo)
         has_sel = self._selected_person() is not None
@@ -821,7 +823,14 @@ class MotorTab(QWidget):
     def _pedir_todo(self):
         self._pedir(None)
 
-    def catalogar_una_carpeta(self, ruta: str):
+    def _abrir_partes(self):
+        """La flecha de «Catalogar»: qué hacer, dónde y si se rehace."""
+        from ..widgets.catalogar_por_partes import CatalogarPorPartes
+        dlg = CatalogarPorPartes(self, carpetas=self._carpetas, raiz=self._raiz or "")
+        if dlg.exec():
+            self._pedir(dlg.carpeta_elegida(), dlg.pasos, dlg.rehacer)
+
+    def catalogar_una_carpeta(self, ruta: str, pasos=None, rehacer: bool = False):
         """Una subcarpeta (p. ej. un evento recién copiado). Tiene que estar dentro
         de alguna de la lista; el NAS toma el bloqueo de esa carpeta."""
         rel = rutas.a_relativa(ruta, self._raiz) if self._raiz else None
@@ -831,13 +840,13 @@ class MotorTab(QWidget):
             self._set_status("Esa carpeta no está entre las que se catalogan. Elija una "
                              "carpeta dentro de: " + _lista(self._carpetas) + ".")
             return
-        self._pedir(rel)
+        self._pedir(rel, pasos, rehacer)
 
-    def _pedir(self, carpeta: str | None):
+    def _pedir(self, carpeta: str | None, pasos=None, rehacer: bool = False):
         quien = socket.gethostname()
         self._pedidos = [{"carpeta": carpeta}]          # el botón se apaga ya
         self._update_buttons()
-        self._srv.pedir(lambda repo: repo.pedir_catalogado(carpeta, quien),
+        self._srv.pedir(lambda repo: repo.pedir_catalogado(carpeta, quien, pasos, rehacer),
                         ok=lambda _id: self.refresh(),
                         error=lambda e: (self._set_status(texto_para(e)), self.refresh()))
 
@@ -891,9 +900,11 @@ class MotorTab(QWidget):
         self.enviar_referencias(person_id, name, paths)
 
     # ------------------------------------------------------------- desde Buscar
-    def recibir_fotos_de_persona(self, paths: list[str]):
+    def recibir_fotos_de_persona(self, paths: list[str], media_ids: list[int] | None = None):
         """Fotos elegidas en Buscar: se pregunta de quién son (alguien de la lista
-        o una persona nueva) y se envían al NAS como fotos de referencia."""
+        o una persona nueva) y se envían al NAS como fotos de referencia. Si vienen
+        sus `media_ids` (fotos del catálogo), se manda solo cuáles son: el NAS lee
+        los archivos y no viajan por la red."""
         if not paths:
             return
         if self._worker is not None and self._worker.isRunning():
@@ -907,10 +918,11 @@ class MotorTab(QWidget):
         # La lista se lee de la base (fuera del hilo de la interfaz): puede que
         # esta pestaña todavía no se haya mostrado nunca.
         self._srv.pedir(lambda repo: repo.list_persons(),
-                        ok=lambda people: self._asignar_fotos(paths, people),
+                        ok=lambda people: self._asignar_fotos(paths, people, media_ids),
                         error=lambda e: self._set_people_status(texto_para(e)))
 
-    def _asignar_fotos(self, paths: list[str], people: list[dict]):
+    def _asignar_fotos(self, paths: list[str], people: list[dict],
+                       media_ids: list[int] | None = None):
         nombre = self._elegir_persona([p["name"] for p in people], len(paths))
         nombre = " ".join((nombre or "").split())
         if not nombre:
@@ -922,10 +934,25 @@ class MotorTab(QWidget):
             return
         # El mismo nombre escrito con otras mayúsculas es la misma persona.
         existente = next((p for p in people if p["name"].casefold() == nombre.casefold()), None)
-        if existente:
-            self.enviar_referencias(existente["id"], existente["name"], paths)
+        pid, nombre = (existente["id"], existente["name"]) if existente else (None, nombre)
+        if media_ids:
+            self.referencias_del_catalogo(pid, nombre, media_ids)
         else:
-            self.enviar_referencias(None, nombre, paths)
+            self.enviar_referencias(pid, nombre, paths)
+
+    def referencias_del_catalogo(self, person_id: int | None, name: str, media_ids: list[int]):
+        """Fotos del catálogo: se anotan cuáles son y el NAS lee los archivos."""
+        n = len(media_ids)
+
+        def listo(_pid):
+            self._set_people_status(
+                f"{name}: " + ("se envió 1 foto" if n == 1 else f"se enviaron {n} fotos")
+                + " al NAS, que busca el rostro en unos segundos. La persona se reconoce en "
+                  "el catálogo desde la próxima pasada (esta noche, o antes con «Catalogar»).")
+            self._refresh_people()
+
+        self._srv.pedir(lambda repo: repo.referencias_desde_el_catalogo(name, media_ids, person_id),
+                        ok=listo, error=lambda e: self._set_people_status(texto_para(e)))
 
     def _elegir_persona(self, nombres: list[str], n: int) -> str | None:
         """Nombre elegido o escrito, o None si se canceló."""
@@ -969,7 +996,7 @@ class MotorTab(QWidget):
                                       f"se enviaron {subidas} fotos")
                        + " al NAS, que busca el rostro en unos segundos. La persona se "
                          "reconoce en el catálogo desde la próxima pasada (esta noche, o "
-                         "antes con «Catalogar ahora»).")
+                         "antes con «Catalogar»).")
             if ilegibles:
                 msg += ((" " if msg else "") + "No se pudieron abrir: "
                         + ", ".join(os.path.basename(p) for p in ilegibles[:5]) + ".")

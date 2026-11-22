@@ -1,8 +1,5 @@
 """Opciones avanzadas del catálogo: escondidas detrás del ⚙ de Catalogar.
 
-- Catalogar una sola carpeta (p. ej. un evento recién subido), sin esperar a
-  recorrer todas: se le pide al NAS. Tiene que estar dentro de alguna carpeta
-  de la lista.
 - Limpiar el catálogo: quitar las fotos y videos que la catalogación marcó
   como faltantes (su archivo ya no está en su carpeta del NAS). En dos pasos,
   ver y después quitar con confirmación, porque se pierden sus etiquetas.
@@ -12,20 +9,18 @@
 
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
-    QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout, QLabel, QMessageBox,
+    QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QMessageBox,
     QProgressBar, QPushButton, QVBoxLayout,
 )
 
-from ...appdata import abrir_repo, catalog_thumb_dir, config_catalogo
+from ...appdata import abrir_repo, catalog_thumb_dir
 from ...catalog.cache_miniaturas import CacheMiniaturas
-from ...catalog.db import CatalogoNoConfigurado
 from ...workers import EngineWorker
 from ..servicio_catalogo import texto_para
 
 
 class CatalogoAvanzado(QDialog):
     catalogChanged = pyqtSignal()
-    catalogarCarpeta = pyqtSignal(str)       # ruta completa elegida
 
     def __init__(self, parent=None, carpetas=(), abrir=None):
         super().__init__(parent)
@@ -39,25 +34,6 @@ class CatalogoAvanzado(QDialog):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(22, 20, 22, 18)
         lay.setSpacing(8)
-
-        # --- una sola carpeta
-        t = QLabel("Catalogar una sola carpeta")
-        t.setObjectName("section_title")
-        lay.addWidget(t)
-        ayuda = QLabel(
-            "Para que el NAS agregue enseguida una carpeta recién copiada, sin revisar todas. "
-            "Debe estar dentro de alguna de las carpetas que se catalogan.")
-        ayuda.setObjectName("muted")
-        ayuda.setWordWrap(True)
-        lay.addWidget(ayuda)
-        fila = QHBoxLayout()
-        self.btn_carpeta = QPushButton("Elegir carpeta…")
-        self.btn_carpeta.clicked.connect(self._elegir_carpeta)
-        self.btn_carpeta.setEnabled(bool(self._carpetas))
-        fila.addWidget(self.btn_carpeta)
-        fila.addStretch()
-        lay.addLayout(fila)
-        lay.addSpacing(14)
 
         # --- limpiar
         t = QLabel("Limpiar el catálogo")
@@ -102,17 +78,6 @@ class CatalogoAvanzado(QDialog):
         cerrar = botones.addButton("Cerrar", QDialogButtonBox.ButtonRole.RejectRole)
         cerrar.clicked.connect(self.reject)
         lay.addWidget(botones)
-
-    # ------------------------------------------------------------- una carpeta
-    def _elegir_carpeta(self):
-        try:
-            inicio = config_catalogo().raiz
-        except CatalogoNoConfigurado:
-            inicio = ""
-        ruta = QFileDialog.getExistingDirectory(self, "Elija la carpeta del NAS", inicio)
-        if ruta:
-            self.catalogarCarpeta.emit(ruta)
-            self.accept()
 
     # ------------------------------------------------------------- buscar
     def buscar(self):

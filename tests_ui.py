@@ -924,12 +924,13 @@ class TestCatalogarEnElNas:
 
     def test_buscar_agregar_persona_abre_catalogar(self, app, window, monkeypatch):
         recibidas = []
-        monkeypatch.setattr(window.motor_tab, "recibir_fotos_de_persona", recibidas.append)
+        monkeypatch.setattr(window.motor_tab, "recibir_fotos_de_persona",
+                            lambda paths, ids=None: recibidas.append((paths, ids)))
         window.show_module(0)
-        window.buscar_tab.enviarAPersona.emit(["/fotos/a.jpg"])
+        window.buscar_tab.enviarAPersona.emit(["/fotos/a.jpg"], [7])
         app.processEvents()
         assert window.stack.currentWidget() is window.motor_tab
-        assert recibidas == [["/fotos/a.jpg"]]
+        assert recibidas == [(["/fotos/a.jpg"], [7])]     # el NAS lee la foto 7 del catálogo
 
     def test_personas_la_pc_sube_y_el_nas_procesa(self, app, pg_cfg, tmp_path, monkeypatch):
         import numpy as np
