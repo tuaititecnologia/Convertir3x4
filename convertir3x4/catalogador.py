@@ -35,7 +35,7 @@ import psycopg
 from .catalog import rutas
 from .catalog.db import (
     CatalogoIncompatible, CatalogoNoConfigurado, CatalogoNoDisponible,
-    ConfigCatalogo, conectar, normalizar_carpetas,
+    ConfigCatalogo, conectar,
 )
 from .catalog.repo import Repo
 from .config import APP_VERSION
@@ -284,7 +284,7 @@ def pasada(repo: Repo, cfg: ConfigCatalogador, carpeta: str | None = None,
     from .engine.pipeline import Opciones, catalogar
     todos = pasos is None
     pedidos = set(PASOS) if todos else set(pasos) | {ARCHIVOS}
-    carpetas = cfg.catalogo.carpetas
+    carpetas = repo.carpetas_catalogadas()      # se manejan desde la app (⚙ de Catalogar)
     if carpeta is None:
         lista, bloqueo, alcance = list(carpetas), None, None
     else:
@@ -425,13 +425,13 @@ def servir(cfg: ConfigCatalogador, parar: threading.Event | None = None):
             n = repo.soltar_pedidos_colgados()
             if n:
                 log.info("%s pedido(s) cortados a mitad vuelven a la fila", n)
-            repo.actualizar_estado(version_app=APP_VERSION, carpetas=list(cfg.catalogo.carpetas),
-                                   fase="esperando", detalle=None, hechos=None, total=None,
-                                   pedido_id=None)
+            repo.actualizar_estado(version_app=APP_VERSION, fase="esperando", detalle=None,
+                                   hechos=None, total=None, pedido_id=None)
             conn.execute("LISTEN catalogado")
             latido.start()
             log.info("listo: %s, carpetas %s, nocturna %s", cfg.catalogo.raiz,
-                     ", ".join(cfg.catalogo.carpetas), cfg.hora.strftime("%H:%M"))
+                     ", ".join(repo.carpetas_catalogadas()) or "(ninguna todavía)",
+                     cfg.hora.strftime("%H:%M"))
             while not parar.is_set():
                 if not ciclo(repo, cfg, parar=parar):
                     _esperar_aviso(conn, ESPERA_PEDIDOS, parar)
@@ -451,9 +451,6 @@ def servir(cfg: ConfigCatalogador, parar: threading.Event | None = None):
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     cfg = ConfigCatalogador.desde_entorno()
-    if not cfg.catalogo.carpetas:
-        raise SystemExit("CDLM_CATALOGO_CARPETAS está vacío: no hay nada para catalogar")
-    normalizar_carpetas(cfg.catalogo.carpetas)
     parar = threading.Event()
 
     def _senal(_n, _f):

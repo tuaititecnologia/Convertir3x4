@@ -197,13 +197,15 @@ def cfg(pg_cfg, raiz):
     os.makedirs(os.path.join(raiz, "Publicar"))
     _jpeg_con_exif(os.path.join(raiz, "Entrada", "Retiro", "a.jpg"))
     _jpeg_con_exif(os.path.join(raiz, "Publicar", "b.jpg"), color="blue")
-    catalogo = dataclasses.replace(pg_cfg, raiz=raiz, carpetas=("Entrada", "Publicar"))
+    catalogo = dataclasses.replace(pg_cfg, raiz=raiz)
     return cat.ConfigCatalogador(catalogo=catalogo, ia=False, hora=dt.time(1, 30))
 
 
 @pytest.fixture
 def repo_nas(cfg):
     r = Repo(catdb.conectar(cfg.catalogo), cfg.catalogo.raiz)
+    for c in ("Entrada", "Publicar"):
+        r.agregar_carpeta(c)
     yield r
     r.close()
 
@@ -397,7 +399,7 @@ class TestCatalogarPorPartes:
         def abrir():
             return Repo(conectar(pg_cfg), str(tmp_path))
         with abrir() as r:
-            r.actualizar_estado(carpetas=["Entrada"], fase="esperando")
+            r.agregar_carpeta("Entrada")
 
         class Elegido:
             def __init__(self, *a, **k):
@@ -429,4 +431,101 @@ class TestCatalogarPorPartes:
             assert (p["carpeta"], p["pasos"], p["rehacer"]) == ("Entrada/Retiro", ["personas"], True)
         finally:
             tab.deleteLater()
+            srv.cerrar()
+
+
+# --------------------------------------------------------------- carpetas desde la app
+class TestCarpetas:
+    def test_agregar_y_quitar(self, repo):
+        assert repo.carpetas_catalogadas() == ()                 # sin predeterminados
+        assert repo.agregar_carpeta("Publicar\\2026\\") == "Publicar/2026"
+        repo.agregar_carpeta("Entrada", "PC-EDICION")
+        assert repo.carpetas_catalogadas() == ("Entrada", "Publicar/2026")
+        for mala in ("Entrada", "entrada", "Publicar", "Publicar/2026/Culto", "../afuera", ""):
+            with pytest.raises(catdb.ConfiguracionInvalida):
+                repo.agregar_carpeta(mala)
+        a = _medio(repo, "Publicar/2026/a.jpg")
+        b = _medio(repo, "Publicar/2026x/b.jpg")             # otra carpeta con el mismo comienzo
+        assert repo.medios_en_carpeta("Publicar/2026") == [a]
+        assert repo.quitar_carpeta("Entrada") == []
+        assert repo.quitar_carpeta("Publicar/2026", con_sus_medios=True) == [a]
+        assert repo.carpetas_catalogadas() == ()
+        assert repo.get_media(a) is None and repo.get_media(b) is not None
+
+    def test_la_migracion_conserva_la_lista_del_nas(self, pg_cfg):
+        """Al pasar al esquema 7, la lista que publicaba el catalogador (compose)
+        queda en la base: el NAS no se queda sin carpetas al actualizar."""
+        conn = catdb.conectar(pg_cfg, preparar=False)
+        try:
+            with conn.transaction():
+                conn.execute("CREATE TABLE esquema (version integer PRIMARY KEY,"
+                             " aplicada timestamptz NOT NULL DEFAULT now())")
+                for v, sql in catdb.MIGRACIONES[:6]:
+                    conn.execute(sql)
+                    conn.execute("INSERT INTO esquema (version) VALUES (%s)", (v,))
+                conn.execute("UPDATE catalogado_estado SET carpetas = "
+                             "'{Entrada,Publicar,Historial}'")
+            catdb.preparar_esquema(conn)
+            assert Repo(conn, "/").carpetas_catalogadas() == ("Entrada", "Historial", "Publicar")
+        finally:
+            conn.close()
+
+    def test_sin_carpetas_el_nas_no_recorre_nada(self, pg_cfg, raiz):
+        os.makedirs(os.path.join(raiz, "Entrada"))
+        Image.new("RGB", (900, 600)).save(os.path.join(raiz, "Entrada", "a.jpg"))
+        cfg = cat.ConfigCatalogador(catalogo=dataclasses.replace(pg_cfg, raiz=raiz), ia=False)
+        with Repo(catdb.conectar(cfg.catalogo), raiz) as r:
+            r.pedir_catalogado()
+            cat.ciclo(r, cfg, ahora=dt.datetime(2026, 11, 22, 15, 0))
+            assert r.count_media() == 0
+            r.agregar_carpeta("Entrada")                       # se agrega desde la app
+            r.pedir_catalogado()
+            cat.ciclo(r, cfg, ahora=dt.datetime(2026, 11, 22, 15, 0))
+            assert r.count_media() == 1
+
+    def test_ventana_de_opciones(self, qapp, pg_cfg, tmp_path, monkeypatch):
+        import time
+        from convertir3x4.catalog.db import conectar
+        from convertir3x4.ui.servicio_catalogo import ServicioCatalogo
+        from convertir3x4.ui.widgets import catalogo_avanzado as ca
+
+        def abrir():
+            return Repo(conectar(pg_cfg), str(tmp_path))
+
+        def esperar(cond):
+            t = time.time()
+            while not cond() and time.time() - t < 10:
+                qapp.processEvents()
+                time.sleep(0.01)
+            return cond()
+        with abrir() as r:
+            mid = _medio(r, "Historial/2014/a.jpg")
+        monkeypatch.setattr(ca, "catalog_thumb_dir", lambda: str(tmp_path / "cache"))
+        srv = ServicioCatalogo(abrir=abrir)
+        d = ca.CatalogoAvanzado(raiz=str(tmp_path), srv=srv)
+        try:
+            assert "Todavía no hay ninguna" in d.lbl_carpetas.text()
+            assert not d.btn_quitar_carpeta.isEnabled()
+            d.agregar_carpeta("/otro/lado")
+            assert "no está dentro" in d.lbl_carpetas.text()
+            d.agregar_carpeta(str(tmp_path / "Historial"))
+            assert esperar(lambda: d.lst_carpetas.count() == 1)
+            assert "Se agregó «Historial»" in d.lbl_carpetas.text()
+            d.agregar_carpeta(str(tmp_path / "Historial" / "2014"))
+            assert esperar(lambda: "se superpone" in d.lbl_carpetas.text())
+            # Quitar con sus fotos (lo que elige en la confirmación)
+            d.lst_carpetas.item(0).setSelected(True)
+            assert d.btn_quitar_carpeta.isEnabled()
+            confirmado = []
+            monkeypatch.setattr(d, "_confirmar_quitar_carpeta",
+                                lambda ruta, n: confirmado.append((ruta, n))
+                                or d.quitar_carpeta(ruta, con_sus_medios=True))
+            d._quitar_carpeta()
+            assert esperar(lambda: d.lst_carpetas.count() == 0)
+            assert confirmado == [("Historial", 1)]
+            assert "y 1 foto o video del catálogo" in d.lbl_carpetas.text()
+            with abrir() as r:
+                assert r.get_media(mid) is None
+        finally:
+            d.deleteLater()
             srv.cerrar()

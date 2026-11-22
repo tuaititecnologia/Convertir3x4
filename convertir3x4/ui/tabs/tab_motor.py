@@ -645,7 +645,8 @@ class MotorTab(QWidget):
 
     def _abrir_avanzado(self):
         from ..widgets.catalogo_avanzado import CatalogoAvanzado
-        dlg = CatalogoAvanzado(self, carpetas=self._carpetas)
+        dlg = CatalogoAvanzado(self, carpetas=self._carpetas, raiz=self._raiz or "",
+                               srv=self._srv)
         dlg.catalogChanged.connect(self.refresh)
         dlg.catalogChanged.connect(self.catalogChanged.emit)
         dlg.exec()
@@ -718,7 +719,8 @@ class MotorTab(QWidget):
 
         def leer(repo):
             return (repo.estado_catalogado(), repo.pedidos_abiertos(), repo.count_media(),
-                    repo.count_pending_tags(), len(repo.faltantes()))
+                    repo.count_pending_tags(), len(repo.faltantes()),
+                    repo.carpetas_catalogadas())
 
         def listo(_r=None):
             self._consultando = False
@@ -729,9 +731,9 @@ class MotorTab(QWidget):
 
         self._srv.pedir(leer, ok=mostrar, error=listo)
 
-    def _mostrar(self, est, pedidos, n, pend, faltan):
+    def _mostrar(self, est, pedidos, n, pend, faltan, carpetas=()):
         self._pedidos = pedidos
-        self._carpetas = tuple(est.get("carpetas") or ())
+        self._carpetas = tuple(carpetas)
         try:
             self._raiz = config_catalogo().raiz
         except CatalogoNoConfigurado:
@@ -739,9 +741,11 @@ class MotorTab(QWidget):
         if self._carpetas:
             sep = "\\" if self._raiz.startswith("\\") or self._raiz[1:2] == ":" else "/"
             nombres = [c.replace("/", sep) for c in self._carpetas]
-            self.lbl_carpetas.setText("Carpetas del NAS que se catalogan: " + ", ".join(nombres) + ".")
+            self.lbl_carpetas.setText("Carpetas del NAS que se catalogan: " + ", ".join(nombres)
+                                      + ". Se agregan o quitan en las opciones avanzadas (⚙).")
         else:
-            self.lbl_carpetas.setText("")
+            self.lbl_carpetas.setText("Todavía no hay carpetas para catalogar. Agréguelas en las "
+                                      "opciones avanzadas (⚙, arriba a la derecha).")
         texto, self._trabajando = texto_estado(est, pedidos)
         self._set_status(texto)
         total = est.get("total")

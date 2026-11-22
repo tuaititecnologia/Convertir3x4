@@ -35,13 +35,15 @@ def raiz():
 
 @pytest.fixture
 def cfg(pg_cfg, raiz):
-    catalogo = dataclasses.replace(pg_cfg, raiz=raiz, carpetas=("Publicar", "Entrada"))
+    catalogo = dataclasses.replace(pg_cfg, raiz=raiz)
     return cat.ConfigCatalogador(catalogo=catalogo, ia=False, hora=HORA)
 
 
 @pytest.fixture
 def repo_nas(cfg):
     r = Repo(catdb.conectar(cfg.catalogo), cfg.catalogo.raiz)
+    for c in ("Publicar", "Entrada"):          # la lista se maneja desde la app
+        r.agregar_carpeta(c)
     yield r
     r.close()
 
@@ -179,7 +181,7 @@ class TestServicio:
         hilo = threading.Thread(target=cat.servir, args=(cfg, parar), daemon=True)
         hilo.start()
         try:
-            _esperar(lambda: repo_nas.estado_catalogado()["carpetas"] == ["Publicar", "Entrada"])
+            _esperar(lambda: repo_nas.estado_catalogado()["version_app"] is not None)
             pid = repo_nas.pedir_catalogado(None, "prueba")
             # ESPERA_PEDIDOS es 30 s: si llega antes, fue por el NOTIFY
             _esperar(lambda: repo_nas.pedido(pid)["terminado"] is not None, segundos=10)

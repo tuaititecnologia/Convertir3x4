@@ -832,7 +832,9 @@ class TestCatalogarEnElNas:
         def abrir():
             return Repo(conectar(pg_cfg), str(tmp_path))
         with abrir() as r:           # lo que publica el catalogador al arrancar
-            r.actualizar_estado(carpetas=["Publicar", "Entrada"], fase="esperando")
+            r.actualizar_estado(fase="esperando")
+            r.agregar_carpeta("Publicar")
+            r.agregar_carpeta("Entrada")
         srv = ServicioCatalogo(abrir=abrir)
         tab = MotorTab(srv=srv)
         try:

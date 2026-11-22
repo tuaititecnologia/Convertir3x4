@@ -257,11 +257,13 @@ class TestConfig:
         ini.write_text(
             "[catalogo]\nservidor = truenas\nclave = s3creta\n"
             "raiz = \\\\truenas\\multimedia\n"
-            "carpetas =\n    Entrada\n    Publicar\\2026\n    Entrada\n", encoding="utf-8")
+            "carpetas =\n    Entrada\n", encoding="utf-8")       # de antes de la v0.8: se ignora
         cfg = catdb.ConfigCatalogo.desde_archivo(str(ini))
         assert cfg.servidor == "truenas" and cfg.clave == "s3creta"
         assert cfg.raiz == r"\\truenas\multimedia"
-        assert cfg.carpetas == ("Entrada", "Publicar/2026")
+        assert not hasattr(cfg, "carpetas")       # la lista está en la base (v0.8.0)
+        assert catdb.normalizar_carpetas(["Entrada", "Publicar\\2026", "Entrada"]) == (
+            "Entrada", "Publicar/2026")
 
     def test_sin_archivo_es_none(self, tmp_path):
         assert catdb.ConfigCatalogo.desde_archivo(str(tmp_path / "no.ini")) is None
@@ -269,7 +271,7 @@ class TestConfig:
     @pytest.mark.parametrize("carpetas", [("../afuera",), ("C:/x",), ("Publicar", "Publicar/2026")])
     def test_rechaza_carpetas_fuera_o_encimadas(self, carpetas):
         with pytest.raises(catdb.ConfiguracionInvalida):
-            catdb.ConfigCatalogo(servidor="x", carpetas=carpetas)
+            catdb.normalizar_carpetas(carpetas)
 
     def test_falta_servidor(self, tmp_path):
         ini = tmp_path / "catalogo.ini"

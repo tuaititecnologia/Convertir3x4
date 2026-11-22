@@ -347,6 +347,45 @@ class Repo:
             self._q("NOTIFY catalogado")
         return pid
 
+    # ------------------------------------------------- carpetas que se catalogan
+    def carpetas_catalogadas(self) -> tuple[str, ...]:
+        """La lista de carpetas que recorre el NAS (relativas a la raíz)."""
+        return tuple(r["ruta"] for r in self._q(
+            "SELECT ruta FROM carpeta_catalogada ORDER BY lower(ruta)"))
+
+    def agregar_carpeta(self, ruta: str, por: str = "") -> str:
+        """Agrega una carpeta a la lista. Devuelve cómo quedó escrita. Lanza
+        `ConfiguracionInvalida` si sale de la raíz, si ya está o si una está
+        dentro de otra (se recorrería dos veces)."""
+        from .db import ConfiguracionInvalida, normalizar_carpetas
+        nueva = normalizar_carpetas([ruta])
+        if not nueva:
+            raise ConfiguracionInvalida("elija una carpeta dentro de la raíz")
+        nueva = nueva[0]
+        with self.conn.transaction():
+            self._q("LOCK TABLE carpeta_catalogada IN EXCLUSIVE MODE")
+            actuales = self.carpetas_catalogadas()
+            if any(c.lower() == nueva.lower() for c in actuales):
+                raise ConfiguracionInvalida(f"«{nueva}» ya está en la lista")
+            normalizar_carpetas(list(actuales) + [nueva])      # ¿una dentro de otra?
+            self._q("INSERT INTO carpeta_catalogada (ruta, agregada_por) VALUES (%s, %s)",
+                    (nueva, por or None))
+        return nueva
+
+    def medios_en_carpeta(self, ruta: str) -> list[int]:
+        return [r["id"] for r in self._q(
+            "SELECT id FROM media WHERE rel_path = %s OR starts_with(rel_path, %s)",
+            (ruta, ruta.rstrip("/") + "/"))]
+
+    def quitar_carpeta(self, ruta: str, con_sus_medios: bool = False) -> list[int]:
+        """Saca una carpeta de la lista. Con `con_sus_medios`, también saca del
+        catálogo sus fotos y videos (con sus etiquetas). Devuelve los ids quitados."""
+        with self.conn.transaction():
+            ids = self.medios_en_carpeta(ruta) if con_sus_medios else []
+            self.delete_media(ids)
+            self._q("DELETE FROM carpeta_catalogada WHERE ruta = %s", (ruta,))
+        return ids
+
     def pedidos_abiertos(self) -> list[dict]:
         return self._q(
             "SELECT id, carpeta, pasos, rehacer, pedido_por, creado, empezado FROM catalogado_pedido"
