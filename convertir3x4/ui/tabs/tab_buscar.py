@@ -80,6 +80,7 @@ class SearchLineEdit(QLineEdit):
 class BuscarTab(QWidget):
     # Rutas elegidas en el catálogo para convertir (MainWindow las pasa a Convertir)
     enviarAConvertir = pyqtSignal(list)
+    enviarAPersona = pyqtSignal(list)       # fotos de referencia para el reconocimiento facial
     _raices_revisadas = pyqtSignal(dict)      # desde el hilo que pregunta por las raíces
 
     def __init__(self, parent=None, srv=None):
@@ -226,6 +227,12 @@ class BuscarTab(QWidget):
         self.lbl_seleccion = QLabel("")
         self.lbl_seleccion.setObjectName("muted")
         acciones.addWidget(self.lbl_seleccion, 1)
+        self.btn_persona = QPushButton("Agregar persona…")
+        icons.set_icon(self.btn_persona, "user-plus", 15, "text_2")
+        self.btn_persona.setToolTip("Usa las fotos seleccionadas para que el NAS reconozca a "
+                                    "una persona (nueva o de la lista de Catalogar)")
+        self.btn_persona.clicked.connect(self._mandar_a_persona)
+        acciones.addWidget(self.btn_persona)
         self.btn_convertir = QPushButton("Enviar a Convertir")
         self.btn_convertir.setObjectName("btn_primary")
         icons.set_icon(self.btn_convertir, "wand-sparkles", 15, "on_image")
@@ -642,6 +649,36 @@ class BuscarTab(QWidget):
         if paths:
             self.enviarAConvertir.emit(paths)
 
+    def _fotos_elegidas(self) -> tuple[list[str], int, int]:
+        """Fotos elegidas que se pueden leer, cuántos videos hay (no sirven como
+        referencia de un rostro) y cuántas fotos no están disponibles."""
+        fotos, videos, faltan = [], 0, 0
+        for it in self.grid.selectedItems():
+            p = it.data(PATH_ROLE)
+            if not p:
+                continue
+            if it.data(KIND_ROLE) != "image":
+                videos += 1
+            elif it.data(STATE_ROLE) in ("missing", "offline"):
+                faltan += 1
+            else:
+                fotos.append(p)
+        return fotos, videos, faltan
+
+    def _mandar_a_persona(self):
+        fotos, videos, faltan = self._fotos_elegidas()
+        avisos = []
+        if videos:
+            avisos.append("los videos no se usan para reconocer personas")
+        if faltan:
+            avisos.append("1 foto no está disponible" if faltan == 1 else
+                          f"{faltan} fotos no están disponibles")
+        if avisos:
+            texto = "; ".join(avisos)
+            self.lbl_seleccion.setText(texto[0].upper() + texto[1:] + " y no se enviaron.")
+        if fotos:
+            self.enviarAPersona.emit(fotos)
+
     def _menu_grilla(self, pos):
         from PyQt6.QtWidgets import QMenu
         if not self.grid.selectedItems():
@@ -649,15 +686,22 @@ class BuscarTab(QWidget):
         menu = QMenu(self)
         accion = menu.addAction("Enviar a Convertir")
         accion.setEnabled(self.btn_convertir.isEnabled())
-        if menu.exec(self.grid.viewport().mapToGlobal(pos)) is accion:
+        persona = menu.addAction("Agregar persona…")
+        persona.setEnabled(self.btn_persona.isEnabled())
+        elegida = menu.exec(self.grid.viewport().mapToGlobal(pos))
+        if elegida is accion:
             self._mandar_a_convertir()
+        elif elegida is persona:
+            self._mandar_a_persona()
 
     def _actualizar_seleccion(self):
         paths, faltan = self._elegidos_disponibles()
         n = len(self.grid.selectedItems())
         self.btn_convertir.setEnabled(bool(paths))
+        self.btn_persona.setEnabled(bool(self._fotos_elegidas()[0]))
         if not n:
-            self.lbl_seleccion.setText("Seleccione fotos o videos para enviarlos a Convertir o asignarles etiquetas.")
+            self.lbl_seleccion.setText("Seleccione fotos o videos para enviarlos a Convertir, asignarles etiquetas "
+                                       "o usarlos para reconocer a una persona.")
         else:
             txt = "1 seleccionado" if n == 1 else f"{n} seleccionados"
             if faltan:
