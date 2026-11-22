@@ -465,17 +465,20 @@ class Repo:
 
     def list_persons(self) -> list[dict]:
         """Cada persona con sus fotos de referencia según cómo las dejó el NAS:
-        {id, name, listas, pendientes, sin_cara: [nombres de archivo]}."""
+        {id, name, listas, pendientes, sin_cara: [nombres de archivo], sello}. `sello`
+        cambia si cambia algo de sus fotos (p. ej. el NAS terminó de revisarlas)."""
         rows = self._q(
             "SELECT p.id, p.name,"
             " COUNT(r.id) FILTER (WHERE r.estado = 'lista') AS listas,"
             " COUNT(r.id) FILTER (WHERE r.estado = 'pendiente') AS pendientes,"
             " COALESCE(array_agg(r.source_path ORDER BY r.id)"
-            "   FILTER (WHERE r.estado IN ('sin_cara', 'ilegible')), '{}') AS sin_cara "
+            "   FILTER (WHERE r.estado IN ('sin_cara', 'ilegible')), '{}') AS sin_cara,"
+            " md5(COALESCE(string_agg(r.id || ':' || r.estado || ':' || COALESCE(r.caras::text, '-'),"
+            "   ',' ORDER BY r.id), '')) AS sello "
             "FROM person p LEFT JOIN person_reference r ON r.person_id = p.id "
             "GROUP BY p.id ORDER BY p.name")
         return [{"id": r["id"], "name": r["name"], "listas": r["listas"],
-                 "pendientes": r["pendientes"],
+                 "pendientes": r["pendientes"], "sello": r["sello"],
                  "sin_cara": [os.path.basename((p or "").replace("\\", "/")) for p in r["sin_cara"]]}
                 for r in rows]
 
@@ -505,13 +508,56 @@ class Repo:
         return [(r["id"], bytes(r["foto"])) for r in self._q(
             "SELECT id, foto FROM person_reference WHERE estado = 'pendiente' ORDER BY id")]
 
-    def hay_referencias_pendientes(self) -> bool:
-        return self._q("SELECT EXISTS (SELECT 1 FROM person_reference "
-                       "WHERE estado = 'pendiente') AS hay").fetchone()["hay"]
+    def referencias_sin_revisar(self) -> list[tuple[int, bytes]]:
+        """Fotos ya procesadas antes de que el NAS anotara qué vio (esquema v6)."""
+        return [(r["id"], bytes(r["foto"])) for r in self._q(
+            "SELECT id, foto FROM person_reference "
+            "WHERE caras IS NULL AND foto IS NOT NULL AND estado <> 'pendiente' ORDER BY id")]
 
-    def guardar_referencia(self, ref_id: int, embedding: bytes | None, estado: str):
-        self._q("UPDATE person_reference SET embedding = %s, estado = %s WHERE id = %s",
-                (embedding, estado, ref_id))
+    def hay_referencias_pendientes(self) -> bool:
+        return self._q("SELECT EXISTS (SELECT 1 FROM person_reference WHERE estado = 'pendiente'"
+                       " OR (caras IS NULL AND foto IS NOT NULL)) AS hay").fetchone()["hay"]
+
+    def guardar_referencia(self, ref_id: int, embedding: bytes | None, estado: str,
+                           caras: int = 0, caja=None, confianza: float | None = None):
+        self._q("UPDATE person_reference SET embedding = %s, estado = %s, caras = %s, "
+                "cara_caja = %s, confianza = %s WHERE id = %s",
+                (embedding, estado, caras, list(caja) if caja else None, confianza, ref_id))
+
+    def guardar_revision(self, ref_id: int, caras: int, caja=None,
+                         confianza: float | None = None):
+        """Solo lo que vio el NAS, sin tocar la firma ni el estado: cambiarlos
+        haría repasar las caras de todo el archivo."""
+        self._q("UPDATE person_reference SET caras = %s, cara_caja = %s, confianza = %s "
+                "WHERE id = %s", (caras, list(caja) if caja else None, confianza, ref_id))
+
+    def detalle_persona(self, person_id: int) -> dict | None:
+        """Todo lo de una persona para el detalle de Catalogar: sus fotos de
+        referencia (con la foto, la firma y lo que vio el NAS) y cuántos medios
+        del catálogo tienen su nombre. None si ya no existe."""
+        p = self._q("SELECT id, name FROM person WHERE id = %s", (person_id,)).fetchone()
+        if p is None:
+            return None
+        refs = [{"id": r["id"], "archivo": os.path.basename((r["source_path"] or "").replace("\\", "/")),
+                 "ruta": r["source_path"] or "", "estado": r["estado"],
+                 "foto": bytes(r["foto"]) if r["foto"] is not None else None,
+                 "firma": bytes(r["embedding"]) if r["embedding"] is not None else None,
+                 "caras": r["caras"], "caja": tuple(r["cara_caja"]) if r["cara_caja"] else None,
+                 "confianza": r["confianza"]}
+                for r in self._q(
+                    "SELECT id, source_path, estado, foto, embedding, caras, cara_caja, confianza "
+                    "FROM person_reference WHERE person_id = %s ORDER BY id", (person_id,))]
+        n = self._q(
+            "SELECT COUNT(*) FILTER (WHERE mt.confirmed) AS confirmadas,"
+            " COUNT(*) FILTER (WHERE NOT mt.confirmed) AS sugeridas "
+            "FROM media_tag mt JOIN tag t ON t.id = mt.tag_id WHERE t.name = %s",
+            (self.normalize_tag(p["name"]),)).fetchone()
+        return {"id": p["id"], "name": p["name"], "referencias": refs,
+                "confirmadas": n["confirmadas"], "sugeridas": n["sugeridas"]}
+
+    def quitar_referencia(self, ref_id: int):
+        """Saca una foto de referencia. Las etiquetas que ya se pusieron quedan."""
+        self._q("DELETE FROM person_reference WHERE id = %s", (ref_id,))
 
     def person_reference_blobs(self) -> dict[str, list[bytes]]:
         out: dict[str, list[bytes]] = {}

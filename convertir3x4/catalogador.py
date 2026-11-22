@@ -167,12 +167,16 @@ class Detenido(Exception):
 
 
 def procesar_referencias(repo: Repo, cfg: ConfigCatalogador) -> int:
-    """Calcula la firma de las fotos de referencia que subió una PC. Devuelve
-    cuántas procesó. Es rápido (unas pocas fotos), así que no espera nada."""
+    """Calcula la firma de las fotos de referencia que subió una PC y anota qué
+    vio en cada una (cuántas caras, dónde, qué tan clara), para que Catalogar
+    muestre si sirve. También completa eso en las que se procesaron antes de que
+    existiera, sin cambiarles firma ni estado. Devuelve cuántas procesó. Es
+    rápido (unas pocas fotos), así que no espera nada."""
     if not cfg.ia:
         return 0
     pendientes = repo.referencias_pendientes()
-    if not pendientes:
+    sin_revisar = repo.referencias_sin_revisar()
+    if not pendientes and not sin_revisar:
         return 0
     import io
 
@@ -182,19 +186,31 @@ def procesar_referencias(repo: Repo, cfg: ConfigCatalogador) -> int:
     from .engine import faces as faces_mod
     ai_models.ensure(cfg.modelos)
     engine = faces_mod.FaceEngine(cfg.modelos)
+
+    def revisar(jpeg):
+        img = ImageOps.exif_transpose(Image.open(io.BytesIO(jpeg))).convert("RGB")
+        return engine.revisar_referencia(img)
+
     for ref_id, jpeg in pendientes:
         try:
-            img = ImageOps.exif_transpose(Image.open(io.BytesIO(jpeg))).convert("RGB")
-            v = engine.reference_feature(img)
+            rev = revisar(jpeg)
         except Exception:  # noqa: BLE001 — foto que no se puede abrir
             repo.guardar_referencia(ref_id, None, "ilegible")
             continue
-        if v is None:
+        if rev.firma is None:
             repo.guardar_referencia(ref_id, None, "sin_cara")
         else:
-            repo.guardar_referencia(ref_id, faces_mod.to_blob(v), "lista")
-    log.info("fotos de referencia procesadas: %d", len(pendientes))
-    return len(pendientes)
+            repo.guardar_referencia(ref_id, faces_mod.to_blob(rev.firma), "lista",
+                                    rev.caras, rev.caja, rev.confianza)
+    for ref_id, jpeg in sin_revisar:
+        try:
+            rev = revisar(jpeg)
+        except Exception:  # noqa: BLE001
+            rev = faces_mod.RevisionReferencia(None)
+        repo.guardar_revision(ref_id, rev.caras, rev.caja, rev.confianza)
+    log.info("fotos de referencia procesadas: %d (revisadas de antes: %d)",
+             len(pendientes), len(sin_revisar))
+    return len(pendientes) + len(sin_revisar)
 
 
 def _referencias_al_paso(repo: Repo, cfg: ConfigCatalogador) -> int:

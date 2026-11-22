@@ -108,6 +108,8 @@ convertir3x4/
                            Dev without NAS: CDLM_PANEL_URLS / CDLM_PANEL_TOKEN (see tests_discos.py)
     tabs/convert_workers.py  ThumbWorker / ConvertWorker / DownloadWorker (QThread, cancellable)
     widgets/advanced_dialog.py, widgets/help_panel.py (overlay help, first run + F1)
+    widgets/adaptable.py   Adaptable: two parts side by side if the width allows, else stacked (Grabadora history +
+                           detail, Catalogar people + detail; both decide by the scroll viewport width)
 ```
 
 **Media-manager layers (catalog on the NAS):**
@@ -133,6 +135,10 @@ convertir3x4/
                          buscar(): one paged query for Buscar (two-layer search, missing last, kind filter, total,
                          tags per item, no search_doc); Buscar loads 120 at a time as you scroll
     rutas.py             a_relativa / a_completa (UNC, drive letters, posix)
+    referencias.py       do a person's reference photos work? Judges each one (no face, several faces of similar
+                         size, small/unclear face, and cosine vs the person's other photos: an outlier may be someone
+                         else) + thumbnail with the chosen face boxed and the face crop. Data: Repo.detalle_persona;
+                         face count/box/score written by the NAS (schema v6, faces.revisar_referencia)
     cache_miniaturas.py  local copy of DB thumbnails as <id>-<sello>.jpg; Buscar reads from disk
     thumbs.py            PIL thumbnail -> JPEG bytes (no Qt → safe in worker threads). Videos use the first
                          non-black frame at 10/30/50 %; en_negro() flags black thumbs (quality 'en_negro', schema v5,
@@ -173,7 +179,8 @@ decision (pastors, guests) — do not add clustering of unknown faces or store t
 Validated on real photos with `spikes/spike_vision.py`.
 
 Tabs wired in `app.py`: **Buscar** (search catalog), **Catalogar** (MotorTab: since v0.7.0 the PCs do NOT catalog;
-it asks the NAS «Catalogar ahora» and shows catalogado_estado, polling every 3 s while visible; people list stays here:
+it asks the NAS «Catalogar ahora» and shows catalogado_estado, polling every 3 s while visible; people list stays here, with a
+Grabadora-like detail of the selected person (each reference photo, the face used, warnings, «Quitar esta foto»):
 since v0.7.2 the PC only uploads reduced reference photos (schema v4, person_reference.estado 'pendiente') and the NAS
 catalogador computes the face signatures — the PC never downloads or loads AI models, and the .spec excludes onnxruntime/cv2/tokenizers),
 **Convertir**. Connection rules: the UI thread NEVER touches the DB or the NAS (an offline NAS can block for

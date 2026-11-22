@@ -91,8 +91,10 @@ class TestPersons:
     def test_people_signature_changes_with_references(self, repo):
         assert repo.people_signature() == ""
         pid = repo.add_person("Juan Carlos  Bazán")
-        assert repo.list_persons() == [{"id": pid, "name": "Juan Carlos Bazán", "listas": 0,
-                                         "pendientes": 0, "sin_cara": []}]
+        (p,) = repo.list_persons()
+        assert p.pop("sello")
+        assert p == {"id": pid, "name": "Juan Carlos Bazán", "listas": 0,
+                     "pendientes": 0, "sin_cara": []}
         repo.add_person_reference(pid, "/r/1.jpg", faces_mod.to_blob(np.ones(128)))
         s1 = repo.people_signature()
         repo.add_person_reference(pid, "/r/2.jpg", faces_mod.to_blob(np.ones(128)))
@@ -199,6 +201,150 @@ class TestRunAI:
         assert st.analyzed == 1                # el corrupto ni se intenta
         assert st.missing_files == 1           # video sin miniatura: se reintenta después
         assert repo.tags_for(vid) == ["bautismo"]   # el video se analiza por su miniatura
+
+
+# --------------------------------------------------------------- ¿sirven las fotos?
+def _ref(i, estado="lista", firma=None, caras=1, caja=(500, 300, 200, 260), confianza=0.94,
+         foto=None):
+    return {"id": i, "archivo": f"{i}.jpg", "ruta": f"/r/{i}.jpg", "estado": estado,
+            "foto": foto, "firma": None if firma is None else faces_mod.to_blob(firma),
+            "caras": caras, "caja": caja, "confianza": confianza}
+
+
+def _dir(*componentes):
+    """Firma unitaria de 128 dims armada con pesos en las primeras dimensiones."""
+    v = np.zeros(128, np.float32)
+    v[:len(componentes)] = componentes
+    return v / np.linalg.norm(v)
+
+
+class TestRevisionDeReferencias:
+    def _rev(self, refs, **kw):
+        from convertir3x4.catalog import referencias
+        return referencias.revisar({"name": "Juan Carlos Bazán", "referencias": refs,
+                                    "confirmadas": 0, "sugeridas": 0, **kw})
+
+    def test_todas_parecidas_sirven(self):
+        refs = [_ref(1, firma=_dir(1, .2)), _ref(2, firma=_dir(1, .3)), _ref(3, firma=_dir(1, .1))]
+        rev = self._rev(refs)
+        assert [f.juicio.tono for f in rev.fotos] == ["ok"] * 3
+        assert rev.juicio.tono == "ok" and rev.hacer == ""
+        assert rev.listas == 3
+
+    def test_una_de_otra_persona(self):
+        refs = [_ref(1, firma=_dir(1, .2)), _ref(2, firma=_dir(1, .3)), _ref(3, firma=_dir(0, 1))]
+        rev = self._rev(refs)
+        assert [f.juicio.tono for f in rev.fotos] == ["ok", "ok", "error"]
+        assert "otra persona" in rev.fotos[2].juicio.detalle[0]
+        assert rev.fotos[2].coincide == (0, 2)
+        assert rev.juicio.tono == "error" and "quite la foto" in rev.hacer
+
+    def test_con_dos_que_no_se_parecen_no_se_sabe_cual(self):
+        rev = self._rev([_ref(1, firma=_dir(1, 0)), _ref(2, firma=_dir(0, 1))])
+        assert all(f.juicio.tono == "error" for f in rev.fotos)
+        assert "Agregue más fotos" in rev.fotos[0].juicio.detalle[0]
+
+    def test_dos_de_la_misma_persona_equivocada(self):
+        """Del mismo evento, con otro más cerca de la cámara: las dos se parecen
+        entre ellas, pero no a la mayoría."""
+        refs = [_ref(i, firma=_dir(1, i / 10)) for i in (1, 2, 3, 4)]
+        refs += [_ref(5, firma=_dir(0, 1, .1)), _ref(6, firma=_dir(0, 1, .2))]
+        rev = self._rev(refs)
+        assert [f.juicio.tono for f in rev.fotos] == ["ok"] * 4 + ["error"] * 2
+        assert rev.fotos[4].coincide == (1, 5)
+        assert rev.juicio.tono == "error"
+
+    def test_varias_caras_confirmadas_por_las_otras_fotos(self):
+        refs = [_ref(1, firma=_dir(1, .2), caras=2), _ref(2, firma=_dir(1, .3)),
+                _ref(3, firma=_dir(1, .1))]
+        rev = self._rev(refs)
+        assert rev.fotos[0].juicio.tono == "ok"
+        assert "coincide con las otras fotos" in rev.fotos[0].juicio.detalle[0]
+        assert rev.juicio.tono == "ok"
+        # con una sola foto no hay con qué comparar: hay que mirarla
+        rev = self._rev([_ref(1, firma=_dir(1), caras=2)])
+        assert rev.fotos[0].juicio.tono == "aviso"
+        assert "Verifique" in rev.fotos[0].juicio.detalle[0]
+
+    def test_chica_o_borrosa_avisan(self):
+        refs = [_ref(1, firma=_dir(1, .2)), _ref(2, firma=_dir(1, .3), caja=(0, 0, 50, 70)),
+                _ref(3, firma=_dir(1, .1), confianza=0.86)]
+        rev = self._rev(refs)
+        assert [f.juicio.tono for f in rev.fotos] == ["ok", "aviso", "aviso"]
+        assert "pequeño" in rev.fotos[1].juicio.detalle[0]
+        assert "claridad" in rev.fotos[2].juicio.detalle[0]
+        assert rev.juicio.tono == "aviso" and rev.juicio.titulo == "Revise 2 fotos"
+
+    def test_sin_revisar_por_el_nas_no_es_un_problema(self):
+        refs = [_ref(i, firma=_dir(1, i / 10), caras=None, caja=None, confianza=None)
+                for i in (1, 2, 3)]
+        rev = self._rev(refs)
+        assert all(f.juicio.tono == "ok" for f in rev.fotos)
+        assert "todavía no revisó" in rev.fotos[0].juicio.detalle[0]
+
+    def test_sin_cara_pendiente_y_pocas(self):
+        refs = [_ref(1, firma=_dir(1)), _ref(2, estado="sin_cara", caras=0, caja=None),
+                _ref(3, estado="pendiente", caras=None, caja=None)]
+        rev = self._rev(refs)
+        assert [f.juicio.tono for f in rev.fotos] == ["ok", "error", "activo"]
+        assert rev.juicio.tono == "aviso" and rev.juicio.titulo == "Conviene agregar más fotos"
+        assert "1 foto todavía en proceso" in " ".join(rev.juicio.detalle)
+
+    def test_nada_usable(self):
+        rev = self._rev([_ref(1, estado="sin_cara", caras=0, caja=None)])
+        assert rev.juicio.tono == "error" and "Todavía no se puede" in rev.juicio.titulo
+        assert self._rev([]).juicio.titulo == "Sin fotos de referencia"
+        rev = self._rev([_ref(1, estado="pendiente", caras=None, caja=None)])
+        assert rev.juicio.tono == "activo"
+
+    def test_imagenes_con_el_rostro_marcado(self):
+        import io
+        buf = io.BytesIO()
+        Image.new("RGB", (1600, 1067), "blue").save(buf, "JPEG")
+        rev = self._rev([_ref(1, firma=_dir(1), foto=buf.getvalue())])
+        mini = Image.open(io.BytesIO(rev.fotos[0].miniatura))
+        cara = Image.open(io.BytesIO(rev.fotos[0].cara))
+        assert max(mini.size) == 240 and cara.size == (192, 192)
+        # el recuadro amarillo está donde está el rostro (500, 300) * 240/1600
+        assert mini.getpixel((round(500 * 0.15), round(400 * 0.15)))[0] > 150   # el recuadro
+        assert mini.getpixel((20, 20))[0] < 50                                   # el fondo azul
+        sin = self._rev([_ref(1, firma=_dir(1), foto=b"roto")]).fotos[0]
+        assert sin.miniatura is None and sin.cara is None
+
+    def test_texto_del_catalogo(self):
+        from convertir3x4.catalog import referencias
+        assert "Todavía ninguna" in referencias.texto_catalogo(self._rev([]))
+        t = referencias.texto_catalogo(self._rev([], confirmadas=3, sugeridas=1))
+        assert t == ("4 fotos y videos del catálogo tienen su nombre: 3 confirmadas, "
+                     "1 sugerida para revisar en Buscar.")
+
+
+class TestDetallePersona:
+    def test_detalle_quitar_y_cuantas_tiene(self, repo, temp_dir):
+        pid = repo.add_person("Juan Carlos Bazán")
+        repo.subir_fotos_de_referencia("Juan Carlos Bazán", [("C:\\fotos\\a.jpg", b"x"),
+                                                             ("/fotos/b.jpg", b"y")], pid)
+        sello = repo.list_persons()[0]["sello"]
+        d = repo.detalle_persona(pid)
+        assert [r["archivo"] for r in d["referencias"]] == ["a.jpg", "b.jpg"]
+        assert d["referencias"][0]["foto"] == b"x" and d["referencias"][0]["caras"] is None
+        ref = d["referencias"][0]["id"]
+        repo.guardar_referencia(ref, faces_mod.to_blob(np.ones(128)), "lista", 1,
+                                (1, 2, 3, 4), 0.9)
+        assert repo.list_persons()[0]["sello"] != sello
+        assert repo.detalle_persona(pid)["referencias"][0]["caja"] == (1, 2, 3, 4)
+        m = _add(repo, os.path.join(temp_dir, "a.jpg"))
+        n = _add(repo, os.path.join(temp_dir, "b.jpg"))
+        repo.suggest_tag(m, "Juan Carlos Bazán", kind="persona")
+        repo.suggest_tag(n, "Juan Carlos Bazán", kind="persona")
+        repo.confirm_tag(n, "Juan Carlos Bazán")
+        d = repo.detalle_persona(pid)
+        assert (d["confirmadas"], d["sugeridas"]) == (1, 1)
+        repo.quitar_referencia(ref)
+        assert [r["archivo"] for r in repo.detalle_persona(pid)["referencias"]] == ["b.jpg"]
+        assert repo.tags_for(m) == ["juan carlos bazán"]       # las etiquetas quedan
+        repo.delete_person(pid)
+        assert repo.detalle_persona(pid) is None
 
 
 # --------------------------------------------------------------- modelos reales

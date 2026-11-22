@@ -437,12 +437,32 @@ ALTER TABLE media ADD CONSTRAINT media_quality_flag_check
 ALTER TABLE media ADD COLUMN miniatura_version smallint NOT NULL DEFAULT 1;
 """
 
+# Revisión de las fotos de referencia: el NAS anota qué vio en cada una (cuántas
+# caras parecidas, dónde está la elegida, qué tan clara) para que Catalogar
+# muestre si sirve. `caras` NULL = todavía sin revisar: el NAS completa las que
+# ya estaban listas sin cambiarles el estado (así no se repasa todo el archivo).
+_V6 = r"""
+ALTER TABLE person_reference
+    ADD COLUMN caras smallint,
+    ADD COLUMN cara_caja integer[],
+    ADD COLUMN confianza real;
+CREATE INDEX person_reference_sin_revisar ON person_reference (id)
+    WHERE caras IS NULL AND foto IS NOT NULL;
+
+DROP TRIGGER person_reference_aviso_cambio ON person_reference;
+CREATE TRIGGER person_reference_aviso_cambio AFTER UPDATE ON person_reference
+    FOR EACH ROW WHEN (OLD.estado IS DISTINCT FROM NEW.estado
+                       OR OLD.caras IS DISTINCT FROM NEW.caras)
+    EXECUTE FUNCTION avisar_cambio_catalogo();
+"""
+
 MIGRACIONES: list[tuple[int, str]] = [
     (1, _V1),
     (2, _V2),
     (3, _V3),
     (4, _V4),
     (5, _V5),
+    (6, _V6),
 ]
 CANAL_CAMBIOS = "catalogo"
 VERSION_ESQUEMA = MIGRACIONES[-1][0]
