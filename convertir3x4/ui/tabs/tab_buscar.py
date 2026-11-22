@@ -169,6 +169,8 @@ class BuscarTab(QWidget):
                              ("viejas", "Más antiguos primero")):
             self.cmb_orden.addItem(texto, clave)
         self.cmb_orden.currentIndexChanged.connect(lambda _: self._do_search())
+        self.txt_query.textChanged.connect(self._nombrar_orden)
+        self._nombrar_orden()
         row.addWidget(self.cmb_orden)
 
         self.chk_pending = QPushButton("Sugerencias de la IA")
@@ -419,6 +421,11 @@ class BuscarTab(QWidget):
             self._cargando.start(_CARGANDO_MS)
         self._srv.pedir(buscar, ok=lambda r: self._mostrar_busqueda(n, *r, conservar=conservar),
                         error=lambda _e: self._fin_carga() if n == self._busqueda else None)
+
+    def _nombrar_orden(self, *_):
+        """Sin texto buscado, «parecidos» no dice nada: el orden es por nombre."""
+        self.cmb_orden.setItemText(0, "Más parecidos primero" if self.txt_query.text().strip()
+                                   else "Por nombre")
 
     def _mostrar_cargando(self):
         self.barra_cargando.setVisible(True)

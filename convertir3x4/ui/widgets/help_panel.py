@@ -21,7 +21,11 @@ _MOD = "⌘" if sys.platform == "darwin" else "Ctrl"
 HELP = [
     ("Buscar", [
         ("Buscar", "Escriba parte del nombre, de la carpeta o una etiqueta. Con «Fotos» o "
-                   "«Videos» se muestra solo ese tipo."),
+                   "«Videos» se muestra solo ese tipo. El orden puede ser por fecha de la "
+                   "toma (si la foto o el video la tiene); la fecha aparece al dejar el "
+                   "puntero sobre cada uno."),
+        ("Vista previa de videos", "Deje el puntero sobre un video para ver cuadros de "
+                                   "todo el video, sin abrirlo."),
         ("Usar en ProPresenter", "Arrastre la foto o el video directamente a ProPresenter. "
                                  "ProPresenter usa el archivo original; no crea una copia."),
         ("Ver el original", "Con doble clic, el video se abre en el reproductor de la PC y "
@@ -35,7 +39,9 @@ HELP = [
                             "de cada foto: elija fotos en las que la persona aparezca sola o "
                             "en primer plano."),
         ("Etiquetas", "Seleccione uno o varios elementos (con Shift o " + _MOD + ") y "
-                      "escriba la etiqueta abajo. Si no existe, se crea."),
+                      "escriba la etiqueta abajo. Si no existe, se crea. Si hay otras fotos "
+                      "de la misma carpeta y del mismo día, se ofrece ponerles la misma "
+                      "etiqueta (por ejemplo, el nombre del evento)."),
         ("Sugerencias de la IA", "Las etiquetas violetas son sugerencias de la IA. Haga "
                                  "clic en la etiqueta para confirmarla o en la ✕ para "
                                  "descartarla: no volverá a sugerirse."),
