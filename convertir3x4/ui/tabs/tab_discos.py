@@ -17,7 +17,7 @@ from PyQt6.QtGui import QBrush, QColor, QFontDatabase
 from PyQt6.QtWidgets import (
     QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QFrame, QGridLayout, QHBoxLayout,
     QInputDialog, QLabel, QLineEdit, QListWidget, QMessageBox, QPlainTextEdit, QProgressBar,
-    QBoxLayout, QHeaderView, QPushButton, QScrollArea, QTreeWidget, QTreeWidgetItem,
+    QHeaderView, QPushButton, QScrollArea, QTreeWidget, QTreeWidgetItem,
     QVBoxLayout, QWidget,
 )
 
@@ -29,6 +29,7 @@ from ...nas.copias import (
 from ...workers import EngineWorker
 from .. import icons
 from ..style import T
+from ..widgets.adaptable import Adaptable as _Adaptable, vaciar as _vaciar
 from ..widgets.dialogos import confirmar
 
 _POLL_MS = 3000          # mientras se ve el módulo
@@ -47,57 +48,9 @@ _PAGINA_MAX_W = 1600        # la columna de contenido no se estira más que esto
 _TEXTO_MAX_W = 680          # texto corrido: renglones cómodos de leer
 _LADO_A_LADO_W = 1100       # historial y detalle lado a lado: nunca con menos que esto
 _DETALLE_MIN_W = 480        # …y solo si al detalle le quedan al menos estos px
-_HISTERESIS = 24            # margen para no saltar de un modo al otro en el límite
 _LISTA_FILAS = 8            # uno abajo del otro, la lista muestra unas 8 copias
 _DATOS_LADO_A_LADO_W = 900  # desde este ancho del panel, «Disco» y «Copia» van lado a lado
 _ARCHIVOS_VISIBLES = 12     # la lista de archivos crece hasta 12; con más, se desplaza
-
-
-class _Adaptable(QWidget):
-    """Dos partes lado a lado si el ancho alcanza; si no, una debajo de la otra.
-    Decide por el ancho propio (no el de la ventana), así sirve en cualquier lugar."""
-    cambio = pyqtSignal(bool)        # True: lado a lado
-
-    def __init__(self, umbral: int, espacio: int = 16, espacio_vertical: int | None = None,
-                 por_su_ancho: bool = True, parent=None):
-        super().__init__(parent)
-        self.umbral = umbral
-        self.por_su_ancho = por_su_ancho
-        self.espacio = (espacio, espacio if espacio_vertical is None else espacio_vertical)
-        self.lado_a_lado = True
-        self.lay = QBoxLayout(QBoxLayout.Direction.LeftToRight, self)
-        self.lay.setContentsMargins(0, 0, 0, 0)
-        self.lay.setSpacing(espacio)
-
-    def agregar(self, w: QWidget, estirar: int = 0):
-        self.lay.addWidget(w, estirar)
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        if self.por_su_ancho:
-            self.ajustar(event.size().width())
-
-    def ajustar(self, ancho: int):
-        """Elige el modo para `ancho`. Con margen: si está lado a lado, recién pasa
-        a apilado por debajo del umbral; para volver, tiene que sobrar _HISTERESIS."""
-        lado = ancho >= self.umbral + (0 if self.lado_a_lado else _HISTERESIS)
-        if lado != self.lado_a_lado:
-            self.lado_a_lado = lado
-            self.lay.setDirection(QBoxLayout.Direction.LeftToRight if lado
-                                  else QBoxLayout.Direction.TopToBottom)
-            self.lay.setSpacing(self.espacio[0] if lado else self.espacio[1])
-            self.cambio.emit(lado)
-
-
-def _vaciar(grid):
-    """Saca todo de una grilla ya mismo: si solo se borra «después», lo viejo se
-    sigue dibujando encima de lo nuevo un instante."""
-    while grid.count():
-        w = grid.takeAt(0).widget()
-        if w is not None:
-            w.hide()
-            w.setParent(None)
-            w.deleteLater()
 
 
 def _cliente_desde(settings: QSettings) -> PanelClient:

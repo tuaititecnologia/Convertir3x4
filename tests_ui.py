@@ -15,7 +15,7 @@ import pytest
 from PyQt6.QtCore import QPoint, QSize, Qt
 from PyQt6.QtGui import QColor, QIcon, QImage, QPainter, QPixmap
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication, QListWidgetItem, QStyleOptionViewItem
+from PyQt6.QtWidgets import QApplication, QLabel, QListWidgetItem, QPushButton, QStyleOptionViewItem
 
 from convertir3x4.ui.style import ASSETS_DIR, DARK, DARK_STYLE, LIGHT, T, apply_theme
 
@@ -947,8 +947,11 @@ class TestCatalogarEnElNas:
                 def __init__(self, *a):
                     pass
 
-                def reference_feature(self, img):
-                    return np.ones(128, np.float32) if img.getpixel((0, 0))[2] > 200 else None
+                def revisar_referencia(self, img):
+                    if img.getpixel((0, 0))[2] > 200:
+                        return faces.RevisionReferencia(np.ones(128, np.float32), 1,
+                                                        (100, 100, 400, 400), 0.95)
+                    return faces.RevisionReferencia(None)
             monkeypatch.setattr(ai_models, "ensure", lambda *a, **k: None)
             monkeypatch.setattr(faces, "FaceEngine", Caras)
             with abrir() as r:
@@ -958,6 +961,26 @@ class TestCatalogarEnElNas:
             assert _esperar(app, lambda: tab.lst_people.item(0).text()
                             == "Juan Carlos Bazán — 1 foto · 1 sin rostro visible")
             assert "pastor2.jpg" in tab.lst_people.item(0).toolTip()
+
+            # El detalle de la persona: cada foto con lo que vio el NAS
+            assert not tab.panel_persona.isVisibleTo(tab)
+            tab.lst_people.item(0).setSelected(True)
+            assert tab.panel_persona.isVisibleTo(tab)
+            assert _esperar(app, lambda: tab.lista_fotos.count() == 2)
+            assert tab.lbl_persona_estado.text() == "Conviene agregar más fotos"
+            textos = [lbl.text() for lbl in tab.panel_persona.findChildren(QLabel)]
+            assert "Sirve" in textos and "No se encontró un rostro" in textos
+            assert "Todavía ninguna foto del catálogo" in tab.lbl_persona_catalogo.text()
+            fila = tab.lista_fotos.itemAt(0).widget()
+            assert any(not lbl.pixmap().isNull() for lbl in fila.findChildren(QLabel))
+            # Quitar la foto sin rostro (confirmando)
+            monkeypatch.setattr(tab_motor, "confirmar", lambda *a, **k: True)
+            quitar = [b for b in tab.lista_fotos.itemAt(1).widget().findChildren(QPushButton)
+                      if b.text() == "Quitar esta foto"]
+            quitar[0].click()
+            assert _esperar(app, lambda: tab.lista_fotos.count() == 1)
+            assert tab.lst_people.item(0).text() == "Juan Carlos Bazán — 1 foto"
+            assert tab.lst_people.item(0).isSelected() and tab.panel_persona.isVisibleTo(tab)
         finally:
             tab.deleteLater()
             srv.cerrar()

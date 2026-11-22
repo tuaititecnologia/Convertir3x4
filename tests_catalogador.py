@@ -221,6 +221,13 @@ class _CarasFalsas:
         r, g, b = img.getpixel((0, 0))
         return np.ones(128, dtype=np.float32) if b > 200 else None
 
+    def revisar_referencia(self, img):
+        from convertir3x4.engine.faces import RevisionReferencia
+        v = self.reference_feature(img)
+        if v is None:
+            return RevisionReferencia(None)
+        return RevisionReferencia(v, 2, (100, 120, 300, 400), 0.93)
+
 
 def _jpeg(color, lado=2400):
     import io
@@ -304,3 +311,36 @@ class TestFotosDePersonas:
         self._subir(repo_nas, tmp_path)
         cat.ciclo(repo_nas, dataclasses.replace(cfg, ia=False), ahora=D(2026, 11, 22, 15, 0))
         assert len(repo_nas.referencias_pendientes()) == 3
+
+    def test_anota_lo_que_vio_en_cada_foto(self, repo_nas, cfg_ia, tmp_path):
+        pid = self._subir(repo_nas, tmp_path)
+        cat.procesar_referencias(repo_nas, cfg_ia)
+        refs = {r["archivo"]: r for r in repo_nas.detalle_persona(pid)["referencias"]}
+        assert refs["con_cara.jpg"]["estado"] == "lista"
+        assert refs["con_cara.jpg"]["caras"] == 2
+        assert refs["con_cara.jpg"]["caja"] == (100, 120, 300, 400)
+        assert refs["con_cara.jpg"]["confianza"] == pytest.approx(0.93)
+        assert refs["de_espaldas.jpg"]["caras"] == 0 and refs["de_espaldas.jpg"]["caja"] is None
+        assert refs["rota.jpg"]["estado"] == "ilegible"
+
+    def test_completa_las_de_antes_sin_repasar_el_archivo(self, repo_nas, cfg_ia, tmp_path):
+        """Fotos procesadas con la versión anterior (sin `caras`): el NAS las revisa
+        sin tocar la firma ni el estado, así la firma de la lista no cambia y no se
+        repasan las caras de todo el catálogo."""
+        pid = self._subir(repo_nas, tmp_path)
+        cat.procesar_referencias(repo_nas, cfg_ia)
+        repo_nas.conn.execute("UPDATE person_reference SET caras = NULL, cara_caja = NULL, "
+                              "confianza = NULL")
+        antes = repo_nas.people_signature()
+        blobs = repo_nas.person_reference_blobs()
+        assert repo_nas.hay_referencias_pendientes()
+        assert len(repo_nas.referencias_sin_revisar()) == 3       # las tres tienen su foto
+        assert cat.procesar_referencias(repo_nas, cfg_ia) == 3
+        assert repo_nas.people_signature() == antes
+        assert repo_nas.person_reference_blobs() == blobs
+        refs = {r["archivo"]: r for r in repo_nas.detalle_persona(pid)["referencias"]}
+        assert refs["con_cara.jpg"]["caras"] == 2 and refs["con_cara.jpg"]["estado"] == "lista"
+        assert refs["de_espaldas.jpg"]["estado"] == "sin_cara"
+        assert refs["rota.jpg"]["estado"] == "ilegible" and refs["rota.jpg"]["caras"] == 0
+        assert not repo_nas.hay_referencias_pendientes()
+        assert repo_nas.referencias_sin_revisar() == []
