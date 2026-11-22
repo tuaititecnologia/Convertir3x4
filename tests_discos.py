@@ -667,3 +667,27 @@ def test_ventana_angosta_detalle_debajo_y_la_pagina_se_desplaza():
     assert not t.lado_detalle.isVisibleTo(t)
     t.close()
     t.deleteLater()
+
+
+def test_achicar_y_agrandar_la_ventana_con_nombres_largos():
+    # Con nombres reales la lista es ancha: el modo lo decide el ancho de la ventana
+    # (antes decidía el del historial, que no bajaba de su mínimo y nunca cambiaba)
+    # y al volver a agrandar no queda una barra horizontal.
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PyQt6.QtWidgets import QApplication
+    from PyQt6.QtTest import QTest
+    app = QApplication.instance() or QApplication([])
+    t = _grabadora_con_historial(app, 1500, 900)
+    t._llenar_historial([{"uuid": f"U{i}", "modelo": "KINGSTON SA400S37960G",
+                          "fase": "FORMATEADO", "destino": "/mnt/tank/multimedia/Historial/Reuniones",
+                          "actualizado": "2026-11-21 20:38"} for i in range(10)])
+    cambios = []
+    t.historial.cambio.connect(cambios.append)
+    for ancho, lado in ((1500, True), (1000, False), (1500, True), (1000, False)):
+        t.resize(ancho, 900)
+        QTest.qWait(150)
+        assert t.historial.lado_a_lado is lado, ancho
+        assert t.scroll.horizontalScrollBar().maximum() == 0, ancho
+    assert cambios == [False, True, False]          # un cambio por vez, sin ir y venir
+    t.close()
+    t.deleteLater()

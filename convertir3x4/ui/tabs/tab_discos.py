@@ -45,7 +45,9 @@ _COPIA_ROLE = Qt.ItemDataRole.UserRole + 1      # el estado completo de la copia
 # Medidas de la página (px). Ver _build_ui.
 _PAGINA_MAX_W = 1600        # la columna de contenido no se estira más que esto
 _TEXTO_MAX_W = 680          # texto corrido: renglones cómodos de leer
-_LADO_A_LADO_W = 1100       # desde este ancho, historial y detalle van lado a lado
+_LADO_A_LADO_W = 1100       # historial y detalle lado a lado: nunca con menos que esto
+_DETALLE_MIN_W = 480        # …y solo si al detalle le quedan al menos estos px
+_HISTERESIS = 24            # margen para no saltar de un modo al otro en el límite
 _LISTA_FILAS = 8            # uno abajo del otro, la lista muestra unas 8 copias
 _DATOS_LADO_A_LADO_W = 900  # desde este ancho del panel, «Disco» y «Copia» van lado a lado
 _ARCHIVOS_VISIBLES = 12     # la lista de archivos crece hasta 12; con más, se desplaza
@@ -57,9 +59,10 @@ class _Adaptable(QWidget):
     cambio = pyqtSignal(bool)        # True: lado a lado
 
     def __init__(self, umbral: int, espacio: int = 16, espacio_vertical: int | None = None,
-                 parent=None):
+                 por_su_ancho: bool = True, parent=None):
         super().__init__(parent)
         self.umbral = umbral
+        self.por_su_ancho = por_su_ancho
         self.espacio = (espacio, espacio if espacio_vertical is None else espacio_vertical)
         self.lado_a_lado = True
         self.lay = QBoxLayout(QBoxLayout.Direction.LeftToRight, self)
@@ -71,7 +74,13 @@ class _Adaptable(QWidget):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        lado = event.size().width() >= self.umbral
+        if self.por_su_ancho:
+            self.ajustar(event.size().width())
+
+    def ajustar(self, ancho: int):
+        """Elige el modo para `ancho`. Con margen: si está lado a lado, recién pasa
+        a apilado por debajo del umbral; para volver, tiene que sobrar _HISTERESIS."""
+        lado = ancho >= self.umbral + (0 if self.lado_a_lado else _HISTERESIS)
         if lado != self.lado_a_lado:
             self.lado_a_lado = lado
             self.lay.setDirection(QBoxLayout.Direction.LeftToRight if lado
@@ -219,7 +228,9 @@ class DiscosTab(QWidget):
         # Lista y detalle: lado a lado si hay ancho; si no, la lista (con alto
         # para unas 8 copias) y el detalle debajo. La página se desplaza entera:
         # ninguno de los dos se aplasta.
-        self.historial = _Adaptable(_LADO_A_LADO_W, espacio=16)
+        # Lo decide el ancho disponible en la ventana (no el del historial, que no
+        # baja de su mínimo y así nunca cambiaba de modo): ver _decidir_historial.
+        self.historial = _Adaptable(_LADO_A_LADO_W, espacio=16, por_su_ancho=False)
         self.historial.cambio.connect(self._acomodar_historial)
         self.historial.agregar(self.tree)
         self.lado_detalle = QWidget()
@@ -239,6 +250,7 @@ class DiscosTab(QWidget):
         blay.addWidget(self.historial, 1)
         blay.addStretch(0)       # uno abajo del otro: lo que sobra va al final, no arriba
         self._blay = blay
+        self.scroll.viewport().installEventFilter(self)
         self._acomodar_historial(self.historial.lado_a_lado)
 
         self.lbl_sin_discos.setVisible(False)   # no se sabe hasta que el NAS responde
@@ -337,10 +349,21 @@ class DiscosTab(QWidget):
         return panel
 
     def eventFilter(self, obj, event):
-        if obj is getattr(self, "panel_copia", None) and event.type() == QEvent.Type.Resize \
-                and event.size().width() != event.oldSize().width():
-            QTimer.singleShot(0, self._fijar_alto_panel)
+        if event.type() == QEvent.Type.Resize and event.size().width() != event.oldSize().width():
+            if obj is getattr(self, "panel_copia", None):
+                QTimer.singleShot(0, self._fijar_alto_panel)
+            elif obj is self.scroll.viewport():
+                self._decidir_historial()
         return super().eventFilter(obj, event)
+
+    def _decidir_historial(self):
+        """Lado a lado solo si entran la lista entera y un detalle cómodo."""
+        margenes = self.scroll.widget().layout().contentsMargins()
+        disponible = min(self.scroll.viewport().width() - margenes.left() - margenes.right(),
+                         _PAGINA_MAX_W)
+        self.historial.umbral = max(_LADO_A_LADO_W,
+                                    self._ancho_lista() + 16 + _DETALLE_MIN_W)
+        self.historial.ajustar(disponible)
 
     def _fijar_alto_panel(self):
         """El alto que necesita el detalle para su ancho actual, como mínimo. Qt lo
@@ -388,10 +411,12 @@ class DiscosTab(QWidget):
         self._acomodar_lado_detalle()
 
     def _ancho_lista(self) -> int:
-        """Lo que miden las columnas del historial, para que no se corten."""
+        """Lo que miden las columnas del historial por su contenido (no como hayan
+        quedado estiradas al estar apiladas), para que no se corten."""
         cab = self.tree.header()
-        return sum(cab.sectionSize(i) for i in range(cab.count())) + \
-            self.tree.verticalScrollBar().sizeHint().width() + 8
+        natural = sum(max(self.tree.sizeHintForColumn(i), cab.sectionSizeHint(i))
+                      for i in range(cab.count()))
+        return natural + self.tree.verticalScrollBar().sizeHint().width() + 12
 
     def _acomodar_lado_detalle(self):
         # isHidden(): lo que se decidió para el panel, aunque su contenedor esté oculto
@@ -597,6 +622,7 @@ class DiscosTab(QWidget):
             for i in range(4):
                 self.tree.resizeColumnToContents(i)
         self.tree.blockSignals(False)
+        self._decidir_historial()           # la lista pudo cambiar de ancho
         self._acomodar_historial(self.historial.lado_a_lado)
 
     def _sin_conexion(self, msg):
