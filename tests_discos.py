@@ -522,6 +522,9 @@ def test_historial_muestra_la_copia_completa_al_elegirla():
     assert "Qué hacer:" in t.lbl_copia_hacer.text()
     datos = [t.grid_copia.itemAt(i).widget().text() for i in range(t.grid_copia.count())]
     assert datos[:4] == ["Disco", "ADATA SU630", "Carpeta en el NAS", "Reuniones"]
+    # en dos columnas: la mitad de renglones
+    filas = {t.grid_copia.getItemPosition(i)[0] for i in range(t.grid_copia.count())}
+    assert len(filas) == (len(datos) // 2 + 1) // 2
     assert "0 de 20 copiados" in datos
     assert not any("/dev/" in d or "/mnt/" in d for d in datos)
     # una copia sin problemas: su estado, sin «Qué hacer»
@@ -595,4 +598,27 @@ def test_detalle_muestra_los_archivos_copiados():
     assert datos[-4:] == ["Empezó", "15/11/2026 11:00", "Terminó", "15/11/2026 11:37"]
     t._mostrar_copiados(None)
     assert "actualizar el servicio de la Grabadora" in t.lbl_copiados_estado.text()
+    t.deleteLater()
+
+
+def test_el_detalle_no_aplasta_el_historial():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PyQt6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    from convertir3x4.ui.tabs.tab_discos import DiscosTab, _HISTORIAL_MIN_H
+    t = DiscosTab()
+    t._timer.stop()
+    t.resize(1200, 800)
+    t.show()
+    t._llenar_historial([{"uuid": f"U{i}", "modelo": f"Disco {i}", "fase": "FORMATEADO"}
+                         for i in range(8)])
+    t._log_uuid = "U0"
+    t._mostrar_copia({"uuid": "U0", "fase": "FORMATEADO", "modelo": "MSI"}, traer=False)
+    t._mostrar_copiados({"total": 40, "copiados": [
+        {"origen": f"HyperDeck_{i:04}.mp4", "bytes": 1, "destino": "x", "fecha": "2026-11-01"}
+        for i in range(40)], "errores": []})
+    app.processEvents()
+    assert t.tree.height() >= _HISTORIAL_MIN_H
+    assert t.split_historial.sizes()[1] > 0
+    t.close()
     t.deleteLater()

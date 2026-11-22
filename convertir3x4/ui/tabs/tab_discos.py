@@ -17,7 +17,7 @@ from PyQt6.QtGui import QBrush, QColor, QFontDatabase
 from PyQt6.QtWidgets import (
     QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QFrame, QGridLayout, QHBoxLayout,
     QInputDialog, QLabel, QLineEdit, QListWidget, QMessageBox, QPlainTextEdit, QProgressBar,
-    QPushButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QPushButton, QSplitter, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from ...nas.copias import (
@@ -42,6 +42,7 @@ def _tono(tono: str) -> str:
     return getattr(T, _TONOS.get(tono, "text_3"))
 _UUID_ROLE = Qt.ItemDataRole.UserRole
 _COPIA_ROLE = Qt.ItemDataRole.UserRole + 1      # el estado completo de la copia (dict)
+_HISTORIAL_MIN_H = 170   # px: unas 5 copias del historial siempre a la vista
 
 
 def _cliente_desde(settings: QSettings) -> PanelClient:
@@ -156,7 +157,12 @@ class DiscosTab(QWidget):
         for col, ancho in enumerate((170, 170, 290)):
             self.tree.setColumnWidth(col, ancho)
         self.tree.itemSelectionChanged.connect(self._on_historial_sel)
-        blay.addWidget(self.tree, 2)
+        # Historial arriba y detalle abajo, con un divisor que se puede mover: el
+        # detalle no le quita al historial más de lo que el operador quiera.
+        self.split_historial = QSplitter(Qt.Orientation.Vertical)
+        self.split_historial.setChildrenCollapsible(False)
+        self.tree.setMinimumHeight(_HISTORIAL_MIN_H)
+        self.split_historial.addWidget(self.tree)
 
         # La copia elegida, completa: estado, qué pasó y qué hacer, y sus datos
         self.panel_copia = QFrame()
@@ -178,6 +184,8 @@ class DiscosTab(QWidget):
         self.grid_copia.setHorizontalSpacing(16)
         self.grid_copia.setVerticalSpacing(4)
         self.grid_copia.setColumnStretch(1, 1)
+        self.grid_copia.setColumnStretch(3, 1)
+        self.grid_copia.setColumnMinimumWidth(2, 0)
         pc.addLayout(self.grid_copia)
         pc.addSpacing(6)
         self.lbl_copiados = QLabel("Archivos copiados")
@@ -195,7 +203,8 @@ class DiscosTab(QWidget):
         self.lista_copiados.setVisible(False)
         pc.addWidget(self.lista_copiados)
         self.panel_copia.setVisible(False)
-        blay.addWidget(self.panel_copia)
+        self.split_historial.addWidget(self.panel_copia)
+        blay.addWidget(self.split_historial, 3)
 
         # El registro del NAS es técnico: le sirve a quien administra el NAS, no al
         # operador. Queda escondido detrás de un botón.
@@ -447,24 +456,18 @@ class DiscosTab(QWidget):
         self.lbl_copia_que.setVisible(bool(que))
         self.lbl_copia_hacer.setText(f"<b>Qué hacer:</b> {html.escape(hacer)}" if hacer else "")
         self.lbl_copia_hacer.setVisible(bool(hacer))
-        while self.grid_copia.count():
-            w = self.grid_copia.takeAt(0).widget()
-            if w is not None:
-                w.deleteLater()
         filas = ficha(c)
         if c.get("destino"):      # después del disco: dónde quedó
             filas.insert(1 if filas and filas[0][0] == "Disco" else 0,
                          ("Carpeta en el NAS", self._carpeta(c["destino"])))
-        for i, (dato, valor) in enumerate(filas):
-            k = QLabel(dato)
-            k.setObjectName("muted")
-            v = QLabel(valor)
-            v.setWordWrap(True)
-            v.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            self.grid_copia.addWidget(k, i, 0, Qt.AlignmentFlag.AlignTop)
-            self.grid_copia.addWidget(v, i, 1)
-        self._filas_grid = len(filas)     # la grilla no achica rowCount al vaciarse
-        self.panel_copia.setVisible(True)
+        self._filas_copia = filas
+        self._pintar_datos(filas)
+        if not self.panel_copia.isVisible():
+            self.panel_copia.setVisible(True)
+            # Al abrirse: 40 % para el historial (como mínimo 5 filas), el resto al detalle
+            alto = max(self.split_historial.height(), 2 * _HISTORIAL_MIN_H)
+            arriba = max(_HISTORIAL_MIN_H, int(alto * 0.4))
+            self.split_historial.setSizes([arriba, alto - arriba])
         guardados = getattr(self, "_copiados", None)
         if traer or not guardados or guardados[0] != c.get("uuid"):
             self._pedir_copiados(c.get("uuid"))
@@ -524,13 +527,27 @@ class DiscosTab(QWidget):
         """Cuándo empezó y terminó la copia, al final de sus datos."""
         if not datos:
             return
-        for dato, valor in (("Empezó", datos.get("inicio")), ("Terminó", datos.get("fin"))):
-            if valor:
-                k = QLabel(dato)
-                k.setObjectName("muted")
-                self.grid_copia.addWidget(k, self._filas_grid, 0)
-                self.grid_copia.addWidget(QLabel(fecha(valor)), self._filas_grid, 1)
-                self._filas_grid += 1
+        extra = [(dato, fecha(valor)) for dato, valor in
+                 (("Empezó", datos.get("inicio")), ("Terminó", datos.get("fin"))) if valor]
+        self._pintar_datos(getattr(self, "_filas_copia", []) + extra)
+
+    def _pintar_datos(self, filas: list[tuple[str, str]]):
+        """Los datos de la copia en dos columnas (dato, valor · dato, valor), de arriba
+        abajo: ocupan la mitad de alto y queda lugar para la lista de archivos."""
+        while self.grid_copia.count():
+            w = self.grid_copia.takeAt(0).widget()
+            if w is not None:
+                w.deleteLater()
+        alto = (len(filas) + 1) // 2
+        for i, (dato, valor) in enumerate(filas):
+            fila, col = i % alto, 2 * (i // alto)
+            k = QLabel(dato)
+            k.setObjectName("muted")
+            v = QLabel(valor)
+            v.setWordWrap(True)
+            v.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            self.grid_copia.addWidget(k, fila, col, Qt.AlignmentFlag.AlignTop)
+            self.grid_copia.addWidget(v, fila, col + 1)
 
     def _set_log(self, texto):
         bar = self.txt_log.verticalScrollBar()
