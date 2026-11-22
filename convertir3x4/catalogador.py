@@ -25,6 +25,7 @@ import logging
 import os
 import signal
 import socket
+import sys
 import threading
 import time
 import dataclasses
@@ -450,6 +451,13 @@ def servir(cfg: ConfigCatalogador, parar: threading.Event | None = None):
 
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    if sys.platform == "darwin" and os.environ.get("CDLM_CATALOGADOR_EN_MAC") != "1":
+        # macOS entrega por SMB los nombres con tilde descompuestos (NFD): «MAÑANA»
+        # no coincide con lo que anotó el NAS (NFC), lo toma por movido y reescribe
+        # la ruta. Probado el 22/11/2026 contra una copia: 82 rutas cambiadas.
+        raise SystemExit("El catalogador corre en el NAS. En una Mac cambiaría las rutas "
+                         "con tilde del catálogo (CDLM_CATALOGADOR_EN_MAC=1 para una "
+                         "base de prueba).")
     cfg = ConfigCatalogador.desde_entorno()
     parar = threading.Event()
 

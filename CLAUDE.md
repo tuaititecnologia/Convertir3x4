@@ -21,7 +21,7 @@ python -m venv venv && source venv/bin/activate && pip install -r requirements.t
 ./venv/bin/python Convertir3x4.py      # shim entry point (also: python -m convertir3x4)
 
 # Tests — pass both files explicitly (pytest's default discovery skips the tests.py name)
-./venv/bin/python -m pytest tests.py tests_catalog.py tests_ai.py tests_clips.py tests_ui.py tests_convertir.py tests_discos.py tests_catalogador.py -v
+./venv/bin/python -m pytest tests.py tests_catalog.py tests_ai.py tests_clips.py tests_ui.py tests_convertir.py tests_discos.py tests_catalogador.py tests_v08.py -v
 # tests_discos.py also runs the real panel-copias.py (fake lsblk/systemctl) when ~/Documents/Agents/CDLM-Freenas is present
 # tests_ai.py also runs real-model tests when CDLM_MODELS points to a folder with the downloaded models
 # Catalog tests (tests_catalog/tests_ai/tests_ui) need the dev PostgreSQL; fixtures in conftest.py create a
@@ -32,7 +32,7 @@ docker run -d --name cdlm-catalogo-dev --restart unless-stopped -p 127.0.0.1:554
 
 # Run against the dev catalog (instead of a catalogo.ini next to the .exe):
 CDLM_CATALOGO_SERVIDOR=127.0.0.1 CDLM_CATALOGO_PUERTO=55432 CDLM_CATALOGO_CLAVE=catalogo-dev \
-  CDLM_CATALOGO_RAIZ=/Volumes/multimedia CDLM_CATALOGO_CARPETAS="Entrada;Publicar" ./venv/bin/python Convertir3x4.py
+  CDLM_CATALOGO_RAIZ=/Volumes/multimedia ./venv/bin/python Convertir3x4.py   # folders: Catalogar ⚙
 
 # Build executable (venv/bin/pip has a stale shebang: use python -m)
 ./venv/bin/python -m PyInstaller Convertir3x4.spec
@@ -123,6 +123,10 @@ convertir3x4/
                          Dockerfile.catalogador): nightly pass + requests from the PCs via catalogado_pedido/
                          catalogado_estado (+ NOTIFY), heartbeat thread, waits while a recorder disk is copied.
                          Config from env (CDLM_CATALOGO_*, CDLM_MODELOS, CDLM_HORA…). See docs/catalogado-en-el-nas.md
+                         The folder list is in the DB (carpeta_catalogada, managed from Catalogar's ⚙), not env.
+                         Pedidos carry pasos (archivos/miniaturas/escenas/personas) + rehacer; the AI honors the folder.
+                         NEVER run it on a Mac against real data: macOS SMB returns accented names as NFD, they
+                         don't match the NAS's NFC paths and get "moved" (main() refuses on darwin)
   workers.py             EngineWorker(QThread): runs fn(progress_cb) off the UI thread; `fallo` carries the exception
   catalog/               the truth — PostgreSQL (Qt-free):
     db.py                ConfigCatalogo (servidor, clave, raiz, carpetas), conectar() (autocommit, 3 s timeout,
