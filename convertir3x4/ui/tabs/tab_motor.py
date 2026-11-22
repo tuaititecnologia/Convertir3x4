@@ -37,6 +37,7 @@ _IMAGE_FILTER = "Imágenes (*.jpg *.jpeg *.png *.webp *.bmp)"
 _CONTENT_MAX_W = 760
 _SECTION_GAP = 22
 _POLL_MS = 3000
+_MUCHAS_REFERENCIAS = 10   # más que esto, se pregunta antes de enviar
 SIN_LATIDO = 60      # segundos: más que esto y el NAS no está catalogando
 _RESPONSABLE = "Comuníquese con el responsable de la aplicación."
 
@@ -246,7 +247,8 @@ class MotorTab(QWidget):
         layout.addWidget(self._text(
             "Solo se reconoce a las personas de esta lista (pastores, invitados y otras "
             "personas relevantes). Los demás rostros se ignoran y no se guardan. "
-            "Cargue de 3 a 5 fotos por persona en las que el rostro se vea con claridad."))
+            "Cargue de 3 a 5 fotos por persona en las que el rostro se vea con claridad. "
+            "También puede elegirlas en Buscar, con «Agregar persona»."))
         self.lst_people = QListWidget()
         self.lst_people.setObjectName("people_list")
         self.lst_people.setAccessibleName("Personas reconocibles")
@@ -504,7 +506,65 @@ class MotorTab(QWidget):
         if not paths:
             return
         self.settings.setValue("people_last_dir", os.path.dirname(paths[0]))
+        self.enviar_referencias(person_id, name, paths)
 
+    # ------------------------------------------------------------- desde Buscar
+    def recibir_fotos_de_persona(self, paths: list[str]):
+        """Fotos elegidas en Buscar: se pregunta de quién son (alguien de la lista
+        o una persona nueva) y se envían al NAS como fotos de referencia."""
+        if not paths:
+            return
+        if self._worker is not None and self._worker.isRunning():
+            self._set_people_status("Espere a que terminen de enviarse las fotos anteriores "
+                                    "y vuelva a intentarlo.")
+            return
+        if self._srv.estado == "error":
+            self._set_people_status("No hay conexión con el catálogo del NAS. Las fotos no "
+                                    "se enviaron.")
+            return
+        # La lista se lee de la base (fuera del hilo de la interfaz): puede que
+        # esta pestaña todavía no se haya mostrado nunca.
+        self._srv.pedir(lambda repo: repo.list_persons(),
+                        ok=lambda people: self._asignar_fotos(paths, people),
+                        error=lambda e: self._set_people_status(texto_para(e)))
+
+    def _asignar_fotos(self, paths: list[str], people: list[dict]):
+        nombre = self._elegir_persona([p["name"] for p in people], len(paths))
+        nombre = " ".join((nombre or "").split())
+        if not nombre:
+            return
+        if len(paths) > _MUCHAS_REFERENCIAS and not confirmar(
+                self, "Fotos de referencia", f"¿Enviar {len(paths)} fotos de {nombre}?",
+                "Con 3 a 5 fotos en las que el rostro se vea con claridad alcanza. Muchas "
+                "fotos no mejoran el reconocimiento.", "Enviar las fotos"):
+            return
+        # El mismo nombre escrito con otras mayúsculas es la misma persona.
+        existente = next((p for p in people if p["name"].casefold() == nombre.casefold()), None)
+        if existente:
+            self.enviar_referencias(existente["id"], existente["name"], paths)
+        else:
+            self.enviar_referencias(None, nombre, paths)
+
+    def _elegir_persona(self, nombres: list[str], n: int) -> str | None:
+        """Nombre elegido o escrito, o None si se canceló."""
+        dlg = QInputDialog(self)
+        dlg.setWindowTitle("Agregar persona")
+        dlg.setLabelText(
+            ("¿De quién es esta foto?" if n == 1 else f"¿De quién son estas {n} fotos?")
+            + "\nElija una persona de la lista o escriba el nombre de una persona nueva "
+              "(así aparece como etiqueta).\n\nSe usa el rostro más grande de cada foto: "
+              "elija fotos en las que la persona aparezca sola o en primer plano.")
+        dlg.setComboBoxItems(nombres)
+        dlg.setComboBoxEditable(True)
+        dlg.setTextValue("")
+        dlg.setOkButtonText("Enviar fotos")
+        dlg.setCancelButtonText("Cancelar")
+        if not dlg.exec():
+            return None
+        return dlg.textValue()
+
+    def enviar_referencias(self, person_id: int | None, name: str, paths: list[str]):
+        """Achica las fotos y las sube al NAS, que calcula las firmas."""
         def job(progress_cb):
             # Leer las fotos (pueden estar en el NAS) va fuera del hilo de la interfaz.
             fotos, ilegibles = [], []

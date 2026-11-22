@@ -850,6 +850,71 @@ class TestCatalogarEnElNas:
             tab.deleteLater()
             srv.cerrar()
 
+    def test_fotos_desde_buscar_van_a_la_persona(self, app, pg_cfg, tmp_path, monkeypatch):
+        from PIL import Image
+        from convertir3x4.catalog.db import conectar
+        from convertir3x4.catalog.repo import Repo
+        from convertir3x4.ui.servicio_catalogo import ServicioCatalogo
+        from convertir3x4.ui.tabs import tab_motor
+
+        abrir = lambda: Repo(conectar(pg_cfg), str(tmp_path))      # noqa: E731
+        with abrir() as r:
+            r.add_person("Juan Carlos Bazán")
+        fotos = []
+        for nombre in ("culto1.jpg", "culto2.jpg"):
+            fotos.append(str(tmp_path / nombre))
+            Image.new("RGB", (800, 600), "blue").save(fotos[-1])
+        ofrecidos = []
+
+        def elegir(_self, nombres, n):
+            ofrecidos.append((nombres, n))
+            return "  juan carlos   BAZÁN "              # otras mayúsculas: la misma persona
+        monkeypatch.setattr(tab_motor.MotorTab, "_elegir_persona", elegir)
+        monkeypatch.setattr(tab_motor, "abrir_repo", abrir)
+        srv = ServicioCatalogo(abrir=abrir)
+        tab = tab_motor.MotorTab(srv=srv)
+        try:
+            tab.recibir_fotos_de_persona(fotos)
+            assert _esperar(app, lambda: "se enviaron 2 fotos al NAS" in tab.lbl_people_status.text())
+            assert ofrecidos == [(["Juan Carlos Bazán"], 2)]
+            assert tab.lbl_people_status.text().startswith("Juan Carlos Bazán:")
+            with abrir() as r:
+                gente = r.list_persons()
+            assert [(p["name"], p["pendientes"]) for p in gente] == [("Juan Carlos Bazán", 2)]
+        finally:
+            tab.deleteLater()
+            srv.cerrar()
+
+    def test_fotos_desde_buscar_sin_nombre_no_envia(self, app, pg_cfg, tmp_path, monkeypatch):
+        from convertir3x4.catalog.db import conectar
+        from convertir3x4.catalog.repo import Repo
+        from convertir3x4.ui.servicio_catalogo import ServicioCatalogo
+        from convertir3x4.ui.tabs import tab_motor
+
+        abrir = lambda: Repo(conectar(pg_cfg), str(tmp_path))      # noqa: E731
+        llamado = []
+        monkeypatch.setattr(tab_motor.MotorTab, "_elegir_persona",
+                            lambda *a: llamado.append(1) or None)   # canceló
+        monkeypatch.setattr(tab_motor.MotorTab, "enviar_referencias",
+                            lambda *a: pytest.fail("envió sin nombre"))
+        srv = ServicioCatalogo(abrir=abrir)
+        tab = tab_motor.MotorTab(srv=srv)
+        try:
+            tab.recibir_fotos_de_persona([str(tmp_path / "x.jpg")])
+            assert _esperar(app, lambda: llamado == [1])
+        finally:
+            tab.deleteLater()
+            srv.cerrar()
+
+    def test_buscar_agregar_persona_abre_catalogar(self, app, window, monkeypatch):
+        recibidas = []
+        monkeypatch.setattr(window.motor_tab, "recibir_fotos_de_persona", recibidas.append)
+        window.show_module(0)
+        window.buscar_tab.enviarAPersona.emit(["/fotos/a.jpg"])
+        app.processEvents()
+        assert window.stack.currentWidget() is window.motor_tab
+        assert recibidas == [["/fotos/a.jpg"]]
+
     def test_personas_la_pc_sube_y_el_nas_procesa(self, app, pg_cfg, tmp_path, monkeypatch):
         import numpy as np
         from PIL import Image

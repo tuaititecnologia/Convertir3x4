@@ -792,3 +792,21 @@ class TestDeBuscarAConvertir:
         assert tab.list_widget.count() == 2
         assert tab.lbl_status.text() == "Se agregó 1 elemento desde Buscar. 1 ya estaba en la lista."
         assert tab.btn_convert.text() == "Crear 2 fotos"
+
+    def test_agregar_persona_manda_solo_las_fotos_disponibles(self, app, media, tmp_path):
+        t = self._buscar(app, media, tmp_path)
+        recibidos = []
+        t.enviarAPersona.connect(recibidos.append)
+        t.grid.item(1).setSelected(True)                # solo el video: no sirve
+        app.processEvents()
+        assert not t.btn_persona.isEnabled()
+        for i in range(3):
+            t.grid.item(i).setSelected(True)
+        app.processEvents()
+        assert t.btn_persona.isEnabled()
+        t.btn_persona.click()
+        assert recibidos == [[media["photo"]]]
+        assert t.lbl_seleccion.text() == ("Los videos no se usan para reconocer personas; "
+                                          "1 foto no está disponible y no se enviaron.")
+        t.close()
+        t.deleteLater()
