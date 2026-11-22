@@ -177,6 +177,27 @@ def _make_check_image() -> str:
     return path.replace("\\", "/")
 
 
+def _flecha_de_lista() -> str:
+    """Flecha de las listas desplegables, en el color del tema. Con hoja de
+    estilos, Qt deja de dibujar la suya y la lista parece un campo de texto."""
+    import tempfile
+    from PyQt6.QtCore import QByteArray, QRectF, Qt
+    from PyQt6.QtGui import QGuiApplication, QPainter, QPixmap
+    from PyQt6.QtSvg import QSvgRenderer
+    if QGuiApplication.instance() is None:
+        return ""
+    with open(os.path.join(ASSETS_DIR, "icons", "chevron-down.svg"), encoding="utf-8") as f:
+        svg = f.read().replace("currentColor", T.text_2)
+    px = QPixmap(32, 32)
+    px.fill(Qt.GlobalColor.transparent)
+    p = QPainter(px)
+    QSvgRenderer(QByteArray(svg.encode())).render(p, QRectF(0, 0, 32, 32))
+    p.end()
+    path = os.path.join(tempfile.gettempdir(), f"cdlm-convertir-flecha-{T.scheme}.png")
+    px.save(path)
+    return path.replace("\\", "/")
+
+
 _AL_CAMBIAR = []   # funciones a llamar cuando cambia el tema (p. ej. icons.refresh_all)
 
 
@@ -232,6 +253,10 @@ def apply_theme(app, scheme: str | None = None) -> None:
 
 def build_stylesheet() -> str:
     """Hoja de estilos para el modo activo de `T`."""
+    try:
+        flecha = _flecha_de_lista()
+    except Exception:  # noqa: BLE001 — sin flecha, la lista igual funciona
+        flecha = ""
     return f"""
 /* ---------- base ----------
    Solo la ventana lleva fondo: si se lo pone a todo QWidget, cada etiqueta
@@ -405,7 +430,8 @@ QComboBox {{
 }}
 QComboBox:hover {{ border-color: {T.text_3}; }}
 QComboBox:focus {{ border-color: {T.accent_text}; }}
-QComboBox::drop-down {{ border: none; width: 20px; }}
+QComboBox::drop-down {{ border: none; width: 24px; }}
+QComboBox::down-arrow {{ {f"image: url({flecha});" if flecha else ""} width: 14px; height: 14px; }}
 QComboBox QAbstractItemView {{
     background-color: {T.raised}; color: {T.text}; border: 1px solid {T.border_strong};
     selection-background-color: {T.accent_soft}; outline: none;
