@@ -341,7 +341,7 @@ def test_cache_de_tiras(repo, tmp_path):
 
 
 def test_migracion_7(pg_conn):
-    assert catdb.version_esquema(pg_conn) == 7
+    assert catdb.version_esquema(pg_conn) >= 7
     cols = {r["column_name"] for r in pg_conn.execute(
         "SELECT column_name FROM information_schema.columns WHERE table_name = 'media'")}
     assert {"tomada", "lat", "lon", "metadatos_version"} <= cols
@@ -388,7 +388,7 @@ class TestCatalogarPorPartes:
         d.chk_rehacer.setChecked(True)
         assert d.rehacer and "con una carpeta" in d.lbl_tiempo.text()
         d.rb_todas.setChecked(True)
-        assert "Puede tardar unas 6 horas" in d.lbl_tiempo.text()
+        assert "Puede tardar unas 8 horas" in d.lbl_tiempo.text()
 
     def test_el_pedido_lleva_lo_elegido(self, qapp, pg_cfg, tmp_path, monkeypatch):
         from convertir3x4.catalog.db import conectar

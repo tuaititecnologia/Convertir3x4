@@ -44,6 +44,8 @@ UPDATE media m SET search_doc =
  || setweight(to_tsvector('catalogo', palabras(COALESCE(
         (SELECT concat_ws(' ', a.description, a.ocr_text, a.synonyms)
          FROM ai_result a WHERE a.media_id = m.id), ''))), 'B')
+ || setweight(to_tsvector('catalogo', palabras(COALESCE(
+        (SELECT f.texto FROM texto_foto f WHERE f.media_id = m.id), ''))), 'B')
 WHERE m.id = ANY(%s)
 """
 
@@ -815,6 +817,46 @@ class Repo:
                                        r["ai_model"], r["ai_sig"] or ""))
         return out
 
+    # ------------------------------------------------------- texto en las fotos
+    def fotos_sin_texto(self, version: int, carpetas: list[str] | None = None,
+                        rehacer: bool = False) -> list[Media]:
+        """Fotos que falta leer (o que se leyeron con otra versión del OCR).
+        Solo fotos que están: los videos no se leen (decisión del 23/11/2026)."""
+        where = ["m.kind = 'image'", "m.missing_since IS NULL"]
+        params: list = []
+        if carpetas:
+            conds = []
+            for c in carpetas:
+                conds.append("(m.rel_path = %s OR starts_with(m.rel_path, %s))")
+                params += [c, c.rstrip("/") + "/"]
+            where.append("(" + " OR ".join(conds) + ")")
+        if not rehacer:
+            where.append("(f.media_id IS NULL OR f.version <> %s)")
+            params.append(version)
+        rows = self._q(
+            "SELECT m.* FROM media m LEFT JOIN texto_foto f ON f.media_id = m.id "
+            "WHERE " + " AND ".join(where) + " ORDER BY m.id", params).fetchall()
+        return [self._media(r) for r in rows]
+
+    def guardar_texto(self, media_id: int, texto: str, version: int) -> None:
+        """Guarda lo leído y rehace el índice de búsqueda de esa foto (solo si
+        el texto cambió: así no se avisa a las PCs por nada)."""
+        with self.conn.transaction():
+            previo = self._q("SELECT texto FROM texto_foto WHERE media_id = %s",
+                             (media_id,)).fetchone()
+            self._q("INSERT INTO texto_foto (media_id, texto, version) VALUES (%s, %s, %s) "
+                    "ON CONFLICT (media_id) DO UPDATE SET texto = EXCLUDED.texto, "
+                    "version = EXCLUDED.version, leida = now()",
+                    (media_id, texto, version))
+            if previo is None or previo["texto"] != texto:
+                if texto or previo is not None:
+                    self._q(_SQL_BUSQUEDA, ([media_id],))
+
+    def texto_de(self, media_id: int) -> str | None:
+        row = self._q("SELECT texto FROM texto_foto WHERE media_id = %s",
+                      (media_id,)).fetchone()
+        return row["texto"] if row else None
+
     def get_ai_raw(self, media_id: int) -> str | None:
         row = self._q("SELECT raw_json FROM ai_result WHERE media_id = %s",
                       (media_id,)).fetchone()
@@ -876,7 +918,8 @@ class Repo:
             params += [tsq, tsq]
         orden += ", m.filename, m.id"
         rows = self._q(
-            f"SELECT {_COLUMNAS_MEDIA}, {_ETIQUETAS_MEDIA}, count(*) OVER () AS total FROM media m "
+            f"SELECT {_COLUMNAS_MEDIA}, {_ETIQUETAS_MEDIA}, {_TEXTO_MEDIA}, "
+            "count(*) OVER () AS total FROM media m "
             + ("WHERE " + " AND ".join(where) + " " if where else "")
             + f"ORDER BY {orden} LIMIT %s OFFSET %s",
             params + [cuantos, desde]).fetchall()
@@ -966,6 +1009,9 @@ _ETIQUETAS_MEDIA = (
     "(SELECT COALESCE(json_agg(json_build_array(t.name, mt.confirmed) "
     "ORDER BY mt.confirmed DESC, t.name), '[]') FROM media_tag mt "
     "JOIN tag t ON t.id = mt.tag_id WHERE mt.media_id = m.id) AS etiquetas")
+# El texto leído en la foto, para mostrarlo en Buscar (NULL si no tiene)
+_TEXTO_MEDIA = ("(SELECT NULLIF(f.texto, '') FROM texto_foto f "
+                "WHERE f.media_id = m.id) AS texto")
 
 
 def _row_to_media(row, raiz: str) -> Media:
@@ -992,6 +1038,7 @@ def _row_to_media(row, raiz: str) -> Media:
         tomada=row.get("tomada"),
         lat=row.get("lat"),
         lon=row.get("lon"),
+        texto=row.get("texto"),
     )
 
 

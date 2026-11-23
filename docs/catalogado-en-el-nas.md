@@ -145,6 +145,10 @@ En la primera pasada, 139 de los 145 videos que la IA marcó «logo» tenían la
 - **En negro:** oscuro y parejo (brillo medio < 16 y variación < 8, de 0 a 255). Una foto así, o un video negro en los tres puntos, queda con calidad `en_negro`, que pesa más que la baja resolución. La IA no los analiza.
 - **Lo ya catalogado:** `media.miniatura_version` y `thumbs.MINIATURA_VERSION = 2`. En la pasada siguiente a instalar la versión, el NAS rehace una vez la miniatura de cada video desde el archivo (unos 1.700, de una a dos horas esa noche). Las fotos se revisan desde la miniatura guardada, sin leer el archivo. Se descarta lo que la IA había sugerido sobre la miniatura vieja, sin confirmar, y se vuelve a analizar; lo que confirmó una persona queda.
 
+## Texto en las fotos (esquema 8, v0.8.1)
+
+El paso «texto» lee el texto de las fotos (no de los videos) con los modelos de PaddleOCR en ONNX (`engine/ocr.py`) y lo guarda en `texto_foto`. Se busca con el resto (`search_doc`, peso B) y se muestra en Buscar al dejar el puntero sobre la foto. Medido el 23/11/2026 en el NAS: 0,3 s para abrir la foto (achicada a 1.600 px) y 1,2 s para leerla; pico de 400 MB. La primera pasada (4.053 fotos) lleva una hora y tres cuartos; después, solo las nuevas. Una foto que no se puede abrir se reintenta en la pasada siguiente.
+
 ## Para decidir
 
 - **Transcripción de los videos** (idea del 21/11/2026): buscar por lo que se dice en los cultos. Whisper local. El NAS saca el audio (lectura de disco, poco procesador) y la transcripción corre en la PC de edición o en el NAS con una placa de video. Hay placas viejas disponibles. Antes de decidir hay que confirmar el modelo, la memoria de video y la fuente del NAS. Sin confirmar todavía: TrueNAS 25.10 parece soportar NVIDIA solo desde GTX 16xx/RTX 20xx, y una AMD de la serie HD 7000 o posterior podría andar por Vulkan con whisper.cpp. El texto entraría en `search_doc`, con los tiempos de cada frase para abrir el video en ese minuto.

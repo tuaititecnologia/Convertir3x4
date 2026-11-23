@@ -210,3 +210,17 @@ def test_la_ventana_tiene_el_aviso(app):
     w = MainWindow()
     assert w.aviso_version.isHidden()
     w.close()
+
+
+def test_catalogo_mas_nuevo_busca_la_actualizacion_enseguida(app, monkeypatch):
+    from convertir3x4.app import MainWindow
+    from convertir3x4.catalog.db import CatalogoIncompatible
+    from convertir3x4.ui.servicio_catalogo import servicio
+    revisadas = []
+    w = MainWindow()
+    monkeypatch.setattr(w.aviso_version, "revisar", lambda: revisadas.append(1))
+    servicio().estado_cambiado.emit("error", "El NAS no responde.")
+    assert revisadas == []
+    servicio().estado_cambiado.emit("error", CatalogoIncompatible.MENSAJE)
+    assert revisadas == [1]
+    w.close()

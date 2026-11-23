@@ -5,7 +5,8 @@ a la carpeta de datos de la app. Cada archivo está fijado a una revisión exact
 del repositorio en HuggingFace y se verifica por sha256: si el hash no coincide,
 se descarta.
 
-Licencias: CLIP (MIT, export ONNX de Xenova), YuNet y SFace (Apache 2.0, OpenCV Zoo).
+Licencias: CLIP (MIT, export ONNX de Xenova), YuNet y SFace (Apache 2.0, OpenCV Zoo),
+OCR de PaddleOCR (Apache 2.0, export ONNX de monkt/paddleocr-onnx; engine/ocr.py).
 """
 
 import hashlib
@@ -16,6 +17,7 @@ import urllib.request
 _CLIP = "https://huggingface.co/Xenova/clip-vit-base-patch32/resolve/6b7c523703ae26e39be4b03774966f8571c7f523"
 _YUNET = "https://huggingface.co/opencv/face_detection_yunet/resolve/3cc26e7f1014a5ee5d74a42acee58bafc9d0a310"
 _SFACE = "https://huggingface.co/opencv/face_recognition_sface/resolve/3d7082438a6e4551e840c9b2bb60b71e8da4b524"
+_OCR = "https://huggingface.co/monkt/paddleocr-onnx/resolve/7b02d0a30a07ba2b92ad1ff5a8941ae2c633de65"
 
 # nombre local -> (url, sha256, tamaño en bytes)
 MODEL_FILES = {
@@ -29,6 +31,14 @@ MODEL_FILES = {
                    "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4", 232589),
     "sface.onnx": (f"{_SFACE}/face_recognition_sface_2021dec.onnx",
                    "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79", 38696353),
+    # Texto en las fotos: detección PP-OCRv3 mobile + reconocimiento PP-OCRv5 latin
+    "ocr_det.onnx": (f"{_OCR}/detection/v3/det.onnx",
+                     "ee40e80071ba3a320d4efda75f3e22047a7d049e9bf7bcaaf9daea23fc21b935", 2429873),
+    "ocr_rec_latin.onnx": (f"{_OCR}/languages/latin/rec.onnx",
+                           "614ffc2d6d3902d360fad7f1b0dd455ee45e877069d14c4e51a99dc4ef144409",
+                           7862832),
+    "ocr_dict_latin.txt": (f"{_OCR}/languages/latin/dict.txt",
+                           "3c0a8a79b612653c25f765271714f71281e4e955962c153e272b7b8c1d2b13ff", 1634),
 }
 
 _CHUNK = 1 << 20

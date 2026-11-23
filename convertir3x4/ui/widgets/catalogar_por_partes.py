@@ -29,6 +29,9 @@ PASOS = (
      "Etiquetas que sugiere la IA según el tipo de foto (culto, alabanza, bautismo…).", 120),
     ("personas", "Personas",
      "Busca a las personas de la lista en las fotos y en los videos.", 60),
+    ("texto", "Texto en las fotos",
+     "Lee el texto que aparece en las fotos (carteles, flyers, pantallas) para poder "
+     "encontrarlas buscándolo.", 105),
 )
 
 

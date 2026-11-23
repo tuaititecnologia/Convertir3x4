@@ -54,7 +54,8 @@ REVISAR_REFERENCIAS = 30  # segundos: en una pasada larga, cada cuánto se miran
 # Pasos que una PC puede pedir (`catalogado_pedido.pasos`; NULL = todos).
 # «archivos» corre siempre: los demás necesitan lo nuevo ya catalogado.
 ARCHIVOS, MINIATURAS, ESCENAS, PERSONAS = "archivos", "miniaturas", "escenas", "personas"
-PASOS = (ARCHIVOS, MINIATURAS, ESCENAS, PERSONAS)
+TEXTO = "texto"                 # texto en las fotos (OCR, v0.8.1)
+PASOS = (ARCHIVOS, MINIATURAS, ESCENAS, PERSONAS, TEXTO)
 
 
 @dataclass(frozen=True)
@@ -275,7 +276,8 @@ class _Avance:
 def pasada(repo: Repo, cfg: ConfigCatalogador, carpeta: str | None = None,
            parar: threading.Event | None = None, pasos=None, rehacer: bool = False,
            nocturna: bool = False) -> dict:
-    """Cataloga (todas las carpetas o una subcarpeta) y después analiza con IA.
+    """Cataloga (todas las carpetas o una subcarpeta), después analiza con IA y
+    lee el texto de las fotos.
     Devuelve el resumen que se guarda en la base.
 
     `pasos` (ver PASOS; None = todos): «archivos» corre siempre. `rehacer`:
@@ -314,6 +316,12 @@ def pasada(repo: Repo, cfg: ConfigCatalogador, carpeta: str | None = None,
                     threads=cfg.hilos, carpetas=alcance, escenas=escenas, personas=personas,
                     rehacer=rehacer)
         resumen["ia"] = asdict(st)
+    if cfg.ia and TEXTO in pedidos:
+        from .engine import ai_models, ocr
+        ai_models.ensure(cfg.modelos)
+        st = ocr.leer_fotos(repo, cfg.modelos, progress_cb=_Avance(repo, "leyendo_texto", parar, cfg),
+                            carpetas=alcance, rehacer=rehacer)
+        resumen["texto"] = asdict(st)
     return resumen
 
 

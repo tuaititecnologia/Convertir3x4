@@ -38,6 +38,8 @@ class Media:
     tomada: datetime | None = None
     lat: float | None = None
     lon: float | None = None
+    # Texto que se leyó en la foto (OCR del NAS). Solo lo trae Repo.buscar.
+    texto: str | None = None
 
     @property
     def is_video(self) -> bool:

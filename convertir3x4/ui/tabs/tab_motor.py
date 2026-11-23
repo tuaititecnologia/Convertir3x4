@@ -153,6 +153,8 @@ def texto_estado(est: dict | None, pedidos: list, ahora=None) -> tuple[str, bool
         return "El NAS está preparando el análisis con IA.", True
     if fase == "analizando":
         return f"El NAS está analizando con IA{avance}.", True
+    if fase == "leyendo_texto":
+        return f"El NAS está leyendo el texto de las fotos{avance}.", True
     if fase == "esperando_copia":
         return ("El NAS está copiando un disco de la grabadora. Va a catalogar cuando "
                 "termine la copia."), False
@@ -749,7 +751,8 @@ class MotorTab(QWidget):
         texto, self._trabajando = texto_estado(est, pedidos)
         self._set_status(texto)
         total = est.get("total")
-        en_curso = est.get("fase") in ("catalogando", "analizando", "preparando_ia") and self._trabajando
+        en_curso = est.get("fase") in ("catalogando", "analizando", "preparando_ia",
+                                       "leyendo_texto") and self._trabajando
         self.progress.setVisible(en_curso)
         if en_curso:
             self.progress.setMaximum(total or 0)     # sin total: barra en movimiento

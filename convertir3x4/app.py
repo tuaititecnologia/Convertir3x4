@@ -97,6 +97,13 @@ class MainWindow(QMainWindow):
         derecha.setSpacing(0)
         self.aviso_version = AvisoActualizacion()
         self.aviso_version.lista.connect(self._cerrar_para_actualizar)
+        # Si el catálogo es de una versión más nueva, se busca la actualización
+        # enseguida (la PC de ProPresenter queda abierta días: no esperar 6 horas)
+        from .catalog.db import CatalogoIncompatible
+        from .ui.servicio_catalogo import servicio
+        servicio().estado_cambiado.connect(
+            lambda estado, texto: estado == "error" and texto == CatalogoIncompatible.MENSAJE
+            and self.aviso_version.revisar())
         derecha.addWidget(self.aviso_version)
         derecha.addWidget(self.stack, 1)
         row.addLayout(derecha, 1)
