@@ -95,6 +95,7 @@ Pasar a «Hecho» o reescribir lo que quedó viejo:
 Definido el 22/11/2026:
 - **Carpetas que se catalogan desde la app** (⚙ de Catalogar), guardadas en la base (`carpeta_catalogada`). Sin lista en el compose ni en `catalogo.ini`. La migración copia la lista que publicaba el NAS. Al quitar una carpeta se ofrece sacar también sus fotos y videos del catálogo. Esto reemplaza «sacar una carpeta entera del catálogo». **Hecho.**
 - **Pantallas guardadas** (nombre y medida), compartidas por las PCs en la base (`pantalla`). Se eligen en «Proporción» del ⚙ de Convertir y se administran con «Pantallas guardadas…». **Hecho.**
+- **Actualización de la aplicación** (pedido del 23/11/2026): al abrir y cada 6 horas consulta la última versión en GitHub. Si hay una más nueva aparece un aviso arriba con «Actualizar»: en Windows descarga el .exe, lo verifica y, al cerrar, lo reemplaza y vuelve a abrir la aplicación. En la Mac abre la página de la descarga. **Hecho.**
 - **Avisar cuando se cae el NAS en Buscar:** ya estaba hecho (revisa la raíz cada 5 s en un hilo aparte).
 
 Quedan afuera:
@@ -108,5 +109,5 @@ Quedan afuera:
 1. Respaldo de la base.
 2. Etiqueta v0.8.0 y la imagen del catalogador.
 3. En el compose del NAS: cambiar la etiqueta y **sacar `CDLM_CATALOGO_CARPETAS`** (la lista ya está en la base).
-4. Instalar el .exe nuevo en las dos PCs (el esquema 7 deja afuera a la v0.7.x).
+4. Instalar el .exe nuevo en las dos PCs (el esquema 7 deja afuera a la v0.7.x). Es la última vez a mano: desde la v0.8.0 la aplicación ofrece actualizarse sola.
 5. La primera noche completa las fechas; las tiras de los videos que ya estaban se arman de noche o con «Catalogar ▾ → Miniaturas».

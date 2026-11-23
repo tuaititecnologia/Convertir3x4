@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
 from .config import APP_TITLE, APP_VERSION
 from .ui import icons
 from .ui.style import T
+from .ui.widgets.aviso_actualizacion import AvisoActualizacion
 from .ui.widgets.help_panel import HelpPanel
 from .ui.tabs.tab_convertir import ConvertTab
 from .ui.tabs.tab_buscar import BuscarTab
@@ -90,7 +91,15 @@ class MainWindow(QMainWindow):
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(0)
         row.addWidget(rail)
-        row.addWidget(self.stack, 1)
+        # Arriba de los módulos, el aviso de versión nueva (oculto si no hay)
+        derecha = QVBoxLayout()
+        derecha.setContentsMargins(0, 0, 0, 0)
+        derecha.setSpacing(0)
+        self.aviso_version = AvisoActualizacion()
+        self.aviso_version.lista.connect(self._cerrar_para_actualizar)
+        derecha.addWidget(self.aviso_version)
+        derecha.addWidget(self.stack, 1)
+        row.addLayout(derecha, 1)
         self.setCentralWidget(central)
         # La ayuda va POR ENCIMA del contenido, pegada a la derecha: no le quita
         # lugar a la pantalla de trabajo (en ventanas chicas la aplastaba).
@@ -245,6 +254,13 @@ class MainWindow(QMainWindow):
         self._avisos.cambio.connect(self.motor_tab.cambio_en_el_catalogo)
         self._avisos.start()
 
+    def _cerrar_para_actualizar(self):
+        """La versión nueva ya está descargada: al cerrar se instala y la
+        aplicación se vuelve a abrir. Si Convertir está trabajando y el operador
+        prefiere esperar, se instala cuando cierre."""
+        if not self.close():
+            self.aviso_version.cierre_cancelado()
+
     def closeEvent(self, event):
         if not self.convert_tab.confirm_close():
             event.ignore()
@@ -255,3 +271,4 @@ class MainWindow(QMainWindow):
         self.convert_tab.save_state()
         self.settings.setValue("geometry", self.saveGeometry())
         super().closeEvent(event)
+        self.aviso_version.instalar_al_cerrar()

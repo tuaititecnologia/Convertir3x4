@@ -21,7 +21,7 @@ python -m venv venv && source venv/bin/activate && pip install -r requirements.t
 ./venv/bin/python Convertir3x4.py      # shim entry point (also: python -m convertir3x4)
 
 # Tests — pass both files explicitly (pytest's default discovery skips the tests.py name)
-./venv/bin/python -m pytest tests.py tests_catalog.py tests_ai.py tests_clips.py tests_ui.py tests_convertir.py tests_discos.py tests_catalogador.py tests_v08.py -v
+./venv/bin/python -m pytest tests.py tests_catalog.py tests_ai.py tests_clips.py tests_ui.py tests_convertir.py tests_discos.py tests_catalogador.py tests_v08.py tests_actualizacion.py -v
 # tests_discos.py also runs the real panel-copias.py (fake lsblk/systemctl) when ~/Documents/Agents/CDLM-Freenas is present
 # tests_ai.py also runs real-model tests when CDLM_MODELS points to a folder with the downloaded models
 # Catalog tests (tests_catalog/tests_ai/tests_ui) need the dev PostgreSQL; fixtures in conftest.py create a
@@ -127,6 +127,11 @@ convertir3x4/
                          Pedidos carry pasos (archivos/miniaturas/escenas/personas) + rehacer; the AI honors the folder.
                          NEVER run it on a Mac against real data: macOS SMB returns accented names as NFD, they
                          don't match the NAS's NFC paths and get "moved" (main() refuses on darwin)
+  actualizacion.py       update check (Qt-free): latest GitHub release (public repo, no token); on Windows the
+                         frozen .exe downloads <exe>.nuevo (size + sha256 digest checked) and, on close, a .cmd
+                         (paths as args, retries until the .exe is free) swaps it and reopens. Mac/Linux: link only.
+                         UI: ui/widgets/aviso_actualizacion.py (bar above the modules, started by __main__, never in dev)
+                         tests_actualizacion.py also runs in CI on Windows (real swap of a running .exe)
   workers.py             EngineWorker(QThread): runs fn(progress_cb) off the UI thread; `fallo` carries the exception
   catalog/               the truth — PostgreSQL (Qt-free):
     db.py                ConfigCatalogo (servidor, clave, raiz, carpetas), conectar() (autocommit, 3 s timeout,
