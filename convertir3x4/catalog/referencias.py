@@ -129,7 +129,7 @@ def revisar(detalle: dict, imagenes: bool = True) -> Revision:
     fotos = []
     for r in refs:
         j = juzgar_foto(r, nombre, coinc.get(r["id"]))
-        mini, cara = _imagenes(r) if imagenes else (None, None)
+        mini, cara = imagenes_de(r) if imagenes else (None, None)
         fotos.append(FotoRevisada(r["id"], r["archivo"], r["ruta"], j, coinc.get(r["id"]),
                                   mini, cara))
     juicio, hacer = _juicio_persona(nombre, fotos, n_listas)
@@ -183,7 +183,7 @@ def texto_catalogo(rev: Revision) -> str:
     if not total:
         return ("Todavía ninguna foto del catálogo tiene su nombre. Las sugerencias "
                 "aparecen después de la próxima pasada del NAS (todas las noches, o con "
-                "«Catalogar ahora»).")
+                "«Catalogar»).")
     t = ("1 foto o video del catálogo tiene su nombre" if total == 1 else
          f"{total} fotos y videos del catálogo tienen su nombre")
     partes = []
@@ -201,7 +201,7 @@ def _jpeg(img: Image.Image) -> bytes:
     return buf.getvalue()
 
 
-def _imagenes(ref: dict) -> tuple[bytes | None, bytes | None]:
+def imagenes_de(ref: dict) -> tuple[bytes | None, bytes | None]:
     """Miniatura de la foto (con el rostro elegido en un recuadro) y el recorte
     del rostro con algo de margen."""
     if not ref.get("foto"):

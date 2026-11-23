@@ -2,7 +2,7 @@
 
 El catalogado y el análisis con IA corren en el NAS (convertir3x4/catalogador.py,
 docs/catalogado-en-el-nas.md): todas las noches y cuando alguien lo pide desde
-acá. Esta pestaña solo pide («Catalogar ahora», o una subcarpeta desde el ⚙) y
+acá. Esta pestaña solo pide («Catalogar», o por partes con su flecha ▾) y
 muestra lo que el NAS informa en la base. Mientras se ve, consulta cada 3 s.
 
 También administra la lista de personas reconocibles: esta PC sube las fotos de
@@ -22,7 +22,7 @@ from PyQt6.QtWidgets import (
     QListWidgetItem, QInputDialog, QScrollArea,
 )
 
-from ...appdata import abrir_repo, config_catalogo
+from ...appdata import abrir_repo, catalog_ref_dir, config_catalogo
 from ...catalog import rutas
 from ...catalog.db import CatalogoNoConfigurado
 from ...catalog import referencias
@@ -230,7 +230,7 @@ class MotorTab(QWidget):
         cab = QHBoxLayout()
         cab.addWidget(self._title("Catálogo de fotos y videos"))
         cab.addStretch()
-        # Lo que casi nunca se usa (una subcarpeta, limpiar) va escondido en el ⚙
+        # Lo que casi nunca se usa (limpiar, sacar una carpeta) va escondido en el ⚙
         self.btn_avanzado = QPushButton()
         self.btn_avanzado.setObjectName("btn_icon")
         icons.set_icon(self.btn_avanzado, "settings", 16, "text_2")
@@ -250,16 +250,19 @@ class MotorTab(QWidget):
             "catálogo las fotos y videos nuevos, para encontrarlos luego en Buscar. También "
             "sugiere etiquetas (bautismo, alabanza, placa, flyer…) y reconoce a las personas "
             "de la lista; las sugerencias se confirman en Buscar. Si necesita antes algo "
-            "recién copiado, use «Catalogar ahora»."))
+            "recién copiado, use «Catalogar»; con su flecha puede elegir una sola carpeta "
+            "o qué hacer."))
         self.lbl_carpetas = QLabel()
         self.lbl_carpetas.setWordWrap(True)
         self.lbl_carpetas.setTextFormat(Qt.TextFormat.PlainText)
         layout.addWidget(self.lbl_carpetas)
 
-        self.btn_run = QPushButton("Catalogar ahora")
-        self.btn_run.setObjectName("btn_primary")
-        self.btn_run.clicked.connect(self._pedir_todo)
-        layout.addLayout(self._left(self.btn_run))
+        from ..widgets.catalogar_por_partes import BotonCatalogar
+        self.boton_catalogar = BotonCatalogar()
+        self.boton_catalogar.todo.connect(self._pedir_todo)
+        self.boton_catalogar.partes.connect(self._abrir_partes)
+        self.btn_run = self.boton_catalogar.principal
+        layout.addLayout(self._left(self.boton_catalogar))
 
         # Lo que informa el NAS, pegado a la acción que lo dispara
         self.progress = QProgressBar()
@@ -359,6 +362,18 @@ class MotorTab(QWidget):
         cabeza.addWidget(self.lbl_persona_estado)
         pc.addLayout(cabeza)
 
+        # Mientras se trae la persona del NAS: arriba, donde se mira al hacer clic
+        self.barra_persona = QProgressBar()
+        self.barra_persona.setRange(0, 0)              # sin porcentaje: solo "trabajando"
+        self.barra_persona.setTextVisible(False)
+        self.barra_persona.setAccessibleName("Trayendo los datos de la persona")
+        self.barra_persona.setVisible(False)
+        pc.addWidget(self.barra_persona)
+        self.lbl_persona_cargando = QLabel("Trayendo los datos de la persona…")
+        self.lbl_persona_cargando.setWordWrap(True)
+        self.lbl_persona_cargando.setVisible(False)
+        pc.addWidget(self.lbl_persona_cargando)
+
         # Cómo está y qué hacer. Si hay un problema, en un recuadro que se note.
         self.caja_persona = QFrame()
         cj = QVBoxLayout(self.caja_persona)
@@ -387,10 +402,9 @@ class MotorTab(QWidget):
         self.lista_fotos = QVBoxLayout()
         self.lista_fotos.setSpacing(10)
         pc.addLayout(self.lista_fotos)
-        self.lbl_persona_cargando = QLabel("Trayendo las fotos del NAS…")
-        self.lbl_persona_cargando.setObjectName("muted")
-        pc.addWidget(self.lbl_persona_cargando)
         panel.setVisible(False)
+        self._celdas_foto: dict[int, tuple[QLabel, QLabel]] = {}
+        self._cache_refs = None
         self._revision_clave = None
         self._persona_detalle: int | None = None
         self._fila_elegida: dict | None = None
@@ -440,33 +454,100 @@ class MotorTab(QWidget):
             self.caja_persona.setVisible(False)
             self.lbl_persona_catalogo.setText("")
             vaciar(self.lista_fotos)
+            self._celdas_foto = {}
+            self.lbl_fotos_ayuda.setVisible(False)
+            self.lbl_persona_cargando.setText("Trayendo los datos de la persona…")
             self.lbl_persona_cargando.setVisible(True)
+            self.barra_persona.setVisible(True)
             self.panel_persona.setVisible(True)
             self._acomodar_lado_detalle()
         self._pedir_detalle()
 
+    def _cache(self):
+        if self._cache_refs is None:
+            from ...catalog.cache_referencias import CacheReferencias
+            self._cache_refs = CacheReferencias(catalog_ref_dir())
+        return self._cache_refs
+
     def _pedir_detalle(self):
-        """Lee la persona y juzga sus fotos (con las imágenes) fuera del hilo de
-        la interfaz."""
+        """Lee la persona y juzga sus fotos fuera del hilo de la interfaz. En dos
+        pasos: primero los datos sin las fotos (llegan enseguida) con las
+        imágenes que ya están en la caché de esta PC; después, las que faltan."""
         pid = self._persona_detalle
         if pid is None:
             return
+        cache = self._cache()
 
         def leer(repo):
-            d = repo.detalle_persona(pid)
-            return None if d is None else referencias.revisar(d)
+            d = repo.detalle_persona(pid, fotos=False)
+            if d is None:
+                return None, []
+            rev = referencias.revisar(d, imagenes=False)
+            refs = {r["id"]: r for r in d["referencias"]}
+            faltan = []
+            for f in rev.fotos:
+                ref = refs[f.id]
+                if not ref["tiene_foto"]:
+                    continue
+                guardada = cache.leer(ref)
+                if guardada:
+                    f.miniatura, f.cara = guardada
+                else:
+                    faltan.append(ref)
+            return rev, faltan
 
-        def ok(rev):
-            if pid == self._persona_detalle:
-                self._mostrar_revision(rev)
+        def ok(res):
+            rev, faltan = res
+            if pid != self._persona_detalle:
+                return
+            self._mostrar_revision(rev, pendientes={r["id"] for r in faltan})
+            if faltan:
+                self._pedir_imagenes(pid, faltan)
 
         def error(e):
             if pid == self._persona_detalle:
+                self.barra_persona.setVisible(False)
                 self.lbl_persona_cargando.setText(texto_para(e))
                 self.lbl_persona_cargando.setVisible(True)
         self._srv.pedir(leer, ok=ok, error=error)
 
-    def _mostrar_revision(self, rev):
+    def _pedir_imagenes(self, pid: int, refs: list[dict]):
+        """Trae del NAS las fotos que esta PC todavía no tiene y arma sus imágenes."""
+        cache = self._cache()
+
+        def leer(repo):
+            fotos = repo.fotos_de_referencia([r["id"] for r in refs])
+            out = {}
+            for r in refs:
+                if r["id"] in fotos:
+                    mini, cara = referencias.imagenes_de({**r, "foto": fotos[r["id"]]})
+                    cache.guardar(r, mini, cara)
+                    out[r["id"]] = (mini, cara)
+            return out
+
+        def ok(imagenes):
+            if pid != self._persona_detalle:
+                return
+            for ref_id, celdas in self._celdas_foto.items():
+                if ref_id in imagenes:
+                    for lbl, datos in zip(celdas, imagenes[ref_id]):
+                        _poner_imagen(lbl, datos)
+                elif any(lbl.pixmap().isNull() and lbl.text() for lbl in celdas):
+                    for lbl in celdas:
+                        lbl.setText("")            # ya no viene: sin imagen
+            self.lbl_fotos_ayuda.setVisible(
+                any(c[1].pixmap() is not None and not c[1].pixmap().isNull()
+                    for c in self._celdas_foto.values()))
+
+        def error(_e):
+            for celdas in self._celdas_foto.values():
+                for lbl in celdas:
+                    if lbl.text():
+                        lbl.setText("")
+        self._srv.pedir(leer, ok=ok, error=error)
+
+    def _mostrar_revision(self, rev, pendientes: set[int] = frozenset()):
+        self.barra_persona.setVisible(False)
         if rev is None:                     # la quitaron desde la otra PC
             self.panel_persona.setVisible(False)
             self._acomodar_lado_detalle()
@@ -497,11 +578,12 @@ class MotorTab(QWidget):
         self.caja_persona.setVisible(bool(que or rev.hacer))
         self.lbl_persona_catalogo.setText(referencias.texto_catalogo(rev))
         vaciar(self.lista_fotos)
+        self._celdas_foto = {}
         for f in rev.fotos:
-            self.lista_fotos.addWidget(self._fila_foto(f))
+            self.lista_fotos.addWidget(self._fila_foto(f, f.id in pendientes))
         self.lbl_fotos_ayuda.setVisible(any(f.cara for f in rev.fotos))
 
-    def _fila_foto(self, f) -> QFrame:
+    def _fila_foto(self, f, pendiente: bool = False) -> QFrame:
         """Una foto de referencia: la foto con el rostro marcado, el rostro, qué
         se vio y el botón para quitarla."""
         fila = QFrame()
@@ -509,16 +591,21 @@ class MotorTab(QWidget):
         h = QHBoxLayout(fila)
         h.setContentsMargins(0, 0, 0, 0)
         h.setSpacing(12)
+        celdas = []
         for datos, lado in ((f.miniatura, referencias.MINI_LADO),
                             (f.cara, referencias.CARA_LADO)):
             img = QLabel()
             img.setFixedSize(lado, lado)
             img.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
-            pm = QPixmap()
-            if datos and pm.loadFromData(datos):
-                pm.setDevicePixelRatio(2.0)      # las imágenes vienen al doble (pantallas 2x)
-                img.setPixmap(pm)
+            if pendiente:
+                img.setObjectName("muted")
+                img.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                img.setText("Cargando…")
+            else:
+                _poner_imagen(img, datos)
+            celdas.append(img)
             h.addWidget(img, 0, Qt.AlignmentFlag.AlignTop)
+        self._celdas_foto[f.id] = tuple(celdas)
         texto = QVBoxLayout()
         texto.setSpacing(3)
         nombre = QLabel(f.archivo or "Foto sin nombre")
@@ -558,8 +645,8 @@ class MotorTab(QWidget):
 
     def _abrir_avanzado(self):
         from ..widgets.catalogo_avanzado import CatalogoAvanzado
-        dlg = CatalogoAvanzado(self, carpetas=self._carpetas)
-        dlg.catalogarCarpeta.connect(self.catalogar_una_carpeta)
+        dlg = CatalogoAvanzado(self, carpetas=self._carpetas, raiz=self._raiz or "",
+                               srv=self._srv)
         dlg.catalogChanged.connect(self.refresh)
         dlg.catalogChanged.connect(self.catalogChanged.emit)
         dlg.exec()
@@ -632,7 +719,8 @@ class MotorTab(QWidget):
 
         def leer(repo):
             return (repo.estado_catalogado(), repo.pedidos_abiertos(), repo.count_media(),
-                    repo.count_pending_tags(), len(repo.faltantes()))
+                    repo.count_pending_tags(), len(repo.faltantes()),
+                    repo.carpetas_catalogadas())
 
         def listo(_r=None):
             self._consultando = False
@@ -643,9 +731,9 @@ class MotorTab(QWidget):
 
         self._srv.pedir(leer, ok=mostrar, error=listo)
 
-    def _mostrar(self, est, pedidos, n, pend, faltan):
+    def _mostrar(self, est, pedidos, n, pend, faltan, carpetas=()):
         self._pedidos = pedidos
-        self._carpetas = tuple(est.get("carpetas") or ())
+        self._carpetas = tuple(carpetas)
         try:
             self._raiz = config_catalogo().raiz
         except CatalogoNoConfigurado:
@@ -653,9 +741,11 @@ class MotorTab(QWidget):
         if self._carpetas:
             sep = "\\" if self._raiz.startswith("\\") or self._raiz[1:2] == ":" else "/"
             nombres = [c.replace("/", sep) for c in self._carpetas]
-            self.lbl_carpetas.setText("Carpetas del NAS que se catalogan: " + ", ".join(nombres) + ".")
+            self.lbl_carpetas.setText("Carpetas del NAS que se catalogan: " + ", ".join(nombres)
+                                      + ". Se agregan o quitan en las opciones avanzadas (⚙).")
         else:
-            self.lbl_carpetas.setText("")
+            self.lbl_carpetas.setText("Todavía no hay carpetas para catalogar. Agréguelas en las "
+                                      "opciones avanzadas (⚙, arriba a la derecha).")
         texto, self._trabajando = texto_estado(est, pedidos)
         self._set_status(texto)
         total = est.get("total")
@@ -726,7 +816,7 @@ class MotorTab(QWidget):
     def _update_buttons(self):
         busy = self._worker is not None and self._worker.isRunning()
         sin_catalogo = self._srv.estado == "error"
-        self.btn_run.setEnabled(not sin_catalogo and bool(self._carpetas)
+        self.boton_catalogar.setEnabled(not sin_catalogo and bool(self._carpetas)
                                 and not self._trabajando and not self._pedidos)
         self.btn_add_person.setEnabled(not busy and not sin_catalogo)
         has_sel = self._selected_person() is not None
@@ -737,7 +827,14 @@ class MotorTab(QWidget):
     def _pedir_todo(self):
         self._pedir(None)
 
-    def catalogar_una_carpeta(self, ruta: str):
+    def _abrir_partes(self):
+        """La flecha de «Catalogar»: qué hacer, dónde y si se rehace."""
+        from ..widgets.catalogar_por_partes import CatalogarPorPartes
+        dlg = CatalogarPorPartes(self, carpetas=self._carpetas, raiz=self._raiz or "")
+        if dlg.exec():
+            self._pedir(dlg.carpeta_elegida(), dlg.pasos, dlg.rehacer)
+
+    def catalogar_una_carpeta(self, ruta: str, pasos=None, rehacer: bool = False):
         """Una subcarpeta (p. ej. un evento recién copiado). Tiene que estar dentro
         de alguna de la lista; el NAS toma el bloqueo de esa carpeta."""
         rel = rutas.a_relativa(ruta, self._raiz) if self._raiz else None
@@ -747,13 +844,13 @@ class MotorTab(QWidget):
             self._set_status("Esa carpeta no está entre las que se catalogan. Elija una "
                              "carpeta dentro de: " + _lista(self._carpetas) + ".")
             return
-        self._pedir(rel)
+        self._pedir(rel, pasos, rehacer)
 
-    def _pedir(self, carpeta: str | None):
+    def _pedir(self, carpeta: str | None, pasos=None, rehacer: bool = False):
         quien = socket.gethostname()
         self._pedidos = [{"carpeta": carpeta}]          # el botón se apaga ya
         self._update_buttons()
-        self._srv.pedir(lambda repo: repo.pedir_catalogado(carpeta, quien),
+        self._srv.pedir(lambda repo: repo.pedir_catalogado(carpeta, quien, pasos, rehacer),
                         ok=lambda _id: self.refresh(),
                         error=lambda e: (self._set_status(texto_para(e)), self.refresh()))
 
@@ -807,9 +904,11 @@ class MotorTab(QWidget):
         self.enviar_referencias(person_id, name, paths)
 
     # ------------------------------------------------------------- desde Buscar
-    def recibir_fotos_de_persona(self, paths: list[str]):
+    def recibir_fotos_de_persona(self, paths: list[str], media_ids: list[int] | None = None):
         """Fotos elegidas en Buscar: se pregunta de quién son (alguien de la lista
-        o una persona nueva) y se envían al NAS como fotos de referencia."""
+        o una persona nueva) y se envían al NAS como fotos de referencia. Si vienen
+        sus `media_ids` (fotos del catálogo), se manda solo cuáles son: el NAS lee
+        los archivos y no viajan por la red."""
         if not paths:
             return
         if self._worker is not None and self._worker.isRunning():
@@ -823,10 +922,11 @@ class MotorTab(QWidget):
         # La lista se lee de la base (fuera del hilo de la interfaz): puede que
         # esta pestaña todavía no se haya mostrado nunca.
         self._srv.pedir(lambda repo: repo.list_persons(),
-                        ok=lambda people: self._asignar_fotos(paths, people),
+                        ok=lambda people: self._asignar_fotos(paths, people, media_ids),
                         error=lambda e: self._set_people_status(texto_para(e)))
 
-    def _asignar_fotos(self, paths: list[str], people: list[dict]):
+    def _asignar_fotos(self, paths: list[str], people: list[dict],
+                       media_ids: list[int] | None = None):
         nombre = self._elegir_persona([p["name"] for p in people], len(paths))
         nombre = " ".join((nombre or "").split())
         if not nombre:
@@ -838,10 +938,25 @@ class MotorTab(QWidget):
             return
         # El mismo nombre escrito con otras mayúsculas es la misma persona.
         existente = next((p for p in people if p["name"].casefold() == nombre.casefold()), None)
-        if existente:
-            self.enviar_referencias(existente["id"], existente["name"], paths)
+        pid, nombre = (existente["id"], existente["name"]) if existente else (None, nombre)
+        if media_ids:
+            self.referencias_del_catalogo(pid, nombre, media_ids)
         else:
-            self.enviar_referencias(None, nombre, paths)
+            self.enviar_referencias(pid, nombre, paths)
+
+    def referencias_del_catalogo(self, person_id: int | None, name: str, media_ids: list[int]):
+        """Fotos del catálogo: se anotan cuáles son y el NAS lee los archivos."""
+        n = len(media_ids)
+
+        def listo(_pid):
+            self._set_people_status(
+                f"{name}: " + ("se envió 1 foto" if n == 1 else f"se enviaron {n} fotos")
+                + " al NAS, que busca el rostro en unos segundos. La persona se reconoce en "
+                  "el catálogo desde la próxima pasada (esta noche, o antes con «Catalogar»).")
+            self._refresh_people()
+
+        self._srv.pedir(lambda repo: repo.referencias_desde_el_catalogo(name, media_ids, person_id),
+                        ok=listo, error=lambda e: self._set_people_status(texto_para(e)))
 
     def _elegir_persona(self, nombres: list[str], n: int) -> str | None:
         """Nombre elegido o escrito, o None si se canceló."""
@@ -885,7 +1000,7 @@ class MotorTab(QWidget):
                                       f"se enviaron {subidas} fotos")
                        + " al NAS, que busca el rostro en unos segundos. La persona se "
                          "reconoce en el catálogo desde la próxima pasada (esta noche, o "
-                         "antes con «Catalogar ahora»).")
+                         "antes con «Catalogar»).")
             if ilegibles:
                 msg += ((" " if msg else "") + "No se pudieron abrir: "
                         + ", ".join(os.path.basename(p) for p in ilegibles[:5]) + ".")
@@ -907,3 +1022,13 @@ class MotorTab(QWidget):
         self._srv.pedir(lambda repo: repo.delete_person(pid),
                         ok=lambda _: self._refresh_people(),
                         error=lambda e: self._set_people_status(texto_para(e)))
+
+
+def _poner_imagen(lbl: QLabel, datos: bytes | None):
+    """Muestra un JPEG del detalle de la persona (vienen al doble: pantallas 2x)."""
+    lbl.setText("")
+    lbl.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
+    pm = QPixmap()
+    if datos and pm.loadFromData(datos):
+        pm.setDevicePixelRatio(2.0)
+        lbl.setPixmap(pm)

@@ -16,10 +16,5 @@ clave =
 ; unidad: ProPresenter guarda la ruta completa que recibe al arrastrar.
 raiz = \\truenas\multimedia
 
-; Desde la v0.7.0 las PCs no catalogan: lo hace el NAS, y la lista de carpetas
-; está en el compose de la App «catalogo» (CDLM_CATALOGO_CARPETAS). Este dato
-; ya no se usa; se deja por compatibilidad con versiones anteriores.
-carpetas =
-    Entrada
-    Publicar
-    Historial
+; Las carpetas que se catalogan no van acá: se manejan desde la app (⚙ de
+; Catalogar) y quedan en el catálogo. Un «carpetas =» de antes se ignora.

@@ -15,6 +15,7 @@ módulo (el esquema vive en `db.py`).
 """
 
 import hashlib
+from dataclasses import dataclass
 import os
 import re
 
@@ -28,7 +29,7 @@ from .models import Media
 _MEDIA_COLS = (
     "rel_path", "filename", "folder_origin", "kind", "width", "height", "aspect",
     "duration", "codec", "size_bytes", "file_mtime", "sha256", "phash",
-    "status", "quality_flag",
+    "status", "quality_flag", "tomada", "lat", "lon",
 )
 
 # Recalcula el texto de búsqueda de los medios dados: nombre, carpeta y tags
@@ -45,6 +46,10 @@ UPDATE media m SET search_doc =
          FROM ai_result a WHERE a.media_id = m.id), ''))), 'B')
 WHERE m.id = ANY(%s)
 """
+
+
+# Las fechas de toma se comparan por día en la hora de la iglesia.
+ZONA_IGLESIA = "America/Argentina/Buenos_Aires"
 
 
 class Repo:
@@ -84,7 +89,8 @@ class Repo:
         return self._media(row) if row else None
 
     def upsert_media(self, m: Media, miniatura: bytes | None = None,
-                     miniatura_version: int | None = None) -> int:
+                     miniatura_version: int | None = None,
+                     metadatos_version: int | None = None, tira: bytes | None = None) -> int:
         """Inserta o actualiza por ruta. Devuelve el id.
 
         Si el medio estaba como faltante y vuelve a su ruta, deja de faltar.
@@ -109,6 +115,11 @@ class Repo:
             if miniatura_version is not None:
                 self._q("UPDATE media SET miniatura_version = %s WHERE id = %s",
                         (miniatura_version, media_id))
+            if metadatos_version is not None:
+                self._q("UPDATE media SET metadatos_version = %s WHERE id = %s",
+                        (metadatos_version, media_id))
+            if tira is not None:
+                self._guardar_tira(media_id, tira)
             self._actualizar_busqueda([media_id])
         m.id = media_id
         m.missing_since = None
@@ -160,13 +171,44 @@ class Repo:
         par = self.miniaturas([media_id]).get(media_id)
         return par[1] if par else None
 
+    # ------------------------------------------------------------- tiras de cuadros
+    def _guardar_tira(self, media_id: int, jpeg: bytes):
+        self._q(
+            "INSERT INTO tira (media_id, jpeg, sello) VALUES (%s, %s, %s) "
+            "ON CONFLICT (media_id) DO UPDATE SET jpeg = EXCLUDED.jpeg, sello = EXCLUDED.sello",
+            (media_id, jpeg, sello_de(jpeg)))
+
+    def guardar_tira(self, media_id: int, jpeg: bytes):
+        """Tira de cuadros de un video (la arma el NAS, catalog/tiras.py)."""
+        self._guardar_tira(media_id, jpeg)
+
+    def sellos_tira(self, ids: list[int]) -> dict[int, str]:
+        if not ids:
+            return {}
+        return {r["media_id"]: r["sello"] for r in self._q(
+            "SELECT media_id, sello FROM tira WHERE media_id = ANY(%s)", (list(ids),))}
+
+    def tiras(self, ids: list[int]) -> dict[int, tuple[str, bytes]]:
+        """{id: (sello, jpeg)} de los videos pedidos que tienen tira."""
+        if not ids:
+            return {}
+        return {r["media_id"]: (r["sello"], bytes(r["jpeg"])) for r in self._q(
+            "SELECT media_id, sello, jpeg FROM tira WHERE media_id = ANY(%s)", (list(ids),))}
+
+    # ------------------------------------------------------------- fecha y lugar
+    def guardar_metadatos(self, media_id: int, tomada, lat, lon, version: int):
+        """Fecha de toma y ubicación de un medio ya catalogado (sin tocar lo demás)."""
+        self._q("UPDATE media SET tomada = %s, lat = %s, lon = %s, metadatos_version = %s "
+                "WHERE id = %s", (tomada, lat, lon, version, media_id))
+
     # ------------------------------------------------------------- faltantes y movidos
     def estado_carpeta(self, carpeta: str) -> dict[str, dict]:
         """Lo catalogado dentro de `carpeta` (relativa; "" = todo):
         {rel_path: {id, kind, duration, file_mtime, size_bytes, missing_since,
-        quality_flag, miniatura_version}}."""
+        quality_flag, miniatura_version, metadatos_version, tiene_tira}}."""
         cols = ("id, rel_path, kind, duration, file_mtime, size_bytes, missing_since, "
-                "quality_flag, miniatura_version")
+                "quality_flag, miniatura_version, metadatos_version, "
+                "EXISTS (SELECT 1 FROM tira t WHERE t.media_id = media.id) AS tiene_tira")
         if carpeta:
             rows = self._q(
                 f"SELECT {cols} FROM media "
@@ -285,24 +327,97 @@ class Repo:
     # Lo pide una PC (`pedir_catalogado`) y lo atiende el catalogador del NAS
     # (`tomar_pedido` … `cerrar_pedido`). Ver docs/catalogado-en-el-nas.md.
 
-    def pedir_catalogado(self, carpeta: str | None = None, pedido_por: str = "") -> int:
-        """Anota un pedido (carpeta None = todas). Si ya hay uno igual sin
-        empezar, devuelve ese en lugar de duplicarlo."""
+    def pedir_catalogado(self, carpeta: str | None = None, pedido_por: str = "",
+                         pasos: list[str] | None = None, rehacer: bool = False) -> int:
+        """Anota un pedido (carpeta None = todas; pasos None = todos, ver
+        catalogador.PASOS). Si ya hay uno igual sin empezar, devuelve ese en
+        lugar de duplicarlo."""
+        pasos = sorted(set(pasos)) if pasos is not None else None
         with self.conn.transaction():
             fila = self._q(
                 "SELECT id FROM catalogado_pedido WHERE terminado IS NULL AND empezado IS NULL"
-                " AND carpeta IS NOT DISTINCT FROM %s ORDER BY id LIMIT 1", (carpeta,)).fetchone()
+                " AND carpeta IS NOT DISTINCT FROM %s AND pasos IS NOT DISTINCT FROM %s"
+                " AND rehacer = %s ORDER BY id LIMIT 1", (carpeta, pasos, rehacer)).fetchone()
             if fila:
                 return fila["id"]
             pid = self._q(
-                "INSERT INTO catalogado_pedido (carpeta, pedido_por) VALUES (%s, %s)"
-                " RETURNING id", (carpeta, pedido_por or None)).fetchone()["id"]
+                "INSERT INTO catalogado_pedido (carpeta, pedido_por, pasos, rehacer)"
+                " VALUES (%s, %s, %s, %s) RETURNING id",
+                (carpeta, pedido_por or None, pasos, rehacer)).fetchone()["id"]
             self._q("NOTIFY catalogado")
         return pid
 
+    # ------------------------------------------------- carpetas que se catalogan
+    def carpetas_catalogadas(self) -> tuple[str, ...]:
+        """La lista de carpetas que recorre el NAS (relativas a la raíz)."""
+        return tuple(r["ruta"] for r in self._q(
+            "SELECT ruta FROM carpeta_catalogada ORDER BY lower(ruta)"))
+
+    def agregar_carpeta(self, ruta: str, por: str = "") -> str:
+        """Agrega una carpeta a la lista. Devuelve cómo quedó escrita. Lanza
+        `ConfiguracionInvalida` si sale de la raíz, si ya está o si una está
+        dentro de otra (se recorrería dos veces)."""
+        from .db import ConfiguracionInvalida, normalizar_carpetas
+        nueva = normalizar_carpetas([ruta])
+        if not nueva:
+            raise ConfiguracionInvalida("elija una carpeta dentro de la raíz")
+        nueva = nueva[0]
+        with self.conn.transaction():
+            self._q("LOCK TABLE carpeta_catalogada IN EXCLUSIVE MODE")
+            actuales = self.carpetas_catalogadas()
+            if any(c.lower() == nueva.lower() for c in actuales):
+                raise ConfiguracionInvalida(f"«{nueva}» ya está en la lista")
+            normalizar_carpetas(list(actuales) + [nueva])      # ¿una dentro de otra?
+            self._q("INSERT INTO carpeta_catalogada (ruta, agregada_por) VALUES (%s, %s)",
+                    (nueva, por or None))
+        return nueva
+
+    def medios_en_carpeta(self, ruta: str) -> list[int]:
+        return [r["id"] for r in self._q(
+            "SELECT id FROM media WHERE rel_path = %s OR starts_with(rel_path, %s)",
+            (ruta, ruta.rstrip("/") + "/"))]
+
+    def quitar_carpeta(self, ruta: str, con_sus_medios: bool = False) -> list[int]:
+        """Saca una carpeta de la lista. Con `con_sus_medios`, también saca del
+        catálogo sus fotos y videos (con sus etiquetas). Devuelve los ids quitados."""
+        with self.conn.transaction():
+            ids = self.medios_en_carpeta(ruta) if con_sus_medios else []
+            self.delete_media(ids)
+            self._q("DELETE FROM carpeta_catalogada WHERE ruta = %s", (ruta,))
+        return ids
+
+    # ------------------------------------------------- pantallas guardadas (Convertir)
+    def pantallas(self) -> list[dict]:
+        """[{id, nombre, ancho, alto}] por nombre. Medidas como float."""
+        return [{"id": r["id"], "nombre": r["nombre"], "ancho": float(r["ancho"]),
+                 "alto": float(r["alto"])}
+                for r in self._q("SELECT id, nombre, ancho, alto FROM pantalla ORDER BY lower(nombre)")]
+
+    def guardar_pantalla(self, nombre: str, ancho: float, alto: float,
+                         pantalla_id: int | None = None) -> int:
+        """Crea (o cambia, con `pantalla_id`) una pantalla. Lanza ValueError si
+        falta el nombre, la medida no sirve o el nombre ya existe."""
+        nombre = " ".join((nombre or "").split())
+        if not nombre:
+            raise ValueError("falta el nombre")
+        if not (ancho and alto and ancho > 0 and alto > 0):
+            raise ValueError("la medida tiene que ser mayor que cero")
+        try:
+            if pantalla_id is None:
+                return self._q("INSERT INTO pantalla (nombre, ancho, alto) VALUES (%s, %s, %s) "
+                               "RETURNING id", (nombre, ancho, alto)).fetchone()["id"]
+            self._q("UPDATE pantalla SET nombre = %s, ancho = %s, alto = %s WHERE id = %s",
+                    (nombre, ancho, alto, pantalla_id))
+            return pantalla_id
+        except psycopg.errors.UniqueViolation as e:
+            raise ValueError(f"ya hay una pantalla «{nombre}»") from e
+
+    def quitar_pantalla(self, pantalla_id: int):
+        self._q("DELETE FROM pantalla WHERE id = %s", (pantalla_id,))
+
     def pedidos_abiertos(self) -> list[dict]:
         return self._q(
-            "SELECT id, carpeta, pedido_por, creado, empezado FROM catalogado_pedido"
+            "SELECT id, carpeta, pasos, rehacer, pedido_por, creado, empezado FROM catalogado_pedido"
             " WHERE terminado IS NULL ORDER BY id").fetchall()
 
     def pedido(self, pedido_id: int) -> dict | None:
@@ -417,6 +532,28 @@ class Repo:
                     "ON CONFLICT DO NOTHING", (media_id, row["id"]))
             self._actualizar_busqueda([media_id])
 
+    def hermanas(self, ids: list[int], name: str) -> list[int]:
+        """Fotos y videos «hermanos» de los elegidos, para ofrecerles la misma
+        etiqueta (decisión del 22/11/2026): la misma carpeta y, si el elegido
+        tiene fecha de toma, el mismo día (en la hora de la iglesia). No incluye
+        los elegidos, los que faltan, los que ya la tienen ni aquellos a los que
+        alguien se la quitó."""
+        if not ids:
+            return []
+        norm = self.normalize_tag(name)
+        return [r["id"] for r in self._q(
+            "SELECT DISTINCT h.id FROM media e JOIN media h "
+            "  ON h.folder_origin IS NOT DISTINCT FROM e.folder_origin "
+            " AND (e.tomada IS NULL OR (h.tomada AT TIME ZONE %s)::date "
+            "                          = (e.tomada AT TIME ZONE %s)::date) "
+            "WHERE e.id = ANY(%s) AND NOT h.id = ANY(%s) AND h.missing_since IS NULL "
+            "  AND NOT EXISTS (SELECT 1 FROM media_tag mt JOIN tag t ON t.id = mt.tag_id "
+            "                  WHERE mt.media_id = h.id AND t.name = %s) "
+            "  AND NOT EXISTS (SELECT 1 FROM tag_rejection tr JOIN tag t ON t.id = tr.tag_id "
+            "                  WHERE tr.media_id = h.id AND t.name = %s) "
+            "ORDER BY h.id",
+            (ZONA_IGLESIA, ZONA_IGLESIA, list(ids), list(ids), norm, norm))]
+
     def confirm_tag(self, media_id: int, name: str):
         """Confirma un tag sugerido (si el medio lo tiene). Queda source='ia'."""
         self._q("UPDATE media_tag SET confirmed = true WHERE media_id = %s "
@@ -505,8 +642,42 @@ class Repo:
         return pid
 
     def referencias_pendientes(self) -> list[tuple[int, bytes]]:
+        """Fotos subidas por una PC que esperan su firma (las que vienen del
+        catálogo sin foto todavía: `referencias_del_catalogo`)."""
         return [(r["id"], bytes(r["foto"])) for r in self._q(
-            "SELECT id, foto FROM person_reference WHERE estado = 'pendiente' ORDER BY id")]
+            "SELECT id, foto FROM person_reference WHERE estado = 'pendiente' "
+            "AND foto IS NOT NULL ORDER BY id")]
+
+    def referencias_del_catalogo(self) -> list[tuple[int, str]]:
+        """Fotos de referencia elegidas en Buscar que el NAS todavía no leyó:
+        (id, ruta completa del archivo en este equipo). Si el medio ya no está
+        en el catálogo, la ruta es la anotada al pedirla."""
+        return [(r["id"], rutas.a_completa(r["rel_path"] or r["source_path"], self.raiz))
+                for r in self._q(
+                    "SELECT r.id, r.source_path, m.rel_path FROM person_reference r "
+                    "LEFT JOIN media m ON m.id = r.media_id "
+                    "WHERE r.estado = 'pendiente' AND r.foto IS NULL ORDER BY r.id")]
+
+    def referencias_desde_el_catalogo(self, nombre: str, media_ids: list[int],
+                                      person_id: int | None = None) -> int:
+        """Fotos del catálogo como referencia de una persona: la PC manda solo
+        cuáles son y el NAS lee los archivos (no viajan por la red). Los videos
+        no se usan. Crea la persona si es nueva. Devuelve el id de la persona."""
+        with self.conn.transaction():
+            pid = person_id or self.add_person(nombre)
+            self._q("INSERT INTO person_reference (person_id, source_path, media_id, estado) "
+                    "SELECT %s, m.rel_path, m.id, 'pendiente' FROM media m "
+                    "WHERE m.id = ANY(%s) AND m.kind = 'image' ORDER BY m.id",
+                    (pid, list(media_ids)))
+            self._q("NOTIFY catalogado")
+        return pid
+
+    def completar_foto_de_referencia(self, ref_id: int, jpeg: bytes | None):
+        """El NAS guarda la foto achicada que leyó (o la marca ilegible)."""
+        if jpeg is None:
+            self._q("UPDATE person_reference SET estado = 'ilegible' WHERE id = %s", (ref_id,))
+        else:
+            self._q("UPDATE person_reference SET foto = %s WHERE id = %s", (jpeg, ref_id))
 
     def referencias_sin_revisar(self) -> list[tuple[int, bytes]]:
         """Fotos ya procesadas antes de que el NAS anotara qué vio (esquema v6)."""
@@ -531,21 +702,29 @@ class Repo:
         self._q("UPDATE person_reference SET caras = %s, cara_caja = %s, confianza = %s "
                 "WHERE id = %s", (caras, list(caja) if caja else None, confianza, ref_id))
 
-    def detalle_persona(self, person_id: int) -> dict | None:
+    def detalle_persona(self, person_id: int, fotos: bool = True) -> dict | None:
         """Todo lo de una persona para el detalle de Catalogar: sus fotos de
         referencia (con la foto, la firma y lo que vio el NAS) y cuántos medios
-        del catálogo tienen su nombre. None si ya no existe."""
+        del catálogo tienen su nombre. None si ya no existe.
+
+        `fotos=False` no trae las fotos (unos 270 KB cada una: por Netbird, 9
+        fotos tardan más de 2 s); `tiene_foto` dice si hay, para pedirlas después
+        con `fotos_de_referencia`, y `sello_foto` (md5) identifica la foto para la
+        caché local, aunque el mismo id exista en otra base."""
         p = self._q("SELECT id, name FROM person WHERE id = %s", (person_id,)).fetchone()
         if p is None:
             return None
+        col = "foto" if fotos else "NULL::bytea AS foto"
         refs = [{"id": r["id"], "archivo": os.path.basename((r["source_path"] or "").replace("\\", "/")),
                  "ruta": r["source_path"] or "", "estado": r["estado"],
                  "foto": bytes(r["foto"]) if r["foto"] is not None else None,
+                 "tiene_foto": r["sello_foto"] is not None, "sello_foto": r["sello_foto"],
                  "firma": bytes(r["embedding"]) if r["embedding"] is not None else None,
                  "caras": r["caras"], "caja": tuple(r["cara_caja"]) if r["cara_caja"] else None,
                  "confianza": r["confianza"]}
                 for r in self._q(
-                    "SELECT id, source_path, estado, foto, embedding, caras, cara_caja, confianza "
+                    f"SELECT id, source_path, estado, {col}, md5(foto) AS sello_foto, "
+                    "embedding, caras, cara_caja, confianza "
                     "FROM person_reference WHERE person_id = %s ORDER BY id", (person_id,))]
         n = self._q(
             "SELECT COUNT(*) FILTER (WHERE mt.confirmed) AS confirmadas,"
@@ -554,6 +733,14 @@ class Repo:
             (self.normalize_tag(p["name"]),)).fetchone()
         return {"id": p["id"], "name": p["name"], "referencias": refs,
                 "confirmadas": n["confirmadas"], "sugeridas": n["sugeridas"]}
+
+    def fotos_de_referencia(self, ids: list[int]) -> dict[int, bytes]:
+        """{id: JPEG} de las fotos de referencia pedidas que tienen foto."""
+        if not ids:
+            return {}
+        return {r["id"]: bytes(r["foto"]) for r in self._q(
+            "SELECT id, foto FROM person_reference WHERE id = ANY(%s) AND foto IS NOT NULL",
+            (list(ids),))}
 
     def quitar_referencia(self, ref_id: int):
         """Saca una foto de referencia. Las etiquetas que ya se pusieron quedan."""
@@ -579,21 +766,54 @@ class Repo:
 
     # ------------------------------------------------------------- IA
     def media_for_ai(self, model: str, people_sig: str) -> list[tuple[Media, bool]]:
-        """Medios que hay que analizar: (medio, hace_falta_escena).
+        """Medios que hay que analizar: (medio, hace_falta_escena). Ver
+        `pendientes_de_ia`, que es lo que usa la pasada."""
+        return [(p.media, p.escena) for p in self.pendientes_de_ia(model, people_sig)]
 
-        Falta escena si nunca se analizó o cambió el modelo/vocabulario. Si solo
-        cambió la lista de personas, se repasan las caras y no la escena. Los
-        que faltan de su ruta esperan a reaparecer.
-        """
+    def pendientes_de_ia(self, model: str, people_sig: str, carpetas: list[str] | None = None,
+                         escenas: bool = True, personas: bool = True,
+                         rehacer: bool = False) -> list["PendienteIA"]:
+        """Qué hay que analizar y qué parte de cada uno.
+
+        Falta la escena si nunca se analizó o cambió el modelo/vocabulario; faltan
+        las caras si cambió la lista de personas. `carpetas` (relativas) limita a
+        esas carpetas: pedir una sola no repasa todo el archivo. `escenas` /
+        `personas`: qué partes se pidieron; `rehacer`: también lo ya hecho. Los
+        que faltan de su ruta esperan a reaparecer."""
+        if not (escenas or personas):
+            return []
+        where = ["m.quality_flag NOT IN ('corrupt', 'en_negro')", "m.missing_since IS NULL"]
+        params: list = []
+        if carpetas is not None:
+            if not carpetas:
+                return []
+            conds = []
+            for c in carpetas:
+                conds.append("(m.rel_path = %s OR starts_with(m.rel_path, %s))")
+                params += [c, c.rstrip("/") + "/"]
+            where.append("(" + " OR ".join(conds) + ")")
+        if not rehacer:
+            falta = []
+            if escenas:
+                falta.append("a.media_id IS NULL OR a.model IS DISTINCT FROM %s")
+                params.append(model)
+            if personas:
+                falta.append("a.media_id IS NULL OR COALESCE(a.people_sig, '') <> %s")
+                params.append(people_sig)
+            where.append("(" + " OR ".join(falta) + ")")
         rows = self._q(
-            "SELECT m.*, a.model AS ai_model, a.media_id AS ai_id FROM media m "
-            "LEFT JOIN ai_result a ON a.media_id = m.id "
-            "WHERE m.quality_flag NOT IN ('corrupt', 'en_negro') AND m.missing_since IS NULL "
-            "AND (a.media_id IS NULL OR a.model IS DISTINCT FROM %s "
-            "     OR COALESCE(a.people_sig, '') <> %s) ORDER BY m.id",
-            (model, people_sig)).fetchall()
-        return [(self._media(r), r["ai_id"] is None or r["ai_model"] != model)
-                for r in rows]
+            "SELECT m.*, a.model AS ai_model, a.people_sig AS ai_sig, a.media_id AS ai_id "
+            "FROM media m LEFT JOIN ai_result a ON a.media_id = m.id "
+            "WHERE " + " AND ".join(where) + " ORDER BY m.id", params).fetchall()
+        out = []
+        for r in rows:
+            nuevo = r["ai_id"] is None
+            esc = escenas and (rehacer or nuevo or r["ai_model"] != model)
+            car = personas and (rehacer or nuevo or (r["ai_sig"] or "") != people_sig)
+            if esc or car:
+                out.append(PendienteIA(self._media(r), esc, car,
+                                       r["ai_model"], r["ai_sig"] or ""))
+        return out
 
     def get_ai_raw(self, media_id: int) -> str | None:
         row = self._q("SELECT raw_json FROM ai_result WHERE media_id = %s",
@@ -612,7 +832,8 @@ class Repo:
 
     # ------------------------------------------------------------- búsqueda
     def buscar(self, query: str, *, kind: str | None = None, pending_only: bool = False,
-               desde: int = 0, cuantos: int = 120) -> tuple[list[Media], int | None]:
+               desde: int = 0, cuantos: int = 120,
+               orden: str = "relevancia") -> tuple[list[Media], int | None]:
         """Una página de la búsqueda de Buscar, y cuántos hay en total.
 
         Mismas reglas que `_search` (palabras primero, por relevancia; después
@@ -622,6 +843,9 @@ class Repo:
         `search_doc` (el índice de texto: ~40 % de cada fila) y sí las etiquetas
         de cada uno, para la grilla. El total es None
         si se pidió una página después del final.
+
+        `orden`: "relevancia" (lo de arriba), "nuevas" o "viejas" (por fecha de
+        toma; los que no la tienen, al final, por nombre).
         """
         where, params = [], []
         terms = [t for t in (query or "").split() if t]
@@ -642,8 +866,11 @@ class Repo:
         if pending_only:
             where.append("EXISTS (SELECT 1 FROM media_tag mt "
                          "WHERE mt.media_id = m.id AND NOT mt.confirmed)")
+        criterio = orden
         orden = "m.missing_since IS NOT NULL"
-        if tsq:
+        if criterio in ("nuevas", "viejas"):
+            orden += ", m.tomada " + ("DESC" if criterio == "nuevas" else "ASC") + " NULLS LAST"
+        elif tsq:
             orden += (", (m.search_doc @@ to_tsquery('catalogo', %s)) DESC, "
                       "ts_rank(m.search_doc, to_tsquery('catalogo', %s)) DESC")
             params += [tsq, tsq]
@@ -733,7 +960,7 @@ def sello_de(jpeg: bytes) -> str:
 _COLUMNAS_MEDIA = ", ".join("m." + c for c in (
     "id", "rel_path", "filename", "folder_origin", "kind", "width", "height", "aspect",
     "duration", "codec", "size_bytes", "file_mtime", "sha256", "phash", "status",
-    "quality_flag", "missing_since"))
+    "quality_flag", "missing_since", "tomada", "lat", "lon"))
 # Las etiquetas de cada medio, para la grilla: [[nombre, confirmada], ...]
 _ETIQUETAS_MEDIA = (
     "(SELECT COALESCE(json_agg(json_build_array(t.name, mt.confirmed) "
@@ -762,7 +989,22 @@ def _row_to_media(row, raiz: str) -> Media:
         quality_flag=row["quality_flag"],
         missing_since=row["missing_since"],
         etiquetas=[(n, c) for n, c in row["etiquetas"]] if "etiquetas" in row else None,
+        tomada=row.get("tomada"),
+        lat=row.get("lat"),
+        lon=row.get("lon"),
     )
+
+
+@dataclass
+class PendienteIA:
+    """Un medio que la IA tiene que mirar y qué parte (ver Repo.pendientes_de_ia).
+    `modelo` / `firma`: con qué se analizó antes, para no marcar como hecha la
+    parte que no se corrió."""
+    media: Media
+    escena: bool
+    caras: bool
+    modelo: str | None
+    firma: str
 
 
 def _to_tsquery(query: str) -> str | None:

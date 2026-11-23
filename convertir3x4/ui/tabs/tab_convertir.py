@@ -1008,7 +1008,7 @@ class ConvertTab(QWidget):
         self.btn_convert.setEnabled(not falta_fondo)
 
     def _open_advanced(self):
-        dlg = AdvancedDialog(self._opts, self)
+        dlg = AdvancedDialog(self._opts, self, srv=_servicio_si_hay_catalogo())
         if dlg.exec():
             self._opts = dlg.options()
             self._dibujar_iconos_pantalla()     # la proporción pudo cambiar
@@ -1250,3 +1250,16 @@ class ConvertTab(QWidget):
                              "Cerrar y cancelar", cancelar="Seguir convirtiendo", peligro=True):
                 return False
         return True
+
+
+def _servicio_si_hay_catalogo():
+    """Las pantallas guardadas están en el catálogo: sin catálogo configurado,
+    Convertir funciona igual, solo con las proporciones de siempre."""
+    from ...appdata import config_catalogo
+    from ...catalog.db import CatalogoNoConfigurado
+    from ..servicio_catalogo import servicio
+    try:
+        config_catalogo()
+    except CatalogoNoConfigurado:
+        return None
+    return servicio()

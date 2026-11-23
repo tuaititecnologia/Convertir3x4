@@ -23,6 +23,8 @@ def main():
     window.iniciar_avisos()
     # Revisar (y si hace falta ofrecer preparar) el programa para bajar videos
     window.convert_tab.revisar_herramientas()
+    # ¿Hay una versión nueva publicada? (solo el .exe numerado, no en desarrollo)
+    window.aviso_version.empezar()
     sys.exit(app.exec())
 
 

@@ -80,16 +80,13 @@ class ConfigCatalogo:
     base: str = "catalogo"
     puerto: int = 5432
     raiz: str = r"\\truenas\multimedia"
-    # Carpetas que se catalogan, relativas a `raiz` y con "/" (p. ej. "Publicar").
-    carpetas: tuple[str, ...] = ()
-
-    def __post_init__(self):
-        object.__setattr__(self, "carpetas", normalizar_carpetas(self.carpetas))
+    # Las carpetas que se catalogan no van acá: están en la base
+    # (`carpeta_catalogada`, desde la v0.8.0) y se manejan desde la app.
 
     @classmethod
     def desde_entorno(cls) -> "ConfigCatalogo | None":
         """Para desarrollo: CDLM_CATALOGO_SERVIDOR, _PUERTO, _BASE, _USUARIO,
-        _CLAVE, _RAIZ y _CARPETAS (separadas por ";"). None si no hay servidor."""
+        _CLAVE y _RAIZ. None si no hay servidor."""
         e = os.environ.get
         servidor = e("CDLM_CATALOGO_SERVIDOR")
         if not servidor:
@@ -101,7 +98,6 @@ class ConfigCatalogo:
             base=e("CDLM_CATALOGO_BASE", "catalogo"),
             puerto=int(e("CDLM_CATALOGO_PUERTO", "5432")),
             raiz=e("CDLM_CATALOGO_RAIZ", r"\\truenas\multimedia"),
-            carpetas=tuple(e("CDLM_CATALOGO_CARPETAS", "").split(";")),
         )
 
     @classmethod
@@ -133,7 +129,6 @@ class ConfigCatalogo:
             base=sec.get("base", "catalogo").strip(),
             puerto=puerto,
             raiz=sec.get("raiz", r"\\truenas\multimedia").strip(),
-            carpetas=tuple(sec.get("carpetas", "").splitlines()),
         )
 
 
@@ -347,7 +342,7 @@ CREATE TABLE person_reference (
 # El catalogado corre en el NAS (docs/catalogado-en-el-nas.md). Las PCs lo
 # piden y lo miran a través de estas dos tablas.
 _V2 = r"""
--- Un pedido de catalogar: «Catalogar ahora» (carpeta NULL = todas las de la
+-- Un pedido de catalogar: «Catalogar» (carpeta NULL = todas las de la
 -- lista) o una subcarpeta desde el ⚙. El catalogador del NAS lo toma, lo marca
 -- empezado y lo cierra con el resultado (o el error).
 CREATE TABLE catalogado_pedido (
@@ -456,6 +451,63 @@ CREATE TRIGGER person_reference_aviso_cambio AFTER UPDATE ON person_reference
     EXECUTE FUNCTION avisar_cambio_catalogo();
 """
 
+# v0.8.0 (docs/plan-v0.8.md):
+# - Catalogar por partes: el pedido dice qué pasos correr (NULL = todos) y si
+#   se rehace lo ya hecho.
+# - Fecha de toma y ubicación de fotos y videos. `metadatos_version` deja que
+#   el NAS complete una vez lo ya catalogado (como `miniatura_version`).
+# - Tira de cuadros de los videos (vista previa al pasar el puntero en
+#   Buscar): la hace el NAS y va en la base, como la miniatura.
+# - Fotos de referencia elegidas en Buscar: la PC manda el medio y el NAS lee
+#   el archivo (`foto` queda vacía hasta que el NAS la completa).
+# - La lista de carpetas que se catalogan pasa a la base (`carpeta_catalogada`).
+# - Pantallas guardadas de Convertir, compartidas por las PCs (`pantalla`).
+_V7 = r"""
+ALTER TABLE catalogado_pedido
+    ADD COLUMN pasos text[],
+    ADD COLUMN rehacer boolean NOT NULL DEFAULT false;
+
+ALTER TABLE media
+    ADD COLUMN tomada timestamptz,
+    ADD COLUMN lat double precision,
+    ADD COLUMN lon double precision,
+    ADD COLUMN metadatos_version smallint NOT NULL DEFAULT 0;
+CREATE INDEX media_tomada ON media (tomada);
+
+CREATE TABLE tira (
+    media_id bigint PRIMARY KEY REFERENCES media(id) ON DELETE CASCADE,
+    jpeg     bytea NOT NULL,
+    sello    text NOT NULL
+);
+
+ALTER TABLE person_reference
+    ADD COLUMN media_id bigint REFERENCES media(id) ON DELETE SET NULL;
+
+-- Las carpetas que se catalogan se manejan desde la aplicación (⚙ de Catalogar), no
+-- desde el compose del NAS. Se arranca con la lista que el NAS usaba hasta ahora.
+CREATE TABLE carpeta_catalogada (
+    ruta         text PRIMARY KEY,         -- relativa a la raíz, con "/"
+    agregada     timestamptz NOT NULL DEFAULT now(),
+    agregada_por text
+);
+INSERT INTO carpeta_catalogada (ruta)
+    SELECT DISTINCT unnest(carpetas) FROM catalogado_estado ON CONFLICT DO NOTHING;
+CREATE TRIGGER carpeta_catalogada_aviso AFTER INSERT OR DELETE ON carpeta_catalogada
+    FOR EACH ROW EXECUTE FUNCTION avisar_cambio_catalogo();
+
+-- Pantallas guardadas de Convertir (p. ej. «Evento de primavera · 4,5 × 1,2 m»),
+-- compartidas por las PCs. La medida puede ser en metros, centímetros o píxeles:
+-- lo que importa es la proporción. Las de siempre (8:9 del LED…) están en el código.
+CREATE TABLE pantalla (
+    id      bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    nombre  text NOT NULL,
+    ancho   numeric NOT NULL CHECK (ancho > 0),
+    alto    numeric NOT NULL CHECK (alto > 0),
+    creada  timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX pantalla_nombre ON pantalla (lower(nombre));
+"""
+
 MIGRACIONES: list[tuple[int, str]] = [
     (1, _V1),
     (2, _V2),
@@ -463,6 +515,7 @@ MIGRACIONES: list[tuple[int, str]] = [
     (4, _V4),
     (5, _V5),
     (6, _V6),
+    (7, _V7),
 ]
 CANAL_CAMBIOS = "catalogo"
 VERSION_ESQUEMA = MIGRACIONES[-1][0]

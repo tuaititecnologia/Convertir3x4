@@ -8,6 +8,9 @@ accidente lo que tiene que quedar igual todos los domingos.
 - Lo que se cambia acá dura hasta cerrar la app: `SessionOptions` no se guarda.
 - El nivel de audio (-16 LUFS) no está acá: es una constante (convert/clips.py),
   porque la consola se calibra una sola vez contra ese valor.
+- Las pantallas guardadas (con nombre y medida, compartidas por las PCs en el
+  catálogo) aparecen en «Proporción» después de las de siempre; se administran
+  con «Pantallas guardadas…» (widgets/pantallas.py).
 """
 
 import os
@@ -18,6 +21,8 @@ from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QSpinBox, QVBoxLayout, QWidget,
 )
+
+from .pantallas import AdministrarPantallas, EditarPantalla, describir, proporcion
 
 from ...config import ASPECT_RATIOS, DEFAULT_ASPECT_H, DEFAULT_ASPECT_W
 
@@ -30,6 +35,7 @@ def default_download_dir() -> str:
 @dataclass
 class SessionOptions:
     aspect: tuple[int, int] = (DEFAULT_ASPECT_W, DEFAULT_ASPECT_H)
+    pantalla: str | None = None          # nombre, si se eligió una pantalla guardada
     photos_as_video: bool = False
     download_dir: str = field(default_factory=default_download_dir)
 
@@ -37,7 +43,9 @@ class SessionOptions:
         """Lo que está fuera de lo estándar, en palabras cortas (para el aviso naranja)."""
         std = SessionOptions()
         out = []
-        if self.aspect != std.aspect:
+        if self.pantalla:
+            out.append(f"Pantalla «{self.pantalla}»")
+        elif self.aspect != std.aspect:
             out.append(f"Proporción {self.aspect[0]}:{self.aspect[1]}")
         if self.photos_as_video != std.photos_as_video:
             out.append("Fotos como video")
@@ -47,8 +55,10 @@ class SessionOptions:
 
 
 class AdvancedDialog(QDialog):
-    def __init__(self, opts: SessionOptions, parent=None):
+    def __init__(self, opts: SessionOptions, parent=None, srv=None):
         super().__init__(parent)
+        self._srv = srv
+        self._n_fijas = len(ASPECT_RATIOS)
         self.setWindowTitle("Opciones avanzadas")
         self.setMinimumWidth(460)
         self._opts = replace(opts)
@@ -90,13 +100,27 @@ class AdvancedDialog(QDialog):
         self.spin_h.setAccessibleName("Alto de la pantalla")
         fila.addWidget(self.spin_h)
         fila.addStretch()
+        self.btn_guardar_pantalla = QPushButton("Guardar como pantalla…")
+        self.btn_guardar_pantalla.clicked.connect(self._guardar_pantalla)
+        self.btn_guardar_pantalla.setVisible(srv is not None)
+        fila.addWidget(self.btn_guardar_pantalla)
         lay.addWidget(self.otra)
+        if srv is not None:
+            fila2 = QHBoxLayout()
+            self.btn_pantallas = QPushButton("Pantallas guardadas…")
+            self.btn_pantallas.setObjectName("btn_link")
+            self.btn_pantallas.clicked.connect(self._administrar)
+            fila2.addWidget(self.btn_pantallas)
+            fila2.addStretch()
+            lay.addLayout(fila2)
         lay.addWidget(self._help(
             "La pantalla de la iglesia usa 8:9. Cámbiela solo si el material es para otra "
             "pantalla. Para otra medida, elija «Otra…» e indique el ancho y el alto (en "
             "metros, centímetros o píxeles: lo que importa es la proporción)."))
         self.combo_ratio.currentIndexChanged.connect(self._on_ratio)
-        self._mostrar_aspecto(self._opts.aspect)
+        self._pendiente = self._opts.pantalla
+        self._mostrar_aspecto(self._opts.aspect, self._opts.pantalla)
+        self._leer_pantallas()
         lay.addSpacing(10)
 
         lay.addWidget(self._title("Fotos"))
@@ -146,16 +170,75 @@ class AdvancedDialog(QDialog):
         if d:
             self.txt_dir.setText(d)
 
-    def _mostrar_aspecto(self, aspect):
+    # ------------------------------------------------------------- pantallas guardadas
+    def _leer_pantallas(self, elegir: str | None = None):
+        if self._srv is None:
+            return
+        self._srv.pedir(lambda repo: repo.pantallas(),
+                        ok=lambda ps: self._poner_pantallas(ps, elegir), error=lambda _e: None)
+
+    def _poner_pantallas(self, pantallas, elegir: str | None = None):
+        """Las guardadas van entre las de siempre y «Otra…»."""
+        actual = self._aspecto(), self._nombre_elegido()
+        # La pantalla con que se abrió llega después que la ventana: se elige al llegar
+        pendiente, self._pendiente = getattr(self, "_pendiente", None), None
+        if pendiente and actual[1] is None and actual[0] == self._opts.aspect:
+            actual = actual[0], pendiente
+        while self.combo_ratio.count() > self._n_fijas + 1:
+            self.combo_ratio.removeItem(self._n_fijas)
+        for i, p in enumerate(pantallas):
+            self.combo_ratio.insertItem(self._n_fijas + i, describir(p),
+                                        {"aspect": proporcion(p["ancho"], p["alto"]),
+                                         "nombre": p["nombre"]})
+        self._mostrar_aspecto(actual[0], elegir or actual[1])
+
+    def _nombre_elegido(self) -> str | None:
+        d = self.combo_ratio.currentData()
+        return d["nombre"] if isinstance(d, dict) else None
+
+    def _guardar_pantalla(self):
+        d = EditarPantalla(self, "", float(self.spin_w.value()), float(self.spin_h.value()))
+        if not d.exec():
+            return
+        nombre, ancho, alto = d.datos()
+        self._srv.pedir(lambda repo: repo.guardar_pantalla(nombre, ancho, alto),
+                        ok=lambda _id: self._leer_pantallas(elegir=nombre),
+                        error=lambda e: self._aviso(
+                            f"Ya hay una pantalla «{nombre}»." if "ya hay" in str(e) else
+                            "No se pudo guardar la pantalla: no hay conexión con el NAS."))
+
+    def _administrar(self):
+        d = AdministrarPantallas(self._srv, self)
+        d.exec()
+        if d.cambio:
+            self._leer_pantallas()
+
+    def _aviso(self, texto: str):
+        if not hasattr(self, "lbl_aviso"):
+            self.lbl_aviso = QLabel()
+            self.lbl_aviso.setWordWrap(True)
+            self.layout().insertWidget(self.layout().indexOf(self.otra) + 1, self.lbl_aviso)
+        self.lbl_aviso.setText(texto)
+
+    def _mostrar_aspecto(self, aspect, nombre: str | None = None):
+        for i in range(self.combo_ratio.count()):
+            d = self.combo_ratio.itemData(i)
+            if nombre and isinstance(d, dict) and d["nombre"] == nombre:
+                self.combo_ratio.setCurrentIndex(i)
+                break
+        else:
+            self._elegir_por_aspecto(aspect)
+        self.spin_w.setValue(aspect[0])
+        self.spin_h.setValue(aspect[1])
+        self._on_ratio()
+
+    def _elegir_por_aspecto(self, aspect):
         for i in range(self.combo_ratio.count()):
             if self.combo_ratio.itemData(i) == tuple(aspect):
                 self.combo_ratio.setCurrentIndex(i)
                 break
         else:
             self.combo_ratio.setCurrentIndex(self.combo_ratio.count() - 1)   # Otra…
-        self.spin_w.setValue(aspect[0])
-        self.spin_h.setValue(aspect[1])
-        self._on_ratio()
 
     def _on_ratio(self, *_):
         self.otra.setVisible(self.combo_ratio.currentData() is None)
@@ -168,6 +251,8 @@ class AdvancedDialog(QDialog):
 
     def _aspecto(self) -> tuple[int, int]:
         elegido = self.combo_ratio.currentData()
+        if isinstance(elegido, dict):
+            return tuple(elegido["aspect"])
         if elegido is not None:
             return tuple(elegido)
         from math import gcd
@@ -178,6 +263,7 @@ class AdvancedDialog(QDialog):
     def options(self) -> SessionOptions:
         return SessionOptions(
             aspect=self._aspecto(),
+            pantalla=self._nombre_elegido(),
             photos_as_video=self.chk_video.isChecked(),
             download_dir=self.txt_dir.text().strip() or default_download_dir(),
         )

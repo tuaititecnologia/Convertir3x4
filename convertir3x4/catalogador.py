@@ -25,6 +25,7 @@ import logging
 import os
 import signal
 import socket
+import sys
 import threading
 import time
 import dataclasses
@@ -35,7 +36,7 @@ import psycopg
 from .catalog import rutas
 from .catalog.db import (
     CatalogoIncompatible, CatalogoNoConfigurado, CatalogoNoDisponible,
-    ConfigCatalogo, conectar, normalizar_carpetas,
+    ConfigCatalogo, conectar,
 )
 from .catalog.repo import Repo
 from .config import APP_VERSION
@@ -49,6 +50,11 @@ VENTANA_PROGRAMADA = 6    # horas después de CDLM_HORA en que todavía se corre
 VIGENCIA_COPIA = 600      # segundos: una copia sin novedades por más tiempo se da por muerta
 FASES_COPIA = ("COPIANDO", "MONTANDO")
 REVISAR_REFERENCIAS = 30  # segundos: en una pasada larga, cada cuánto se miran las fotos de personas
+
+# Pasos que una PC puede pedir (`catalogado_pedido.pasos`; NULL = todos).
+# «archivos» corre siempre: los demás necesitan lo nuevo ya catalogado.
+ARCHIVOS, MINIATURAS, ESCENAS, PERSONAS = "archivos", "miniaturas", "escenas", "personas"
+PASOS = (ARCHIVOS, MINIATURAS, ESCENAS, PERSONAS)
 
 
 @dataclass(frozen=True)
@@ -174,6 +180,7 @@ def procesar_referencias(repo: Repo, cfg: ConfigCatalogador) -> int:
     rápido (unas pocas fotos), así que no espera nada."""
     if not cfg.ia:
         return 0
+    _leer_referencias_del_catalogo(repo)
     pendientes = repo.referencias_pendientes()
     sin_revisar = repo.referencias_sin_revisar()
     if not pendientes and not sin_revisar:
@@ -211,6 +218,20 @@ def procesar_referencias(repo: Repo, cfg: ConfigCatalogador) -> int:
     log.info("fotos de referencia procesadas: %d (revisadas de antes: %d)",
              len(pendientes), len(sin_revisar))
     return len(pendientes) + len(sin_revisar)
+
+
+def _leer_referencias_del_catalogo(repo: Repo):
+    """Fotos de referencia elegidas en Buscar: se leen del disco del NAS y se
+    guardan achicadas (como las que sube una PC), así el detalle las muestra y
+    la firma se puede recalcular sin volver a leer el archivo."""
+    from .catalog.thumbs import foto_de_referencia
+    for ref_id, ruta in repo.referencias_del_catalogo():
+        try:
+            jpeg = foto_de_referencia(ruta)
+        except Exception:  # noqa: BLE001 — ya no está o no es una imagen
+            log.warning("foto de referencia ilegible: %s", ruta)
+            jpeg = None
+        repo.completar_foto_de_referencia(ref_id, jpeg)
 
 
 def _referencias_al_paso(repo: Repo, cfg: ConfigCatalogador) -> int:
@@ -252,29 +273,46 @@ class _Avance:
 
 
 def pasada(repo: Repo, cfg: ConfigCatalogador, carpeta: str | None = None,
-           parar: threading.Event | None = None) -> dict:
+           parar: threading.Event | None = None, pasos=None, rehacer: bool = False,
+           nocturna: bool = False) -> dict:
     """Cataloga (todas las carpetas o una subcarpeta) y después analiza con IA.
-    Devuelve el resumen que se guarda en la base."""
-    from .engine.pipeline import catalogar
-    carpetas = cfg.catalogo.carpetas
+    Devuelve el resumen que se guarda en la base.
+
+    `pasos` (ver PASOS; None = todos): «archivos» corre siempre. `rehacer`:
+    también lo ya hecho, en los pasos elegidos. Las tiras de cuadros que falten
+    en videos ya catalogados se arman de noche o si se pide «miniaturas»
+    (la primera vez son horas); los videos nuevos la tienen al agregarse."""
+    from .engine.pipeline import Opciones, catalogar
+    todos = pasos is None
+    pedidos = set(PASOS) if todos else set(pasos) | {ARCHIVOS}
+    carpetas = repo.carpetas_catalogadas()      # se manejan desde la app (⚙ de Catalogar)
     if carpeta is None:
-        lista, bloqueo = list(carpetas), None
+        lista, bloqueo, alcance = list(carpetas), None, None
     else:
         rel = carpeta.replace("\\", "/").strip("/")
         madre = carpeta_madre(rel, carpetas)
         if madre is None:
             raise ValueError(f"«{rel}» no está dentro de las carpetas que se catalogan")
-        lista, bloqueo = [rel], madre
+        lista, bloqueo, alcance = [rel], madre, [rel]
+    miniaturas = MINIATURAS in pedidos
+    opciones = Opciones(
+        miniaturas=miniaturas,
+        tiras_faltantes=(miniaturas and (nocturna or not todos)),
+        rehacer_metadatos=rehacer and (todos or ARCHIVOS in (pasos or ())),
+        rehacer_miniaturas=rehacer and miniaturas,
+    )
     stats = catalogar(repo, lista, progress_cb=_Avance(repo, "catalogando", parar, cfg),
-                      bloqueo=bloqueo)
+                      bloqueo=bloqueo, opciones=opciones)
     resumen = {"catalogado": asdict(stats)}
-    if cfg.ia:
+    escenas, personas = ESCENAS in pedidos, PERSONAS in pedidos
+    if cfg.ia and (escenas or personas):
         from .engine import ai_models
         from .engine.ai_pipeline import run_ai
         repo.actualizar_estado(fase="preparando_ia", hechos=None, total=None, detalle=None)
         ai_models.ensure(cfg.modelos)
         st = run_ai(repo, cfg.modelos, progress_cb=_Avance(repo, "analizando", parar, cfg),
-                    threads=cfg.hilos)
+                    threads=cfg.hilos, carpetas=alcance, escenas=escenas, personas=personas,
+                    rehacer=rehacer)
         resumen["ia"] = asdict(st)
     return resumen
 
@@ -286,14 +324,18 @@ def atender(repo: Repo, cfg: ConfigCatalogador, pedido: dict | None,
     el estado y cierra el pedido. Devuelve el resumen (None si falló)."""
     ahora = ahora or datetime.datetime.now()
     carpeta = pedido["carpeta"] if pedido else None
+    pasos = pedido.get("pasos") if pedido else None
+    rehacer = bool(pedido.get("rehacer")) if pedido else False
     quien = f"pedido {pedido['id']}" if pedido else "pasada nocturna"
-    log.info("empieza %s (%s)", quien, carpeta or "todas las carpetas")
+    log.info("empieza %s (%s; %s%s)", quien, carpeta or "todas las carpetas",
+             ", ".join(pasos) if pasos else "todo", ", rehaciendo" if rehacer else "")
     repo.actualizar_estado(fase="catalogando", hechos=0, total=None, detalle=None,
                            pedido_id=pedido["id"] if pedido else None,
                            ultima_inicio=ahora.astimezone())   # con zona: la base es timestamptz
     resumen, error = None, None
     try:
-        resumen = pasada(repo, cfg, carpeta, parar)
+        resumen = pasada(repo, cfg, carpeta, parar, pasos=pasos, rehacer=rehacer,
+                         nocturna=pedido is None)
     except (CatalogoNoDisponible, psycopg.OperationalError, Detenido):
         # La base se cayó o se está apagando el contenedor: el pedido vuelve a
         # la fila al arrancar y la nocturna se repite (la pasada es idempotente).
@@ -384,13 +426,13 @@ def servir(cfg: ConfigCatalogador, parar: threading.Event | None = None):
             n = repo.soltar_pedidos_colgados()
             if n:
                 log.info("%s pedido(s) cortados a mitad vuelven a la fila", n)
-            repo.actualizar_estado(version_app=APP_VERSION, carpetas=list(cfg.catalogo.carpetas),
-                                   fase="esperando", detalle=None, hechos=None, total=None,
-                                   pedido_id=None)
+            repo.actualizar_estado(version_app=APP_VERSION, fase="esperando", detalle=None,
+                                   hechos=None, total=None, pedido_id=None)
             conn.execute("LISTEN catalogado")
             latido.start()
             log.info("listo: %s, carpetas %s, nocturna %s", cfg.catalogo.raiz,
-                     ", ".join(cfg.catalogo.carpetas), cfg.hora.strftime("%H:%M"))
+                     ", ".join(repo.carpetas_catalogadas()) or "(ninguna todavía)",
+                     cfg.hora.strftime("%H:%M"))
             while not parar.is_set():
                 if not ciclo(repo, cfg, parar=parar):
                     _esperar_aviso(conn, ESPERA_PEDIDOS, parar)
@@ -409,10 +451,14 @@ def servir(cfg: ConfigCatalogador, parar: threading.Event | None = None):
 
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    if sys.platform == "darwin" and os.environ.get("CDLM_CATALOGADOR_EN_MAC") != "1":
+        # macOS entrega por SMB los nombres con tilde descompuestos (NFD): «MAÑANA»
+        # no coincide con lo que anotó el NAS (NFC), lo toma por movido y reescribe
+        # la ruta. Probado el 22/11/2026 contra una copia: 82 rutas cambiadas.
+        raise SystemExit("El catalogador corre en el NAS. En una Mac cambiaría las rutas "
+                         "con tilde del catálogo (CDLM_CATALOGADOR_EN_MAC=1 para una "
+                         "base de prueba).")
     cfg = ConfigCatalogador.desde_entorno()
-    if not cfg.catalogo.carpetas:
-        raise SystemExit("CDLM_CATALOGO_CARPETAS está vacío: no hay nada para catalogar")
-    normalizar_carpetas(cfg.catalogo.carpetas)
     parar = threading.Event()
 
     def _senal(_n, _f):

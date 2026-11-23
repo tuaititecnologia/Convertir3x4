@@ -41,6 +41,11 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Test the updater (on Windows it swaps a running .exe for real)
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m pytest tests_actualizacion.py -q
+
       - name: Write version file
         shell: bash
         run: |
