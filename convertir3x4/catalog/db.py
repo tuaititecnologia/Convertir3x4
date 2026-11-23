@@ -508,6 +508,19 @@ CREATE TABLE pantalla (
 CREATE UNIQUE INDEX pantalla_nombre ON pantalla (lower(nombre));
 """
 
+# Texto en las fotos (OCR, pedido del 23/11/2026): lo lee el catalogador del NAS
+# (engine/ocr.py). Se busca con el resto (search_doc, peso B) y se muestra en
+# Buscar. `version` = OCR_VERSION con que se leyó: si cambia, se vuelve a leer.
+# Texto vacío = se leyó y no tiene texto.
+_V8 = r"""
+CREATE TABLE texto_foto (
+    media_id bigint PRIMARY KEY REFERENCES media(id) ON DELETE CASCADE,
+    texto    text NOT NULL DEFAULT '',
+    version  smallint NOT NULL,
+    leida    timestamptz NOT NULL DEFAULT now()
+);
+"""
+
 MIGRACIONES: list[tuple[int, str]] = [
     (1, _V1),
     (2, _V2),
@@ -516,6 +529,7 @@ MIGRACIONES: list[tuple[int, str]] = [
     (5, _V5),
     (6, _V6),
     (7, _V7),
+    (8, _V8),
 ]
 CANAL_CAMBIOS = "catalogo"
 VERSION_ESQUEMA = MIGRACIONES[-1][0]

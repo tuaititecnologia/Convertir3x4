@@ -14,7 +14,7 @@ COPY convertir3x4/catalog convertir3x4/catalog
 COPY convertir3x4/engine convertir3x4/engine
 ARG APP_VERSION=dev
 RUN echo "APP_VERSION = \"${APP_VERSION}\"" > _version.py \
- && python -c "import convertir3x4.catalogador, convertir3x4.engine.ai_pipeline"
+ && python -c "import convertir3x4.catalogador, convertir3x4.engine.ai_pipeline, convertir3x4.engine.ocr"
 
 # Usuario «apps» de TrueNAS; el compose le suma el grupo multimedia para leer.
 USER 568:568

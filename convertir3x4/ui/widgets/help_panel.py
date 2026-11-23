@@ -24,6 +24,9 @@ HELP = [
                    "«Videos» se muestra solo ese tipo. El orden puede ser por fecha de la "
                    "toma (si la foto o el video la tiene); la fecha aparece al dejar el "
                    "puntero sobre cada uno."),
+        ("Texto en las fotos", "También se encuentran las fotos por el texto que aparece "
+                               "en ellas (carteles, flyers, pantallas). Ese texto se ve "
+                               "al dejar el puntero sobre la foto."),
         ("Vista previa de videos", "Deje el puntero sobre un video para ver cuadros de "
                                    "todo el video, sin abrirlo."),
         ("Usar en ProPresenter", "Arrastre la foto o el video directamente a ProPresenter. "
@@ -54,7 +57,8 @@ HELP = [
                                 "buscar a las personas)."),
         ("Análisis con IA", "El NAS sugiere etiquetas y reconoce a las personas de la "
                             "lista al catalogar. Todo queda como sugerencia hasta que se "
-                            "confirma en Buscar."),
+                            "confirma en Buscar. También lee el texto que aparece en las "
+                            "fotos, para poder buscarlo."),
         ("Personas", "Solo se reconoce a las personas de la lista. Cargue de 3 a 5 fotos "
                      "por persona en las que el rostro se vea con claridad y sea el más "
                      "grande de la foto. También puede elegirlas en Buscar, con «Agregar "

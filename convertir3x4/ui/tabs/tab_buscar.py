@@ -575,6 +575,8 @@ class BuscarTab(QWidget):
             tip += f"\n{m.width}×{m.height}"
         if m.quality_flag and m.quality_flag != "ok":
             tip += "\n" + _QUALITY.get(m.quality_flag, "")
+        if m.texto:
+            tip += "\n\n" + _texto_de_la_foto(m.texto)
         if not disponible:
             tip = (f"No se encuentra el original:\n{m.path}\n"
                    "Verifique que el NAS o el disco estén conectados. Mientras tanto, no "
@@ -870,6 +872,14 @@ def _fecha_de_toma(f) -> str:
     """«Tomada el 14/07/2019 a las 10:31», en la hora de esta PC."""
     local = f.astimezone() if f.tzinfo else f
     return f"Tomada el {local:%d/%m/%Y} a las {local:%H:%M}"
+
+
+def _texto_de_la_foto(texto: str, renglones: int = 8, largo: int = 70) -> str:
+    """El texto que leyó el NAS en la foto, para el detalle (cartel de ayuda)."""
+    lineas = [ln if len(ln) <= largo else ln[:largo - 1] + "…" for ln in texto.splitlines()]
+    if len(lineas) > renglones:
+        lineas = lineas[:renglones] + ["…"]
+    return "Texto en la foto:\n" + "\n".join(lineas)
 
 
 def _miles(n: int) -> str:

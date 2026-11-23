@@ -61,7 +61,8 @@ class AvisoActualizacion(QFrame):
         self._timer.start()
 
     def revisar(self):
-        if self._worker is not None or self.orden_de_reemplazo:
+        if (self._worker is not None or self.orden_de_reemplazo
+                or act.numeros(self._actual) is None):
             return
         self._worker = EngineWorker(lambda _p: act.ultima(), self)
         self._worker.finished_ok.connect(self.recibir)

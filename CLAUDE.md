@@ -21,7 +21,7 @@ python -m venv venv && source venv/bin/activate && pip install -r requirements.t
 ./venv/bin/python Convertir3x4.py      # shim entry point (also: python -m convertir3x4)
 
 # Tests — pass both files explicitly (pytest's default discovery skips the tests.py name)
-./venv/bin/python -m pytest tests.py tests_catalog.py tests_ai.py tests_clips.py tests_ui.py tests_convertir.py tests_discos.py tests_catalogador.py tests_v08.py tests_actualizacion.py -v
+./venv/bin/python -m pytest tests.py tests_catalog.py tests_ai.py tests_clips.py tests_ui.py tests_convertir.py tests_discos.py tests_catalogador.py tests_v08.py tests_actualizacion.py tests_ocr.py -v
 # tests_discos.py also runs the real panel-copias.py (fake lsblk/systemctl) when ~/Documents/Agents/CDLM-Freenas is present
 # tests_ai.py also runs real-model tests when CDLM_MODELS points to a folder with the downloaded models
 # Catalog tests (tests_catalog/tests_ai/tests_ui) need the dev PostgreSQL; fixtures in conftest.py create a
@@ -124,7 +124,7 @@ convertir3x4/
                          catalogado_estado (+ NOTIFY), heartbeat thread, waits while a recorder disk is copied.
                          Config from env (CDLM_CATALOGO_*, CDLM_MODELOS, CDLM_HORA…). See docs/catalogado-en-el-nas.md
                          The folder list is in the DB (carpeta_catalogada, managed from Catalogar's ⚙), not env.
-                         Pedidos carry pasos (archivos/miniaturas/escenas/personas) + rehacer; the AI honors the folder.
+                         Pedidos carry pasos (archivos/miniaturas/escenas/personas/texto) + rehacer; the AI honors the folder.
                          NEVER run it on a Mac against real data: macOS SMB returns accented names as NFD, they
                          don't match the NAS's NFC paths and get "moved" (main() refuses on darwin)
   actualizacion.py       update check (Qt-free): latest GitHub release (public repo, no token); on Windows the
@@ -170,6 +170,10 @@ convertir3x4/
     faces.py             FaceEngine: YuNet + SFace (OpenCV). Recognizes ONLY people in the `person` list
                          (cosine >= 0.42); other faces are discarded, never stored or clustered
     ai_pipeline.py       run_ai(): scene + faces over the catalog (videos via their DB thumbnail). Idempotent
+    ocr.py               text in photos (v0.8.1, schema 8 `texto_foto`): PaddleOCR det v3 mobile + rec v5 latin ONNX
+                         (ai_models), own DB/CTC pre/post (no paddle/pyclipper). Photos only. leer_fotos() = the
+                         «texto» step; text goes into search_doc (weight B) and Buscar's tooltip. Bump OCR_VERSION
+                         to re-read. ~1.5 s/photo on the NAS (4,053 photos ≈ 1 h 45 min once), 400 MB peak
   ui/avisos_catalogo.py  AvisosCatalogo(QThread): own connection, LISTEN catalogo (schema v3 triggers on media,
                          media_tag, tag) → `cambio`; reconnects alone and emits on reconnect. Started by __main__
                          (MainWindow.iniciar_avisos), not by tests. BuscarTab.cambio_en_el_catalogo re-queries keeping
