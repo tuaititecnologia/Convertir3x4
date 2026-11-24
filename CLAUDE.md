@@ -200,6 +200,14 @@ convertir3x4/
                          (catalog one subfolder, remove missing)
 ```
 
+**Lugar y eventos (24/11/2026):** tags with `tag.kind` 'lugar' / 'evento' (no schema change). One lugar per
+item (poner_lugar replaces), any number of eventos. A name has ONE kind: apply_tag refuses lugar/evento names
+and poner_* refuse others (NombreEnUso, message for the operator); suggest_tag never attaches them. Only
+'descriptivo' tags convert (cambiar_tipo, right-click on a chip; refuses persona/ia-sugerido and double lugar;
+pg_notify by hand since `tag` has no UPDATE trigger). Media.lugar/eventos come split out of `etiquetas` in
+_row_to_media; tag_counts/pending exclude them. Search: lugar:/evento:, tiene:lugar = place tag, tiene:gps =
+coordinates.
+
 **AI tags (Fase 5, present):** everything the AI proposes is `media_tag.source='ia', confirmed=0`
 (purple chips in Buscar: ✓ confirms, ✕ removes). `suggest_tag()` never overrides an existing tag and
 never re-adds one a person removed (`tag_rejection`). Face recognition is whitelist-only by church

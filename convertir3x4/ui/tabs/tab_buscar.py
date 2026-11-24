@@ -157,6 +157,8 @@ class BuscarTab(QWidget):
         self.formulario.buscar.connect(self.txt_query.setText)
         # Mientras se escribe se sugieren los filtros y las etiquetas (como Gmail)
         self._etiquetas_conocidas: list[str] = []
+        self._lugares: list[str] = []
+        self._eventos: list[str] = []
         self._sugerencias = QStringListModel(self)
         self.completar = QCompleter(self._sugerencias, self)
         self.completar.setWidget(self.txt_query)
@@ -328,11 +330,38 @@ class BuscarTab(QWidget):
         self.btn_convertir.clicked.connect(self._mandar_a_convertir)
         acciones.addWidget(self.btn_convertir)
         p_lay.addLayout(acciones)
-        self.tag_bar = TagBar()
+        self.tag_bar = TagBar(acciones_chip=[("Convertir en lugar", "lugar"),
+                                             ("Convertir en evento", "evento")])
         self.tag_bar.tagApplied.connect(self._apply_tag_to_selection)
         self.tag_bar.tagRemoved.connect(self._remove_tag_from_selection)
         self.tag_bar.tagConfirmed.connect(self._confirm_tag_on_selection)
+        self.tag_bar.accionChip.connect(self._convertir_etiqueta)
         p_lay.addWidget(self.tag_bar)
+        # Lugar (uno por elemento) y eventos (varios): etiquetas de tipo especial
+        especiales = QHBoxLayout()
+        especiales.setSpacing(24)
+        comun = [("Convertir en etiqueta común", "descriptivo")]
+        self.lugar_bar = TagBar(
+            titulo="Lugar", placeholder="Elegir el lugar…", vacio=None,
+            ayuda="Dónde se tomó. Cada elemento tiene un solo lugar: elegir otro "
+                  "reemplaza al anterior. Si el lugar no existe, se crea.",
+            accesible="Poner el lugar de la selección", ancho_campo=(170, 240),
+            acciones_chip=comun)
+        self.lugar_bar.tagApplied.connect(lambda n: self._cambiar_especial("poner_lugar", n))
+        self.lugar_bar.tagRemoved.connect(lambda n: self._cambiar_especial("quitar_de", n))
+        self.lugar_bar.accionChip.connect(self._convertir_etiqueta)
+        especiales.addWidget(self.lugar_bar, 1)
+        self.evento_bar = TagBar(
+            titulo="Eventos", placeholder="Agregar evento…", vacio=None,
+            ayuda="De qué evento es (campamento, bautismo…). Puede tener varios. Si el "
+                  "evento no existe, se crea.",
+            accesible="Agregar un evento a la selección", ancho_campo=(170, 240),
+            acciones_chip=comun)
+        self.evento_bar.tagApplied.connect(lambda n: self._cambiar_especial("poner_evento", n))
+        self.evento_bar.tagRemoved.connect(lambda n: self._cambiar_especial("quitar_de", n))
+        self.evento_bar.accionChip.connect(self._convertir_etiqueta)
+        especiales.addWidget(self.evento_bar, 1)
+        p_lay.addLayout(especiales)
         layout.addWidget(panel)
 
     # ------------------------------------------------------------- datos
@@ -351,7 +380,8 @@ class BuscarTab(QWidget):
             self.offline_box.setVisible(False)
             self.grid.set_empty_text("Mientras tanto, los archivos pueden abrirse desde la "
                                      "carpeta del NAS en el Explorador.")
-            self.tag_bar.set_enabled(False)
+            for barra in (self.tag_bar, self.lugar_bar, self.evento_bar):
+                barra.set_enabled(False)
             self._actualizar_seleccion()
         self.detalles.set_editable(estado == "ok")
 
@@ -526,7 +556,8 @@ class BuscarTab(QWidget):
         """Lo que se ofrece para la palabra que se está escribiendo."""
         cursor = self.txt_query.cursorPosition()
         desde, opciones = consulta.sugerencias(self.txt_query.text(), cursor,
-                                               self._etiquetas_conocidas)
+                                               self._etiquetas_conocidas, self._lugares,
+                                               self._eventos)
         if not opciones:
             self.completar.popup().hide()
             return
@@ -648,6 +679,7 @@ class BuscarTab(QWidget):
             # texto de una foto o las notas): se pasa a lo ya cargado
             for antes, ahora in zip(self._results, results):
                 antes.texto, antes.notas = ahora.texto, ahora.notas
+                antes.lugar, antes.eventos = ahora.lugar, ahora.eventos
             self._contar()
             self._on_selection_changed()
             return
@@ -963,11 +995,13 @@ class BuscarTab(QWidget):
         self._seguir_detalle()
         self._actualizar_seleccion()
         ids = self._selected_ids()
-        self.tag_bar.set_enabled(bool(ids) and self._srv.estado == "ok")
+        for barra in (self.tag_bar, self.lugar_bar, self.evento_bar):
+            barra.set_enabled(bool(ids) and self._srv.estado == "ok")
         self._seleccion += 1
         n = self._seleccion
         if not ids:
-            self.tag_bar.set_chips([], 0)
+            for barra in (self.tag_bar, self.lugar_bar, self.evento_bar):
+                barra.set_chips([], 0)
             return
         # Buscar ya trajo las etiquetas de cada uno: se muestran al instante,
         # sin esperar al NAS (la consulta hacía fila detrás de las miniaturas).
@@ -975,8 +1009,12 @@ class BuscarTab(QWidget):
         locales = _etiquetas_de(medios) if len(medios) == len(ids) else None
         if locales is not None:
             self.tag_bar.set_chips(locales[0], len(ids), locales[1])
+            lugares, eventos = _especiales_de(medios)
+            self.lugar_bar.set_chips(lugares, len(ids))
+            self.evento_bar.set_chips(eventos, len(ids))
             return
-        self._srv.pedir(lambda repo: (repo.tag_counts(ids), repo.pending_tag_counts(ids)),
+        self._srv.pedir(lambda repo: (repo.tag_counts(ids), repo.pending_tag_counts(ids),
+                                      repo.especiales_de(ids)),
                         ok=lambda r: self._mostrar_tags(n, len(ids), *r))
 
     def _por_id(self, ids: list[int]) -> list:
@@ -984,9 +1022,12 @@ class BuscarTab(QWidget):
         cargados = {m.id: m for m in getattr(self, "_results", [])}
         return [cargados[i] for i in ids if i in cargados]
 
-    def _mostrar_tags(self, n, cuantos, counts, pendientes):
+    def _mostrar_tags(self, n, cuantos, counts, pendientes, especiales=None):
         if n == self._seleccion:
             self.tag_bar.set_chips(counts, cuantos, pendientes)
+            especiales = especiales or {}
+            self.lugar_bar.set_chips(especiales.get("lugar", []), cuantos)
+            self.evento_bar.set_chips(especiales.get("evento", []), cuantos)
 
     def _cambiar_tags(self, accion, name: str):
         """Pone, saca o confirma un tag en toda la selección. Si no se puede
@@ -1006,17 +1047,61 @@ class BuscarTab(QWidget):
             self._do_search(conservar=True)     # que la grilla muestre la etiqueta ya
 
         def fallo(e):
-            self.lbl_seleccion.setText("No se pudo guardar la etiqueta. " + texto_para(e))
+            self.lbl_seleccion.setText(_motivo(e, "No se pudo guardar la etiqueta. "))
 
         self._srv.pedir(hacer, ok=listo, error=fallo)
 
+    def _cambiar_especial(self, accion: str, name: str):
+        """Pone el lugar, suma un evento o saca uno de los dos, en toda la selección."""
+        ids = self._selected_ids()
+        if not ids:
+            return
+
+        def listo(_):
+            _cambiar_especiales_locales(self._por_id(ids), accion, name)
+            self._reload_known_tags()
+            self._on_selection_changed()
+            self._seguir_detalle()
+            self._do_search(conservar=True)
+            if accion != "quitar_de":
+                self._ofrecer_a_hermanas(ids, name, accion)
+
+        self._srv.pedir(lambda repo: getattr(repo, accion)(ids, name), ok=listo,
+                        error=lambda e: self.lbl_seleccion.setText(
+                            _motivo(e, "No se pudo guardar. ")))
+
+    def _convertir_etiqueta(self, kind: str, name: str):
+        """Clic derecho en un chip: la etiqueta pasa a lugar, a evento o a común,
+        en todo el catálogo (no solo en lo elegido)."""
+        que = {"lugar": "un lugar", "evento": "un evento",
+               "descriptivo": "una etiqueta común"}[kind]
+        if not confirmar(self, "Cambiar el tipo", f"¿Convertir «{name}» en {que}?",
+                         "Se cambia en todos los elementos del catálogo que la tienen, "
+                         "no solo en los seleccionados. Se puede volver atrás de la "
+                         "misma forma.", "Convertir"):
+            return
+
+        def listo(_):
+            self._reload_known_tags()
+            self._do_search(conservar=True)
+
+        self._srv.pedir(lambda repo: repo.cambiar_tipo(name, kind), ok=listo,
+                        error=lambda e: self.lbl_seleccion.setText(
+                            _motivo(e, "No se pudo convertir. ")))
+
     def _apply_tag_to_selection(self, name: str):
         ids = self._selected_ids()
+        norm = " ".join(name.strip().lower().split())
+        if norm in self._lugares or norm in self._eventos:
+            campo = "el campo Lugar" if norm in self._lugares else "el campo Eventos"
+            que = "un lugar" if norm in self._lugares else "un evento"
+            self.lbl_seleccion.setText(f"«{norm}» ya es {que}: póngalo desde {campo}.")
+            return
         self._cambiar_tags("apply_tag", name)
         if ids:
             self._ofrecer_a_hermanas(ids, name)
 
-    def _ofrecer_a_hermanas(self, ids: list[int], name: str):
+    def _ofrecer_a_hermanas(self, ids: list[int], name: str, accion: str = "apply_tag"):
         """Después de etiquetar: si hay fotos y videos de la misma carpeta y del
         mismo día de toma sin esa etiqueta, se ofrece ponérsela (p. ej. el nombre
         de un evento). Se pregunta siempre: nunca se agrega sola."""
@@ -1025,7 +1110,10 @@ class BuscarTab(QWidget):
                 return
             n = len(hermanas)
             cuales = "la otra foto o video" if n == 1 else f"las otras {n} fotos y videos"
-            if not confirmar(self, "Misma etiqueta", f"¿Agregar «{name}» también a {cuales} "
+            que = {"apply_tag": f"¿Agregar «{name}»",
+                   "poner_lugar": f"¿Poner el lugar «{name}»",
+                   "poner_evento": f"¿Agregar el evento «{name}»"}[accion]
+            if not confirmar(self, "Lo mismo a los demás", f"{que} también a {cuales} "
                              "de esta carpeta?",
                              "Son de la misma carpeta y, si se sabe la fecha de la toma, del "
                              "mismo día. No se agrega a los que alguien se la quitó.",
@@ -1034,8 +1122,11 @@ class BuscarTab(QWidget):
                 return
 
             def hacer(repo):
-                for mid in hermanas:
-                    repo.apply_tag(mid, name)
+                if accion == "apply_tag":
+                    for mid in hermanas:
+                        repo.apply_tag(mid, name)
+                else:
+                    getattr(repo, accion)(hermanas, name)
 
             def listo(_):
                 self.lbl_seleccion.setText(f"Se agregó «{name}» a {n} más." if n > 1 else
@@ -1043,8 +1134,9 @@ class BuscarTab(QWidget):
                 self._do_search(conservar=True)
 
             self._srv.pedir(hacer, ok=listo, error=lambda e: self.lbl_seleccion.setText(
-                "No se pudo guardar la etiqueta. " + texto_para(e)))
-        self._srv.pedir(lambda repo: repo.hermanas(ids, name), ok=ok)
+                _motivo(e, "No se pudo guardar. ")))
+        sin_lugar = accion == "poner_lugar"
+        self._srv.pedir(lambda repo: repo.hermanas(ids, name, sin_lugar), ok=ok)
 
     def _remove_tag_from_selection(self, name: str):
         self._cambiar_tags("remove_tag", name)
@@ -1077,10 +1169,14 @@ class BuscarTab(QWidget):
 
     def _reload_known_tags(self):
         def ok(nombres):
-            self.tag_bar.set_known_tags(nombres)
-            self.formulario.set_etiquetas(nombres)
-            self._etiquetas_conocidas = sorted(nombres)
-        self._srv.pedir(lambda repo: repo.all_tag_names(), ok=ok)
+            comunes = nombres["comunes"]
+            self.tag_bar.set_known_tags(comunes)
+            self.lugar_bar.set_known_tags(nombres["lugar"])
+            self.evento_bar.set_known_tags(nombres["evento"])
+            self.formulario.set_etiquetas(comunes, nombres["lugar"], nombres["evento"])
+            self._etiquetas_conocidas = comunes
+            self._lugares, self._eventos = nombres["lugar"], nombres["evento"]
+        self._srv.pedir(lambda repo: repo.nombres_por_tipo(), ok=ok)
 
 
 def _preparar(repo, cache, results) -> tuple:
@@ -1110,6 +1206,41 @@ def _etiquetas_de(medios: list):
             if not confirmada:
                 pendientes[nombre] = pendientes.get(nombre, 0) + 1
     return sorted(cuantos.items(), key=lambda t: (-t[1], t[0])), pendientes
+
+
+def _especiales_de(medios: list) -> tuple[list, list]:
+    """([(lugar, en cuántos)], [(evento, en cuántos)]) de lo que trajo Buscar."""
+    lugares, eventos = {}, {}
+    for m in medios:
+        if m.lugar:
+            lugares[m.lugar] = lugares.get(m.lugar, 0) + 1
+        for e in m.eventos or []:
+            eventos[e] = eventos.get(e, 0) + 1
+    orden = lambda d: sorted(d.items(), key=lambda t: (-t[1], t[0]))  # noqa: E731
+    return orden(lugares), orden(eventos)
+
+
+def _cambiar_especiales_locales(medios: list, accion: str, name: str):
+    """Lo mismo que acaba de guardar el NAS, en lo ya cargado (ver _cambiar_locales)."""
+    name = " ".join(name.strip().lower().split())
+    for m in medios:
+        if accion == "poner_lugar":
+            m.lugar = name
+        elif accion == "poner_evento":
+            m.eventos = sorted(set(m.eventos or []) | {name})
+        else:
+            if m.lugar == name:
+                m.lugar = None
+            m.eventos = [e for e in m.eventos or [] if e != name]
+
+
+def _motivo(e: BaseException, prefijo: str) -> str:
+    """El mensaje para el operador: el de la base si es un error de uso (un nombre
+    que ya es de otro tipo), o el prefijo y el de conexión."""
+    from ...catalog.repo import NombreEnUso, NoSePuedeConvertir
+    if isinstance(e, (NombreEnUso, NoSePuedeConvertir)):
+        return str(e)
+    return prefijo + texto_para(e)
 
 
 def _cambiar_locales(medios: list, accion: str, name: str):

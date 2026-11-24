@@ -43,6 +43,8 @@ class FormularioBusqueda(QFrame):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setMinimumWidth(ANCHO_MIN)
         self._etiquetas = QStringListModel(self)
+        self._lugares = QStringListModel(self)
+        self._eventos = QStringListModel(self)
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(20, 16, 20, 16)
@@ -75,8 +77,14 @@ class FormularioBusqueda(QFrame):
                                    "separadas por comas", "placa, santa cena")
         self.txt_sin_etiquetas = campo("Sin las etiquetas", "Ninguna de estas etiquetas, "
                                        "separadas por comas")
-        for e in (self.txt_etiquetas, self.txt_sin_etiquetas):
-            c = _CompletarLista(self._etiquetas, e)
+        self.txt_lugar = campo("Lugar", "Dónde se tomó", "Blessedland")
+        self.txt_eventos = campo("Con los eventos", "Todos los eventos escritos, "
+                                 "separados por comas", "campamento")
+        for e, modelo in ((self.txt_etiquetas, self._etiquetas),
+                          (self.txt_sin_etiquetas, self._etiquetas),
+                          (self.txt_lugar, self._lugares),
+                          (self.txt_eventos, self._eventos)):
+            c = _CompletarLista(modelo, e)
             c.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
             c.setFilterMode(Qt.MatchFlag.MatchContains)
             e.setCompleter(c)
@@ -159,18 +167,24 @@ class FormularioBusqueda(QFrame):
             g.addWidget(w, fila, 1)
 
     # ------------------------------------------------------------- datos
-    def set_etiquetas(self, nombres: list[str]):
+    def set_etiquetas(self, nombres: list[str], lugares=(), eventos=()):
         self._etiquetas.setStringList(sorted(nombres))
+        self._lugares.setStringList(sorted(lugares))
+        self._eventos.setStringList(sorted(eventos))
 
     def cargar(self, texto: str):
         """Llena el formulario con lo escrito en el campo de búsqueda."""
         c = analizar(texto)
         resto: list[Filtro] = []
-        con, sin, simples, casillas = [], [], {}, set()
+        con, sin, simples, casillas, eventos = [], [], {}, set(), []
         tipo = None
         for f in c.filtros:
             if f.clave == "etiqueta":
                 (sin if f.negado else con).append(f.valor)
+            elif f.clave == "lugar" and not f.negado and "lugar" not in simples:
+                simples["lugar"] = f.valor
+            elif f.clave == "evento" and not f.negado:
+                eventos.append(f.valor)
             elif f.clave == "tipo" and not f.negado:
                 tipo = consulta.TIPOS[consulta._simple(f.valor)]
             elif f.clave in _SIMPLES and not f.negado and f.clave not in simples:
@@ -193,6 +207,8 @@ class FormularioBusqueda(QFrame):
         self.txt_palabras.setText(" ".join(p for p in [palabras] + invalidos if p))
         self.txt_etiquetas.setText(", ".join(con))
         self.txt_sin_etiquetas.setText(", ".join(sin))
+        self.txt_lugar.setText(simples.get("lugar", ""))
+        self.txt_eventos.setText(", ".join(eventos))
         self.cmb_tipo.setCurrentIndex(max(0, self.cmb_tipo.findData(tipo)))
         for clave in _SIMPLES:
             getattr(self, "txt_" + clave).setText(simples.get(clave, ""))
@@ -211,6 +227,10 @@ class FormularioBusqueda(QFrame):
 
         filtros += [Filtro("etiqueta", v) for v in lista(self.txt_etiquetas)]
         filtros += [Filtro("etiqueta", v, True) for v in lista(self.txt_sin_etiquetas)]
+        lugar = " ".join(self.txt_lugar.text().replace(",", " ").split())
+        if lugar:
+            filtros.append(Filtro("lugar", lugar))
+        filtros += [Filtro("evento", v) for v in lista(self.txt_eventos)]
         tipo = self.cmb_tipo.currentData()
         if tipo:
             filtros.append(Filtro("tipo", consulta.NOMBRE_TIPO[tipo]))

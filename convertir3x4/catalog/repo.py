@@ -23,7 +23,7 @@ import psycopg
 import psycopg.types.json
 
 from . import consulta, rutas
-from .db import LLAVE_CATALOGAR
+from .db import CANAL_CAMBIOS, LLAVE_CATALOGAR
 from .models import Media
 
 _MEDIA_COLS = (
@@ -49,6 +49,38 @@ UPDATE media m SET search_doc =
         (SELECT f.texto FROM texto_foto f WHERE f.media_id = m.id), ''))), 'B')
 WHERE m.id = ANY(%s)
 """
+
+
+# Etiquetas de un tipo especial (pedido del 24/11/2026): se ponen desde sus
+# propios campos en Buscar y se buscan con lugar: / evento:. Un medio tiene un
+# solo lugar y cualquier cantidad de eventos. Un nombre es de un solo tipo: si
+# «campamento» es un evento, no puede ser también una etiqueta común.
+LUGAR, EVENTO = "lugar", "evento"
+ESPECIALES = (LUGAR, EVENTO)
+# Solo las comunes (escritas a mano) pasan a lugar o evento: las de personas
+# las pone el reconocimiento de caras y las de la IA las vuelve a proponer el
+# NAS por nombre.
+_CONVERTIBLES = ("descriptivo",) + ESPECIALES
+_NOMBRE_TIPO = {LUGAR: "un lugar", EVENTO: "un evento", "persona": "una persona",
+                "ia-sugerido": "una etiqueta de la IA", "descriptivo": "una etiqueta común"}
+_CAMPO_TIPO = {LUGAR: "el campo Lugar", EVENTO: "el campo Eventos",
+               "descriptivo": "la barra de etiquetas"}
+
+
+class NombreEnUso(ValueError):
+    """El nombre ya es de otro tipo (p. ej. se quiere poner como evento un
+    nombre que es una etiqueta común). El mensaje es para el operador."""
+
+    def __init__(self, nombre: str, tipo: str, quiere: str):
+        self.nombre, self.tipo, self.quiere = nombre, tipo, quiere
+        donde = _CAMPO_TIPO.get(tipo)
+        texto = f"«{nombre}» ya es {_NOMBRE_TIPO.get(tipo, 'otra cosa')}"
+        texto += f": póngalo desde {donde}." if donde else "."
+        super().__init__(texto)
+
+
+class NoSePuedeConvertir(ValueError):
+    """Cambiar el tipo de una etiqueta no se puede (mensaje para el operador)."""
 
 
 # Las fechas de toma se comparan por día en la hora de la iglesia.
@@ -486,11 +518,112 @@ class Repo:
     def all_tag_names(self) -> list[str]:
         return [r["name"] for r in self._q("SELECT name FROM tag ORDER BY name")]
 
+    def nombres_por_tipo(self) -> dict[str, list[str]]:
+        """{'comunes': [...], 'lugar': [...], 'evento': [...]}: para que cada
+        campo ofrezca solo lo que acepta."""
+        out: dict[str, list[str]] = {"comunes": [], LUGAR: [], EVENTO: []}
+        for r in self._q("SELECT name, kind FROM tag ORDER BY name"):
+            out[r["kind"] if r["kind"] in ESPECIALES else "comunes"].append(r["name"])
+        return out
+
+    def _tag_de_tipo(self, name: str, kind: str) -> int:
+        """El id de la etiqueta `name`, creándola con ese tipo si no existe.
+        NombreEnUso si existe con otro tipo (lugar/evento vs. el resto)."""
+        norm = self.normalize_tag(name)
+        row = self._q("SELECT id, kind FROM tag WHERE name = %s", (norm,)).fetchone()
+        if row is None:
+            self._q("INSERT INTO tag (name, kind) VALUES (%s, %s) ON CONFLICT (name) DO NOTHING",
+                    (norm, kind))
+            row = self._q("SELECT id, kind FROM tag WHERE name = %s", (norm,)).fetchone()
+        especial = kind in ESPECIALES
+        if (row["kind"] != kind) if especial else (row["kind"] in ESPECIALES):
+            raise NombreEnUso(norm, row["kind"], kind)
+        return row["id"]
+
+    def poner_lugar(self, media_ids: list[int], name: str):
+        """El lugar de esos medios: reemplaza al que tuvieran."""
+        tag_id = self._tag_de_tipo(name, LUGAR)
+        ids = list(media_ids)
+        with self.conn.transaction():
+            self._q("DELETE FROM media_tag mt USING tag t WHERE t.id = mt.tag_id "
+                    "AND t.kind = %s AND mt.media_id = ANY(%s) AND t.id <> %s",
+                    (LUGAR, ids, tag_id))
+            self._q("INSERT INTO media_tag (media_id, tag_id, source, confirmed) "
+                    "SELECT unnest(%s::bigint[]), %s, 'humano', true "
+                    "ON CONFLICT (media_id, tag_id) DO UPDATE SET source = 'humano', "
+                    "confirmed = true", (ids, tag_id))
+            self._actualizar_busqueda(ids)
+
+    def poner_evento(self, media_ids: list[int], name: str):
+        """Suma un evento a esos medios (pueden tener varios)."""
+        tag_id = self._tag_de_tipo(name, EVENTO)
+        ids = list(media_ids)
+        with self.conn.transaction():
+            self._q("INSERT INTO media_tag (media_id, tag_id, source, confirmed) "
+                    "SELECT unnest(%s::bigint[]), %s, 'humano', true "
+                    "ON CONFLICT (media_id, tag_id) DO UPDATE SET source = 'humano', "
+                    "confirmed = true", (ids, tag_id))
+            self._actualizar_busqueda(ids)
+
+    def quitar_de(self, media_ids: list[int], name: str):
+        """Saca un lugar o un evento de esos medios (sin anotarlo como rechazado:
+        eso es para lo que propone la IA)."""
+        ids = list(media_ids)
+        with self.conn.transaction():
+            self._q("DELETE FROM media_tag mt USING tag t WHERE t.id = mt.tag_id "
+                    "AND t.name = %s AND mt.media_id = ANY(%s)",
+                    (self.normalize_tag(name), ids))
+            self._actualizar_busqueda(ids)
+
+    def especiales_de(self, media_ids: list[int]) -> dict[str, list[tuple[str, int]]]:
+        """{'lugar': [(nombre, en cuántos)], 'evento': [...]} de una selección."""
+        out: dict[str, list[tuple[str, int]]] = {LUGAR: [], EVENTO: []}
+        if media_ids:
+            for r in self._q(
+                    "SELECT t.name, t.kind, COUNT(*) AS n FROM tag t "
+                    "JOIN media_tag mt ON mt.tag_id = t.id "
+                    "WHERE mt.media_id = ANY(%s) AND t.kind IN ('lugar', 'evento') "
+                    "GROUP BY t.id ORDER BY n DESC, t.name", (list(media_ids),)):
+                out[r["kind"]].append((r["name"], r["n"]))
+        return out
+
+    def cambiar_tipo(self, name: str, kind: str):
+        """Una etiqueta común pasa a ser lugar o evento, o al revés, sin perder
+        a qué fotos y videos está puesta. NoSePuedeConvertir si no corresponde."""
+        norm = self.normalize_tag(name)
+        destino = kind if kind in ESPECIALES else "descriptivo"
+        with self.conn.transaction():
+            row = self._q("SELECT id, kind FROM tag WHERE name = %s FOR UPDATE",
+                          (norm,)).fetchone()
+            if row is None:
+                raise NoSePuedeConvertir(f"No existe la etiqueta «{norm}».")
+            if row["kind"] not in _CONVERTIBLES:
+                raise NoSePuedeConvertir(
+                    f"«{norm}» es {_NOMBRE_TIPO.get(row['kind'], 'otra cosa')}: no se "
+                    "puede convertir en lugar ni en evento.")
+            if row["kind"] == destino:
+                return
+            if destino == LUGAR:
+                dobles = self._q(
+                    "SELECT count(DISTINCT mt.media_id) AS n FROM media_tag mt "
+                    "JOIN media_tag otro ON otro.media_id = mt.media_id "
+                    "JOIN tag t ON t.id = otro.tag_id AND t.kind = %s "
+                    "WHERE mt.tag_id = %s", (LUGAR, row["id"])).fetchone()["n"]
+                if dobles:
+                    raise NoSePuedeConvertir(
+                        f"No se puede: {dobles} de los elementos con «{norm}» ya tienen "
+                        "un lugar, y cada uno puede tener uno solo. Quíteles ese lugar "
+                        "primero.")
+            self._q("UPDATE tag SET kind = %s WHERE id = %s", (destino, row["id"]))
+            # Cambiar el tipo no toca `media`: se avisa a las PCs a mano
+            self._q("SELECT pg_notify(%s, 'tag')", (CANAL_CAMBIOS,))
+
     def apply_tag(self, media_id: int, name: str, source: str = "humano",
                   confirmed: bool = True):
         """Pone (o confirma) un tag. Aplicarlo a mano sobre uno sugerido por la
-        IA lo pasa a humano/confirmado y borra un rechazo previo."""
-        tag_id = self.get_or_create_tag(name)
+        IA lo pasa a humano/confirmado y borra un rechazo previo. Un lugar o un
+        evento no se pone por acá (NombreEnUso): tienen sus propios campos."""
+        tag_id = self._tag_de_tipo(name, "descriptivo")
         with self.conn.transaction():
             self._q(
                 "INSERT INTO media_tag (media_id, tag_id, source, confirmed) "
@@ -508,6 +641,9 @@ class Repo:
         alguien sacó. Devuelve True si lo agregó.
         """
         tag_id = self.get_or_create_tag(name, kind=kind)
+        tipo = self._q("SELECT kind FROM tag WHERE id = %s", (tag_id,)).fetchone()["kind"]
+        if tipo in ESPECIALES:
+            return False                 # un lugar o un evento lo pone una persona
         with self.conn.transaction():
             rechazado = self._q(
                 "SELECT 1 FROM tag_rejection WHERE media_id = %s AND tag_id = %s",
@@ -535,12 +671,13 @@ class Repo:
                     "ON CONFLICT DO NOTHING", (media_id, row["id"]))
             self._actualizar_busqueda([media_id])
 
-    def hermanas(self, ids: list[int], name: str) -> list[int]:
+    def hermanas(self, ids: list[int], name: str, sin_lugar: bool = False) -> list[int]:
         """Fotos y videos «hermanos» de los elegidos, para ofrecerles la misma
         etiqueta (decisión del 22/11/2026): la misma carpeta y, si el elegido
         tiene fecha de toma, el mismo día (en la hora de la iglesia). No incluye
         los elegidos, los que faltan, los que ya la tienen ni aquellos a los que
-        alguien se la quitó."""
+        alguien se la quitó. Con `sin_lugar`, tampoco los que ya tienen un lugar
+        (ponerles otro lo reemplazaría)."""
         if not ids:
             return []
         norm = self.normalize_tag(name)
@@ -554,7 +691,10 @@ class Repo:
             "                  WHERE mt.media_id = h.id AND t.name = %s) "
             "  AND NOT EXISTS (SELECT 1 FROM tag_rejection tr JOIN tag t ON t.id = tr.tag_id "
             "                  WHERE tr.media_id = h.id AND t.name = %s) "
-            "ORDER BY h.id",
+            + ("AND NOT EXISTS (SELECT 1 FROM media_tag mt JOIN tag t ON t.id = mt.tag_id "
+               "                WHERE mt.media_id = h.id AND t.kind = 'lugar') "
+               if sin_lugar else "")
+            + "ORDER BY h.id",
             (ZONA_IGLESIA, ZONA_IGLESIA, list(ids), list(ids), norm, norm))]
 
     def confirm_tag(self, media_id: int, name: str):
@@ -569,7 +709,8 @@ class Repo:
             return {}
         rows = self._q(
             "SELECT t.name, COUNT(*) AS n FROM tag t JOIN media_tag mt ON mt.tag_id = t.id "
-            "WHERE mt.media_id = ANY(%s) AND NOT mt.confirmed GROUP BY t.id",
+            "WHERE mt.media_id = ANY(%s) AND NOT mt.confirmed "
+            "AND t.kind NOT IN ('lugar', 'evento') GROUP BY t.id",
             (list(media_ids),))
         return {r["name"]: r["n"] for r in rows}
 
@@ -593,7 +734,8 @@ class Repo:
             return []
         rows = self._q(
             "SELECT t.name, COUNT(*) AS n FROM tag t JOIN media_tag mt ON mt.tag_id = t.id "
-            "WHERE mt.media_id = ANY(%s) GROUP BY t.id ORDER BY n DESC, t.name",
+            "WHERE mt.media_id = ANY(%s) AND t.kind NOT IN ('lugar', 'evento') "
+            "GROUP BY t.id ORDER BY n DESC, t.name",
             (list(media_ids),))
         return [(r["name"], r["n"]) for r in rows]
 
@@ -1057,9 +1199,10 @@ _COLUMNAS_MEDIA = ", ".join("m." + c for c in (
     "id", "rel_path", "filename", "folder_origin", "kind", "width", "height", "aspect",
     "duration", "codec", "size_bytes", "file_mtime", "sha256", "phash", "status",
     "quality_flag", "missing_since", "tomada", "lat", "lon", "notas"))
-# Las etiquetas de cada medio, para la grilla: [[nombre, confirmada], ...]
+# Las etiquetas de cada medio, para la grilla: [[nombre, confirmada, tipo], ...]
+# (_row_to_media separa el lugar y los eventos de las demás)
 _ETIQUETAS_MEDIA = (
-    "(SELECT COALESCE(json_agg(json_build_array(t.name, mt.confirmed) "
+    "(SELECT COALESCE(json_agg(json_build_array(t.name, mt.confirmed, t.kind) "
     "ORDER BY mt.confirmed DESC, t.name), '[]') FROM media_tag mt "
     "JOIN tag t ON t.id = mt.tag_id WHERE mt.media_id = m.id) AS etiquetas")
 # El texto leído en la foto, para mostrarlo en Buscar (NULL si no tiene)
@@ -1087,7 +1230,12 @@ def _row_to_media(row, raiz: str) -> Media:
         status=row["status"],
         quality_flag=row["quality_flag"],
         missing_since=row["missing_since"],
-        etiquetas=[(n, c) for n, c in row["etiquetas"]] if "etiquetas" in row else None,
+        etiquetas=([(e[0], e[1]) for e in row["etiquetas"]
+                    if (e[2] if len(e) > 2 else None) not in ESPECIALES]
+                   if "etiquetas" in row else None),
+        lugar=next((e[0] for e in row.get("etiquetas") or [] if len(e) > 2 and e[2] == LUGAR),
+                   None),
+        eventos=sorted(e[0] for e in row.get("etiquetas") or [] if len(e) > 2 and e[2] == EVENTO),
         tomada=row.get("tomada"),
         lat=row.get("lat"),
         lon=row.get("lon"),
@@ -1120,6 +1268,11 @@ def _filtro_sql(f: "consulta.Filtro") -> tuple[str | None, list]:
         return ("EXISTS (SELECT 1 FROM media_tag mt JOIN tag t ON t.id = mt.tag_id "
                 "WHERE mt.media_id = m.id AND sin_acentos(t.name) = sin_acentos(%s))",
                 [" ".join(f.valor.lower().split())])
+    if f.clave in ESPECIALES:
+        return ("EXISTS (SELECT 1 FROM media_tag mt JOIN tag t ON t.id = mt.tag_id "
+                "WHERE mt.media_id = m.id AND t.kind = %s "
+                "AND sin_acentos(t.name) = sin_acentos(%s))",
+                [f.clave, " ".join(f.valor.lower().split())])
     if f.clave == "carpeta":
         return ("sin_acentos(lower(COALESCE(m.folder_origin, ''))) LIKE sin_acentos(%s)",
                 contiene())
@@ -1147,9 +1300,14 @@ def _filtro_sql(f: "consulta.Filtro") -> tuple[str | None, list]:
         sql = {"texto": "EXISTS (SELECT 1 FROM texto_foto tf WHERE tf.media_id = m.id "
                         "AND tf.texto <> '')",
                "notas": "m.notas <> ''",
-               "etiquetas": "EXISTS (SELECT 1 FROM media_tag mt WHERE mt.media_id = m.id)",
+               "etiquetas": "EXISTS (SELECT 1 FROM media_tag mt JOIN tag t ON t.id = mt.tag_id "
+                            "WHERE mt.media_id = m.id AND t.kind NOT IN ('lugar', 'evento'))",
                "fecha": "m.tomada IS NOT NULL",
-               "lugar": "m.lat IS NOT NULL"}[que]
+               "lugar": "EXISTS (SELECT 1 FROM media_tag mt JOIN tag t ON t.id = mt.tag_id "
+                        "WHERE mt.media_id = m.id AND t.kind = 'lugar')",
+               "evento": "EXISTS (SELECT 1 FROM media_tag mt JOIN tag t ON t.id = mt.tag_id "
+                         "WHERE mt.media_id = m.id AND t.kind = 'evento')",
+               "gps": "m.lat IS NOT NULL"}[que]
         return (sql if f.clave == "tiene" else f"NOT ({sql})"), []
     return None, []
 

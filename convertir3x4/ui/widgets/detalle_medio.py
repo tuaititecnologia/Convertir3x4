@@ -92,6 +92,10 @@ def datos_de(m) -> list[tuple[str, str]]:
     filas = [("Tipo", "Video" if m.kind == "video" else "Foto")]
     if m.tomada:
         filas.append(("Fecha de la toma", fecha_de_toma(m.tomada)))
+    if m.lugar:
+        filas.append(("Lugar", m.lugar))
+    if m.eventos:
+        filas.append(("Eventos" if len(m.eventos) > 1 else "Evento", ", ".join(m.eventos)))
     if m.width and m.height:
         filas.append(("Medidas", f"{m.width} × {m.height} px"))
     if m.kind == "video" and m.duration:
@@ -147,6 +151,24 @@ def resumen_de(medios, estados: dict) -> list[tuple[str, str]]:
         if sin:
             txt += f" ({_plural(sin, 'sin fecha', 'sin fecha')})"
         filas.append(("Fecha de la toma", txt))
+    lugares = {m.lugar for m in medios}
+    if lugares != {None}:
+        if len(lugares) == 1:
+            filas.append(("Lugar", next(iter(lugares))))
+        else:
+            sin = sum(m.lugar is None for m in medios)
+            con = lugares - {None}
+            txt = next(iter(con)) if len(con) == 1 else f"{len(con)} lugares distintos"
+            filas.append(("Lugar", txt + (f" ({sin} sin lugar)" if sin else "")))
+    cuantos: dict[str, int] = {}
+    for m in medios:
+        for e in m.eventos or []:
+            cuantos[e] = cuantos.get(e, 0) + 1
+    if cuantos:
+        n = len(medios)
+        filas.append(("Eventos", ", ".join(
+            e if c == n else f"{e} ({c}/{n})"
+            for e, c in sorted(cuantos.items(), key=lambda t: (-t[1], t[0])))))
     carpetas = {m.folder_origin or "" for m in medios}
     filas.append(("Carpeta", next(iter(carpetas)) or "—") if len(carpetas) == 1
                  else ("Carpetas", f"{len(carpetas)} distintas"))

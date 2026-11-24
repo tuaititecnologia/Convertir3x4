@@ -3,7 +3,8 @@
 El operador escribe en el campo de Buscar palabras sueltas y, si quiere,
 filtros con la forma `clave:valor`:
 
-    etiqueta:placa  tipo:video  carpeta:reuniones  desde:01/09/2025
+    etiqueta:placa  lugar:blessedland  evento:campamento  tipo:video
+    carpeta:reuniones  desde:01/09/2025
     -etiqueta:retiro  texto:"santa cena"  tiene:notas  sin:etiquetas
 
 - Un guion adelante excluye (`-etiqueta:retiro`, `-ensayo`). Un guion en el
@@ -35,6 +36,7 @@ from dataclasses import dataclass, field
 # que conoce Gmail.
 CLAVES = {
     "etiqueta": "etiqueta", "etiquetas": "etiqueta", "tag": "etiqueta",
+    "lugar": "lugar", "evento": "evento", "eventos": "evento",
     "tipo": "tipo",
     "carpeta": "carpeta",
     "nombre": "nombre", "archivo": "nombre",
@@ -48,9 +50,13 @@ TIPOS = {"foto": "image", "fotos": "image", "imagen": "image", "imagenes": "imag
          "video": "video", "videos": "video"}
 NOMBRE_TIPO = {"image": "foto", "video": "video"}
 # tiene:… / sin:…
+# `lugar` es el lugar escrito (etiqueta de tipo lugar); `gps`, las coordenadas
+# que trae el archivo (pocas fotos de teléfono).
 TIENE = {"texto": "texto", "notas": "notas", "nota": "notas",
          "etiquetas": "etiquetas", "etiqueta": "etiquetas",
-         "fecha": "fecha", "lugar": "lugar", "ubicacion": "lugar"}
+         "fecha": "fecha", "lugar": "lugar", "evento": "evento", "eventos": "evento",
+         "gps": "gps"}
+_VALORES_TIENE = ("texto", "notas", "etiquetas", "lugar", "evento", "fecha", "gps")
 FECHAS = ("desde", "hasta", "fecha", "antes", "después")
 
 _TOKEN = re.compile(r'''
@@ -141,7 +147,7 @@ def _agregar_filtro(c: Consulta, clave: str, valor: str, neg: bool) -> bool:
     elif clave in ("tiene", "sin"):
         if _simple(valor) not in TIENE:
             c.avisos.append(f"«{clave}:{valor}» no se entiende: use {clave}:texto, notas, "
-                            "etiquetas, fecha o lugar.")
+                            "etiquetas, lugar, evento, fecha o gps.")
             return False
     elif clave in FECHAS:
         periodo = periodo_de(valor)
@@ -212,12 +218,13 @@ def terminos(palabra: str) -> str:
 # ---------------------------------------------------------------- sugerencias
 # Las claves que se sugieren al escribir (las otras formas, como tag:, se
 # entienden igual pero no se ofrecen).
-SUGERIR = ("etiqueta", "tipo", "carpeta", "nombre", "texto", "notas",
+SUGERIR = ("etiqueta", "lugar", "evento", "tipo", "carpeta", "nombre", "texto", "notas",
            "desde", "hasta", "fecha", "antes", "después", "tiene", "sin")
 _MAX_SUGERENCIAS = 12
 
 
-def sugerencias(texto: str, cursor: int, etiquetas: list[str]) -> tuple[int, list[str]]:
+def sugerencias(texto: str, cursor: int, etiquetas: list[str], lugares=(),
+                eventos=()) -> tuple[int, list[str]]:
     """Qué ofrecer mientras se escribe la palabra que termina en `cursor`.
 
     Devuelve (desde dónde se reemplaza, opciones); cada opción reemplaza
@@ -246,15 +253,15 @@ def sugerencias(texto: str, cursor: int, etiquetas: list[str]) -> tuple[int, lis
     clave, valor = escrito.split(":", 1)
     canon = CLAVES.get(_simple(clave))
     v = _simple(valor.lstrip('"'))
-    if canon == "etiqueta":
-        empiezan = [e for e in etiquetas if _simple(e).startswith(v)]
-        contienen = [e for e in etiquetas if v in _simple(e) and e not in empiezan]
+    if canon in ("etiqueta", "lugar", "evento"):
+        lista = {"etiqueta": etiquetas, "lugar": lugares, "evento": eventos}[canon]
+        empiezan = [e for e in lista if _simple(e).startswith(v)]
+        contienen = [e for e in lista if v in _simple(e) and e not in empiezan]
         valores = [_valor(e) for e in empiezan + contienen]
     elif canon == "tipo":
         valores = [t for t in ("foto", "video") if t.startswith(v)]
     elif canon in ("tiene", "sin"):
-        valores = [t for t in ("texto", "notas", "etiquetas", "fecha", "lugar")
-                   if t.startswith(v)]
+        valores = [t for t in _VALORES_TIENE if t.startswith(v)]
     else:
         return inicio, []
     opciones = [f"{neg}{clave}:{x}" for x in valores[:_MAX_SUGERENCIAS]]

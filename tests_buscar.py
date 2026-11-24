@@ -64,7 +64,8 @@ class TestAnalizar:
                       'tipo:video carpeta:Historial desde:01/09/2025 hasta:2025 tiene:notas '
                       'sin:etiquetas',
                       "10:30 nombre:DSC texto:vigilia notas:pastor fecha:09/2025",
-                      "antes:2025 después:01/09/2024"):
+                      "antes:2025 después:01/09/2024",
+                      'lugar:blessedland evento:"santa cena" tiene:gps -evento:retiro'):
             assert armar(analizar(texto)) == texto
             assert armar(analizar(armar(analizar(texto)))) == texto
         assert armar(analizar("tag:placa tipo:fotos")) == "etiqueta:placa tipo:foto"
@@ -90,6 +91,7 @@ class TestSugerencias:
         assert self._s("sin") == (0, ["sin:"])
         assert self._s("desp") == (0, ["después:"])                   # sin tilde también
         assert self._s("des") == (0, ["desde:", "después:"])
+        assert self._s("lug") == (0, ["lugar:"]) and self._s("eve") == (0, ["evento:"])
         assert self._s("ca") == (0, []) and self._s("et") == (0, [])   # menos de 3: nada
         assert self._s("culto") == (0, [])
         assert self._s("tag") == (0, [])                     # tag: se entiende, no se ofrece
@@ -99,6 +101,12 @@ class TestSugerencias:
         assert self._s("tag:cena")[1] == ['tag:"santa cena"']          # también «contiene»
         assert self._s("tipo:")[1] == ["tipo:foto", "tipo:video"]
         assert self._s("sin:et")[1] == ["sin:etiquetas"]
+        assert self._s("tiene:")[1] == ["tiene:texto", "tiene:notas", "tiene:etiquetas",
+                                        "tiene:lugar", "tiene:evento", "tiene:fecha", "tiene:gps"]
+        s = consulta.sugerencias("lugar:bl", 8, self.E, ["blessedland"], ["campamento"])
+        assert s[1] == ["lugar:blessedland"]
+        assert consulta.sugerencias("evento:", 7, self.E, ["x"], ["campamento"])[1] == \
+            ["evento:campamento"]
         assert self._s("etiqueta:alabanza")[1] == []                  # ya está completa
         assert self._s("carpeta:x")[1] == [] and self._s("foo:bar")[1] == []
 
@@ -147,6 +155,84 @@ def _ids(nas, q, **k):
     res, total = nas.buscar(q, **k)
     assert total == len(res)
     return sorted(m.id for m in res)
+
+
+class TestLugarYEvento:
+    """Lugar y eventos: etiquetas de tipo especial (pedido del 24/11/2026)."""
+
+    def test_un_lugar_por_elemento_y_varios_eventos(self, nas, datos):
+        d = datos
+        ids = [d["placa"], d["video"]]
+        nas.poner_lugar(ids, "Blessedland")
+        nas.poner_lugar([d["placa"]], "templo central")          # reemplaza
+        nas.poner_evento(ids, "campamento")
+        nas.poner_evento([d["placa"]], "bautismo en el río")
+        res = {m.id: m for m in nas.buscar("")[0]}
+        assert res[d["placa"]].lugar == "templo central"
+        assert res[d["video"]].lugar == "blessedland"
+        assert res[d["placa"]].eventos == ["bautismo en el río", "campamento"]
+        # No se mezclan con las etiquetas comunes
+        assert ("campamento", True) not in res[d["placa"]].etiquetas
+        assert [n for n, _ in res[d["placa"]].etiquetas] == ["placa", "santa cena"]
+        assert ("campamento", 2) not in nas.tag_counts(ids)
+        assert nas.nombres_por_tipo()["evento"] == ["bautismo en el río", "campamento"]
+        assert "blessedland" not in nas.nombres_por_tipo()["comunes"]
+        # Se buscan con su operador, con etiqueta: y como palabra
+        assert _ids(nas, "lugar:blessedland") == [d["video"]]
+        assert _ids(nas, 'evento:"bautismo en el rio"') == [d["placa"]]
+        assert _ids(nas, "etiqueta:campamento") == sorted(ids)
+        assert _ids(nas, "blessedland") == [d["video"]]
+        assert _ids(nas, "lugar:campamento") == []                  # es un evento
+        assert _ids(nas, "tiene:lugar") == sorted(ids)
+        assert _ids(nas, "sin:evento") == sorted([d["retiro"], d["sin"]])
+        # Quitar: sin rechazo (no es una sugerencia de la IA)
+        nas.quitar_de([d["video"]], "blessedland")
+        assert {m.id: m.lugar for m in nas.buscar("")[0]}[d["video"]] is None
+
+    def test_un_nombre_es_de_un_solo_tipo(self, nas, datos):
+        from convertir3x4.catalog.repo import NombreEnUso
+        d = datos
+        nas.poner_evento([d["video"]], "campamento")
+        with pytest.raises(NombreEnUso, match="ya es un evento: póngalo desde el campo Eventos"):
+            nas.apply_tag(d["placa"], "Campamento")
+        with pytest.raises(NombreEnUso, match="ya es un evento"):
+            nas.poner_lugar([d["placa"]], "campamento")
+        with pytest.raises(NombreEnUso, match="ya es una etiqueta común"):
+            nas.poner_lugar([d["placa"]], "placa")
+        with pytest.raises(NombreEnUso, match="ya es una etiqueta común"):
+            nas.poner_evento([d["placa"]], "retiro")
+        # La IA no pone lugares ni eventos aunque el nombre coincida
+        assert nas.suggest_tag(d["sin"], "campamento") is False
+
+    def test_convertir(self, nas, datos, pg_cfg):
+        from convertir3x4.catalog import db as catdb
+        from convertir3x4.catalog.repo import NoSePuedeConvertir
+        d = datos
+        nas.apply_tag(d["video"], "blessedland")
+        nas.apply_tag(d["sin"], "blessedland")
+        oye = catdb.conectar(pg_cfg)
+        try:
+            oye.execute("LISTEN " + catdb.CANAL_CAMBIOS)
+            nas.cambiar_tipo("blessedland", "lugar")
+            assert list(oye.notifies(timeout=2, stop_after=1))      # avisa a las PCs
+        finally:
+            oye.close()
+        res = {m.id: m for m in nas.buscar("")[0]}
+        assert res[d["video"]].lugar == res[d["sin"]].lugar == "blessedland"
+        assert _ids(nas, "lugar:blessedland") == sorted([d["video"], d["sin"]])
+        # Dos lugares en el mismo elemento: no
+        nas.apply_tag(d["video"], "parque")
+        with pytest.raises(NoSePuedeConvertir, match="1 de los elementos"):
+            nas.cambiar_tipo("parque", "lugar")
+        # Ni las de personas ni las de la IA
+        nas.suggest_tag(d["sin"], "juan", kind="persona")
+        nas.suggest_tag(d["sin"], "alabanza")
+        for nombre in ("juan", "alabanza"):
+            with pytest.raises(NoSePuedeConvertir):
+                nas.cambiar_tipo(nombre, "evento")
+        # Y de vuelta a común
+        nas.cambiar_tipo("blessedland", "descriptivo")
+        assert ("blessedland", True) in {m.id: m for m in nas.buscar("")[0]}[d["sin"]].etiquetas
 
 
 class TestBuscarConFiltros:
@@ -198,7 +284,8 @@ class TestBuscarConFiltros:
         assert _ids(nas, "tiene:notas") == [d["video"]]
         assert _ids(nas, "sin:etiquetas") == [d["sin"]]
         assert _ids(nas, "sin:fecha") == [d["sin"]]
-        assert _ids(nas, "tiene:lugar") == [d["placa"]]
+        assert _ids(nas, "tiene:gps") == [d["placa"]]                 # coordenadas del archivo
+        assert _ids(nas, "tiene:lugar") == []                         # lugar escrito: ninguno
 
     def test_palabras_con_filtros(self, nas, datos):
         d = datos
@@ -340,3 +427,124 @@ class TestFormulario:
         tab._do_search()
         assert len(pedidos) == antes + 1
         tab.deleteLater()
+
+
+class TestLugarYEventoEnBuscar:
+    class _Srv:
+        """Corre lo pedido contra un repo de mentira que anota las llamadas."""
+        estado, texto = "ok", ""
+
+        class _Senal:
+            def connect(self, *_a):
+                pass
+        estado_cambiado = _Senal()
+
+        def __init__(self, falla=None):
+            self.hechos, self.falla = [], falla
+
+        def pedir(self, fn, ok=None, error=None):
+            hechos = self.hechos
+
+            class _Repo:
+                def __getattr__(self, nombre):
+                    def llamar(*a, **_k):
+                        hechos.append((nombre,) + a)
+                        if nombre == "hermanas":
+                            return []
+                        if nombre == "nombres_por_tipo":
+                            return {"comunes": ["placa"], "lugar": ["blessedland"],
+                                    "evento": ["campamento"]}
+                        return ([], 0) if nombre == "buscar" else None
+                    return llamar
+            try:
+                r = fn(_Repo())
+            except Exception:  # noqa: BLE001 — búsquedas que el falso no sabe armar
+                return 0
+            if self.falla and hechos and hechos[-1][0] == self.falla[0]:
+                error and error(self.falla[1])
+            elif ok:
+                ok(r)
+            return 0
+
+    def _tab(self, srv, tmp_path):
+        from convertir3x4.ui.tabs.tab_buscar import BuscarTab
+        tab = BuscarTab(srv=srv)
+        medios = [Media(path=str(tmp_path / f"{i}.jpg"), filename=f"{i}.jpg", kind="image",
+                        id=i, etiquetas=[], lugar="blessedland" if i == 1 else None,
+                        eventos=["campamento"] if i < 3 else [])
+                  for i in (1, 2, 3)]
+        tab._results = medios
+        tab._populate(medios)
+        tab._reload_known_tags()
+        return tab, medios
+
+    def test_poner_lugar_y_evento_a_la_seleccion(self, app, tmp_path):
+        srv = self._Srv()
+        tab, medios = self._tab(srv, tmp_path)
+        for i in range(3):
+            tab.grid.item(i).setSelected(True)
+        textos = lambda b: [w.text() for w in b._chips_inner.findChildren(  # noqa: E731
+            type(tab.btn_convertir))]
+        assert textos(tab.lugar_bar) == ["blessedland (1/3) ✕"]
+        assert textos(tab.evento_bar) == ["campamento (2/3) ✕"]
+        tab.lugar_bar.tagApplied.emit("templo central")
+        assert ("poner_lugar", [1, 2, 3], "templo central") in srv.hechos
+        assert [m.lugar for m in medios] == ["templo central"] * 3
+        assert textos(tab.lugar_bar) == ["templo central ✕"]
+        assert ("hermanas", [1, 2, 3], "templo central", True) in srv.hechos  # sin pisar lugares
+        tab.evento_bar.tagApplied.emit("Bautismo")
+        assert medios[2].eventos == ["bautismo"] and medios[0].eventos == ["bautismo",
+                                                                           "campamento"]
+        tab.evento_bar.tagRemoved.emit("campamento")
+        assert all("campamento" not in m.eventos for m in medios)
+        tab.deleteLater()
+
+    def test_un_lugar_no_entra_como_etiqueta_comun(self, app, tmp_path):
+        srv = self._Srv()
+        tab, _ = self._tab(srv, tmp_path)
+        tab.grid.item(0).setSelected(True)
+        tab.tag_bar.tagApplied.emit("Blessedland")
+        assert not any(h[0] == "apply_tag" for h in srv.hechos)
+        assert tab.lbl_seleccion.text() == ("«blessedland» ya es un lugar: póngalo desde el "
+                                            "campo Lugar.")
+        tab.deleteLater()
+
+    def test_el_error_del_repo_se_muestra_tal_cual(self, app, tmp_path):
+        from convertir3x4.catalog.repo import NombreEnUso
+        srv = self._Srv(falla=("poner_evento", NombreEnUso("placa", "descriptivo", "evento")))
+        tab, _ = self._tab(srv, tmp_path)
+        tab.grid.item(0).setSelected(True)
+        tab.evento_bar.tagApplied.emit("placa")
+        assert tab.lbl_seleccion.text() == ("«placa» ya es una etiqueta común: póngalo desde "
+                                            "la barra de etiquetas.")
+        tab.deleteLater()
+
+    def test_convertir_pregunta_antes(self, app, tmp_path, monkeypatch):
+        from convertir3x4.ui.tabs import tab_buscar
+        srv = self._Srv()
+        tab, _ = self._tab(srv, tmp_path)
+        respuestas = [False, True]
+        monkeypatch.setattr(tab_buscar, "confirmar", lambda *a, **k: respuestas.pop(0))
+        tab.tag_bar.accionChip.emit("evento", "placa")
+        assert not any(h[0] == "cambiar_tipo" for h in srv.hechos)
+        tab.tag_bar.accionChip.emit("evento", "placa")
+        assert ("cambiar_tipo", "placa", "evento") in srv.hechos
+        tab.deleteLater()
+
+    def test_formulario_y_detalles(self, app):
+        from convertir3x4.ui.widgets.busqueda_avanzada import FormularioBusqueda
+        from convertir3x4.ui.widgets import detalle_medio as dm
+        f = FormularioBusqueda()
+        f.cargar('culto lugar:blessedland evento:campamento evento:"santa cena"')
+        assert f.txt_lugar.text() == "blessedland"
+        assert f.txt_eventos.text() == "campamento, santa cena"
+        assert f.txt_palabras.text() == "culto"
+        assert f.texto() == 'culto lugar:blessedland evento:campamento evento:"santa cena"'
+        m = Media(path="/x", filename="a.jpg", kind="image", lugar="blessedland",
+                  eventos=["campamento", "bautismo"])
+        assert ("Lugar", "blessedland") in dm.datos_de(m)
+        assert ("Eventos", "campamento, bautismo") in dm.datos_de(m)
+        otros = [m, Media(path="/y", filename="b.jpg", kind="image", eventos=["campamento"])]
+        filas = dict(dm.resumen_de(otros, {}))
+        assert filas["Lugar"] == "blessedland (1 sin lugar)"
+        assert filas["Eventos"] == "campamento, bautismo (1/2)"
