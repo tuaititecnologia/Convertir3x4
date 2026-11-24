@@ -9,6 +9,7 @@ esta PC y, si faltan, se bajan de la base en segundo plano.
 import ntpath
 import os
 import re
+import socket
 import threading
 
 from PyQt6.QtCore import Qt, QElapsedTimer, QPoint, QSettings, QSize, QTimer, pyqtSignal
@@ -247,6 +248,8 @@ class BuscarTab(QWidget):
         self.detalles = PanelDetalles()
         self.detalles.cerrar.connect(lambda: self.btn_detalles.setChecked(False))
         self.detalles.ir_a.connect(self._ir_a_elemento)
+        self.detalles.guardar.connect(self._guardar_detalle)
+        self.detalles.set_editable(self._srv.estado == "ok")
         self.division = QSplitter(Qt.Orientation.Horizontal)
         self.division.setChildrenCollapsible(False)
         self.division.setHandleWidth(10)
@@ -312,6 +315,7 @@ class BuscarTab(QWidget):
                                      "carpeta del NAS en el Explorador.")
             self.tag_bar.set_enabled(False)
             self._actualizar_seleccion()
+        self.detalles.set_editable(estado == "ok")
 
     def _reintentar_si_hace_falta(self):
         if self._srv.estado == "error" and self.isVisible():
@@ -532,7 +536,10 @@ class BuscarTab(QWidget):
         self._total = len(results) if total is None else total
         if conservar and _iguales(getattr(self, "_results", None), results) \
                 and presentes == getattr(self, "_presentes", None):
-            # Cambió algo que no se ve en la grilla (p. ej. una etiqueta)
+            # Cambió algo que no se ve en la grilla (p. ej. una etiqueta, el
+            # texto de una foto o las notas): se pasa a lo ya cargado
+            for antes, ahora in zip(self._results, results):
+                antes.texto, antes.notas = ahora.texto, ahora.notas
             self._contar()
             self._on_selection_changed()
             return
@@ -801,6 +808,36 @@ class BuscarTab(QWidget):
                 if st:
                     estados[m.id] = st
         self.detalles.mostrar(medios, getattr(self, "_minis", None) or {}, estados)
+
+    def _guardar_detalle(self, mid: int, campo: str, valor: str):
+        """Texto de la foto o notas escritos en los detalles. Si no se puede
+        guardar (NAS caído), se avisa en el panel y lo escrito queda ahí."""
+        quien = socket.gethostname()
+        if campo == "texto":
+            hacer = lambda repo: repo.corregir_texto(mid, valor, quien)   # noqa: E731
+        else:
+            hacer = lambda repo: repo.guardar_notas(mid, valor, quien)    # noqa: E731
+
+        def listo(_):
+            for m in self._por_id([mid]):
+                if campo == "texto":
+                    m.texto = valor.strip() or None
+                else:
+                    m.notas = valor.strip()
+            self.detalles.guardado(mid, campo, None)
+
+        def fallo(e):
+            self.detalles.guardado(mid, campo, texto_para(e))
+            actual = self.detalles.media
+            if actual is None or actual.id != mid:
+                # Ya eligió otro: el aviso del panel no se vería y lo escrito se perdería
+                nombre = next((m.filename for m in self._por_id([mid])), "un elemento")
+                que = "el texto de la foto" if campo == "texto" else "las notas"
+                self.lbl_seleccion.setText(
+                    f"No se pudo guardar {que} de {nombre}. {texto_para(e)} "
+                    "Vuelva a elegirlo y escríbalo de nuevo.")
+
+        self._srv.pedir(hacer, ok=listo, error=fallo)
 
     def _ir_a_elemento(self, mid: int):
         """Clic en la lista de los detalles: se muestra en la grilla, sin cambiar lo elegido."""

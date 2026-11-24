@@ -40,6 +40,8 @@ class Media:
     lon: float | None = None
     # Texto que se leyó en la foto (OCR del NAS). Solo lo trae Repo.buscar.
     texto: str | None = None
+    # Notas que escribió una persona en los detalles de Buscar ('' si no hay).
+    notas: str = ""
 
     @property
     def is_video(self) -> bool:

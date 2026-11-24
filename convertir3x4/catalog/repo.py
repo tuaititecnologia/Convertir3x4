@@ -32,8 +32,8 @@ _MEDIA_COLS = (
     "status", "quality_flag", "tomada", "lat", "lon",
 )
 
-# Recalcula el texto de búsqueda de los medios dados: nombre, carpeta y tags
-# pesan más (A) que lo que escribió la IA (B).
+# Recalcula el texto de búsqueda de los medios dados: nombre, carpeta, tags y
+# notas (lo escrito por personas) pesan más (A) que lo leído por la máquina (B).
 _SQL_BUSQUEDA = """
 UPDATE media m SET search_doc =
     setweight(to_tsvector('catalogo',
@@ -41,6 +41,7 @@ UPDATE media m SET search_doc =
  || setweight(to_tsvector('catalogo', palabras(COALESCE(
         (SELECT string_agg(t.name, ' ') FROM media_tag mt
          JOIN tag t ON t.id = mt.tag_id WHERE mt.media_id = m.id), ''))), 'A')
+ || setweight(to_tsvector('catalogo', palabras(m.notas)), 'A')
  || setweight(to_tsvector('catalogo', palabras(COALESCE(
         (SELECT concat_ws(' ', a.description, a.ocr_text, a.synonyms)
          FROM ai_result a WHERE a.media_id = m.id), ''))), 'B')
@@ -830,6 +831,8 @@ class Repo:
                 conds.append("(m.rel_path = %s OR starts_with(m.rel_path, %s))")
                 params += [c, c.rstrip("/") + "/"]
             where.append("(" + " OR ".join(conds) + ")")
+        # Lo que corrigió una persona no se vuelve a leer nunca
+        where.append("NOT COALESCE(f.editado, false)")
         if not rehacer:
             where.append("(f.media_id IS NULL OR f.version <> %s)")
             params.append(version)
@@ -840,17 +843,46 @@ class Repo:
 
     def guardar_texto(self, media_id: int, texto: str, version: int) -> None:
         """Guarda lo leído y rehace el índice de búsqueda de esa foto (solo si
-        el texto cambió: así no se avisa a las PCs por nada)."""
+        el texto cambió: así no se avisa a las PCs por nada). Si una persona ya
+        corrigió el texto de esa foto, no se toca."""
         with self.conn.transaction():
-            previo = self._q("SELECT texto FROM texto_foto WHERE media_id = %s",
+            previo = self._q("SELECT texto, editado FROM texto_foto WHERE media_id = %s",
                              (media_id,)).fetchone()
+            if previo is not None and previo["editado"]:
+                return
             self._q("INSERT INTO texto_foto (media_id, texto, version) VALUES (%s, %s, %s) "
                     "ON CONFLICT (media_id) DO UPDATE SET texto = EXCLUDED.texto, "
-                    "version = EXCLUDED.version, leida = now()",
+                    "version = EXCLUDED.version, leida = now() "
+                    "WHERE NOT texto_foto.editado",
                     (media_id, texto, version))
             if previo is None or previo["texto"] != texto:
                 if texto or previo is not None:
                     self._q(_SQL_BUSQUEDA, ([media_id],))
+
+    def corregir_texto(self, media_id: int, texto: str, quien: str | None = None) -> None:
+        """El texto de la foto escrito o corregido a mano (desde los detalles de
+        Buscar). Queda marcado: el NAS ya no lo vuelve a leer ni lo pisa."""
+        texto = texto.strip()
+        with self.conn.transaction():
+            self._q("INSERT INTO texto_foto (media_id, texto, version, editado, editado_en, "
+                    "editado_por) VALUES (%s, %s, 0, true, now(), %s) "
+                    "ON CONFLICT (media_id) DO UPDATE SET texto = EXCLUDED.texto, "
+                    "editado = true, editado_en = now(), editado_por = EXCLUDED.editado_por",
+                    (media_id, texto, quien))
+            self._q(_SQL_BUSQUEDA, ([media_id],))
+
+    def guardar_notas(self, media_id: int, notas: str, quien: str | None = None) -> None:
+        """Las notas de un medio (foto o video). Se buscan como las etiquetas."""
+        notas = notas.strip()
+        with self.conn.transaction():
+            self._q("UPDATE media SET notas = %s, notas_en = now(), notas_por = %s "
+                    "WHERE id = %s AND notas IS DISTINCT FROM %s",
+                    (notas, quien, media_id, notas))
+            self._q(_SQL_BUSQUEDA, ([media_id],))
+
+    def notas_de(self, media_id: int) -> str:
+        row = self._q("SELECT notas FROM media WHERE id = %s", (media_id,)).fetchone()
+        return row["notas"] if row else ""
 
     def texto_de(self, media_id: int) -> str | None:
         row = self._q("SELECT texto FROM texto_foto WHERE media_id = %s",
@@ -1003,7 +1035,7 @@ def sello_de(jpeg: bytes) -> str:
 _COLUMNAS_MEDIA = ", ".join("m." + c for c in (
     "id", "rel_path", "filename", "folder_origin", "kind", "width", "height", "aspect",
     "duration", "codec", "size_bytes", "file_mtime", "sha256", "phash", "status",
-    "quality_flag", "missing_since", "tomada", "lat", "lon"))
+    "quality_flag", "missing_since", "tomada", "lat", "lon", "notas"))
 # Las etiquetas de cada medio, para la grilla: [[nombre, confirmada], ...]
 _ETIQUETAS_MEDIA = (
     "(SELECT COALESCE(json_agg(json_build_array(t.name, mt.confirmed) "
@@ -1039,6 +1071,7 @@ def _row_to_media(row, raiz: str) -> Media:
         lat=row.get("lat"),
         lon=row.get("lon"),
         texto=row.get("texto"),
+        notas=row.get("notas") or "",
     )
 
 

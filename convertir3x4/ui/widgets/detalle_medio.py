@@ -12,11 +12,17 @@ elegido en la grilla y lo sigue mientras se recorre:
 Todo sale de lo que Buscar ya trajo (`Media`) y de la miniatura guardada en la
 PC: no consulta la base. La foto original se lee aparte (puede estar en el NAS,
 por SMB) y reemplaza la miniatura cuando llega.
+
+Con un solo elemento se pueden corregir el texto de la foto y escribir notas
+(pedido del 24/11/2026). Se guardan solos: al dejar de escribir un momento, al
+salir del cuadro o al elegir otro elemento. El panel no guarda: avisa con
+`guardar(id, campo, valor)` y Buscar lo manda al NAS y contesta con `guardado`.
+Mientras el operador escribe, lo que llega del NAS no le pisa el cuadro.
 """
 
 from __future__ import annotations
 
-from PyQt6.QtCore import QSize, Qt, QTimer, QUrl, pyqtSignal
+from PyQt6.QtCore import QEvent, QSize, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices, QImage, QPixmap
 from PyQt6.QtWidgets import (
     QFrame, QGridLayout, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QScrollArea,
@@ -34,6 +40,7 @@ _LADO_ORIGINAL = 1200            # la foto original se achica a esto para mostra
 _ESPERA_ORIGINAL_MS = 250        # recorriendo con las flechas no se lee cada foto
 _LISTA_MAX = 200                 # con más elegidos, la lista muestra estos y «y N más»
 _MINI_LISTA = 48
+_ESPERA_GUARDAR_MS = 1200        # se guarda al dejar de escribir este tiempo
 
 _CALIDAD = {"low_res": "Baja resolución: puede verse borrosa en la pantalla.",
             "corrupt": "El archivo parece dañado.",
@@ -173,6 +180,7 @@ class PanelDetalles(QFrame):
     """El panel. `mostrar(medios, minis, estados)`: ninguno, uno o varios."""
     cerrar = pyqtSignal()
     ir_a = pyqtSignal(int)          # clic en un elemento de la lista: mostrarlo en la grilla
+    guardar = pyqtSignal(int, str, str)     # (id, 'texto' | 'notas', lo escrito)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -194,6 +202,14 @@ class PanelDetalles(QFrame):
         self._al_cambiar_ancho.setSingleShot(True)
         self._al_cambiar_ancho.setInterval(80)
         self._al_cambiar_ancho.timeout.connect(self._reacomodar)
+        self._editable = True
+        self._pendiente: dict[str, tuple[int, str]] = {}    # campo -> (id, valor) sin guardar
+        self._enviado: dict[str, int] = {}                  # campo -> id, guardándose
+        self._cargando = False
+        self._espera_guardar = QTimer(self)
+        self._espera_guardar.setSingleShot(True)
+        self._espera_guardar.setInterval(_ESPERA_GUARDAR_MS)
+        self._espera_guardar.timeout.connect(self.guardar_ya)
 
         raiz = QVBoxLayout(self)
         raiz.setContentsMargins(0, 0, 0, 0)
@@ -268,12 +284,26 @@ class PanelDetalles(QFrame):
         self.sec_etiquetas = _Seccion("Etiquetas")
         self._lay.addWidget(self.sec_etiquetas)
         self.sec_texto = _Seccion("Texto en la foto")
-        self.txt_texto = QPlainTextEdit()
-        self.txt_texto.setObjectName("detalle_texto")
-        self.txt_texto.setReadOnly(True)
-        self.txt_texto.setMaximumHeight(140)
+        self.txt_texto = self._editor(
+            "No se encontró texto en esta foto. Si tiene, puede escribirlo aquí.",
+            "El texto que aparece en la foto. Puede corregirlo: lo que usted escriba "
+            "se usa en la búsqueda y ya no se vuelve a leer de la foto.")
+        self.lbl_texto = _etiqueta("muted", seleccionable=False)
         self.sec_texto.cuerpo.addWidget(self.txt_texto)
+        self.sec_texto.cuerpo.addWidget(self.lbl_texto)
         self._lay.addWidget(self.sec_texto)
+        self.sec_notas = _Seccion("Notas")
+        self.txt_notas = self._editor(
+            "Escriba aquí lo que convenga recordar: quién aparece, para qué se usó…",
+            "Notas sobre este elemento. Se guardan solas y se encuentran con la búsqueda.")
+        self.lbl_notas = _etiqueta("muted", seleccionable=False)
+        self.sec_notas.cuerpo.addWidget(self.txt_notas)
+        self.sec_notas.cuerpo.addWidget(self.lbl_notas)
+        self._lay.addWidget(self.sec_notas)
+        self._campos = {"texto": (self.txt_texto, self.lbl_texto),
+                        "notas": (self.txt_notas, self.lbl_notas)}
+        for campo, (editor, _lbl) in self._campos.items():
+            editor.textChanged.connect(lambda c=campo: self._escribio(c))
         self.sec_ubicacion = _Seccion("Ubicación del archivo")
         self.lbl_ruta = _etiqueta("muted")
         self.sec_ubicacion.cuerpo.addWidget(self.lbl_ruta)
@@ -302,6 +332,9 @@ class PanelDetalles(QFrame):
                 actual=None):
         """`medios`: lo elegido (Media). `minis` {id: miniatura local}; `estados`
         {id: 'missing'/'offline'}; `actual`: el que se muestra si hay uno solo."""
+        otro = len(medios) != 1 or self.media is None or medios[0].id != self.media.id
+        if otro:
+            self.guardar_ya()           # lo escrito en el anterior no se pierde
         self._medios, self._minis, self._estados = list(medios), minis or {}, estados or {}
         n = len(self._medios)
         uno = n == 1
@@ -312,7 +345,8 @@ class PanelDetalles(QFrame):
         self.btn_abrir.setVisible(uno)
         if n == 0:
             self.media = None
-            for w in (self.lbl_carpeta, self.aviso, self.sec_etiquetas, self.sec_texto):
+            for w in (self.lbl_carpeta, self.aviso, self.sec_etiquetas, self.sec_texto,
+                      self.sec_notas):
                 w.setVisible(False)
             self._limpiar_datos()
             self.btn_mapa.setVisible(False)
@@ -337,10 +371,10 @@ class PanelDetalles(QFrame):
         self.aviso.setVisible(bool(aviso))
         self._llenar_datos(datos_de(m), m.lat, m.lon)
         self._llenar_etiquetas([(nombre, 1, not conf) for nombre, conf in m.etiquetas or []], 1)
-        texto = m.texto or ""
-        if self.txt_texto.toPlainText() != texto:
-            self.txt_texto.setPlainText(texto)
-        self.sec_texto.setVisible(bool(texto) and m.kind != "video")
+        self._cargar("texto", m.texto or "", mismo)
+        self._cargar("notas", m.notas or "", mismo)
+        self.sec_texto.setVisible(m.kind != "video")
+        self.sec_notas.setVisible(True)
         self.lbl_ruta.setText(m.path)
         disponible = not estado and not m.missing
         self.btn_abrir.setEnabled(disponible)
@@ -365,7 +399,83 @@ class PanelDetalles(QFrame):
         self._llenar_datos(resumen_de(medios, self._estados))
         self._llenar_etiquetas(etiquetas_en_comun(medios), len(medios))
         self.sec_texto.setVisible(False)
+        self.sec_notas.setVisible(False)
         self._llenar_lista()
+
+    # ------------------------------------------------------------- texto y notas
+    def _editor(self, vacio: str, ayuda: str) -> QPlainTextEdit:
+        e = QPlainTextEdit()
+        e.setObjectName("detalle_texto")
+        e.setPlaceholderText(vacio)
+        e.setToolTip(ayuda)
+        e.setTabChangesFocus(True)
+        e.setFixedHeight(96)
+        e.installEventFilter(self)
+        return e
+
+    def _cargar(self, campo: str, valor: str, mismo: bool):
+        """Pone lo guardado en el cuadro, salvo que el operador esté escribiendo
+        en ese mismo elemento (un aviso del NAS no le pisa lo que escribe)."""
+        editor, lbl = self._campos[campo]
+        if mismo and (editor.hasFocus() or campo in self._pendiente
+                      or self._enviado.get(campo) == self.media.id):
+            return
+        if not mismo:
+            lbl.setVisible(False)
+        if editor.toPlainText() != valor:
+            self._cargando = True
+            editor.setPlainText(valor)
+            self._cargando = False
+
+    def _escribio(self, campo: str):
+        if self._cargando or self.media is None:
+            return
+        editor, lbl = self._campos[campo]
+        self._pendiente[campo] = (self.media.id, editor.toPlainText())
+        lbl.setVisible(False)
+        self._espera_guardar.start()
+
+    def guardar_ya(self):
+        """Manda a guardar lo escrito que falte (al elegir otro, al salir del cuadro…)."""
+        self._espera_guardar.stop()
+        pendiente, self._pendiente = self._pendiente, {}
+        for campo, (mid, valor) in pendiente.items():
+            self._enviado[campo] = mid
+            self.guardar.emit(mid, campo, valor)
+
+    def guardado(self, mid: int, campo: str, error: str | None):
+        """Respuesta de Buscar: se guardó (error None) o no se pudo."""
+        if self._enviado.get(campo) == mid:
+            del self._enviado[campo]
+        if self.media is None or self.media.id != mid:
+            return
+        editor, lbl = self._campos[campo]
+        if error and campo not in self._pendiente:
+            # Queda pendiente: se reintenta al salir del cuadro o al elegir otro,
+            # y mientras tanto un aviso del NAS no lo borra del cuadro
+            self._pendiente[campo] = (mid, editor.toPlainText())
+        lbl.setObjectName("detalle_aviso_texto" if error else "muted")
+        lbl.style().unpolish(lbl)
+        lbl.style().polish(lbl)
+        lbl.setText(("No se pudo guardar. " + error) if error else "Guardado.")
+        lbl.setVisible(True)
+        if not error:
+            QTimer.singleShot(2500, lambda: lbl.text() == "Guardado." and lbl.setVisible(False))
+
+    def set_editable(self, si: bool):
+        """Sin conexión con el NAS no se puede escribir (no quedaría guardado)."""
+        self._editable = si
+        for editor, _lbl in self._campos.values():
+            editor.setReadOnly(not si)
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.FocusOut and obj in (self.txt_texto, self.txt_notas):
+            self.guardar_ya()
+        return super().eventFilter(obj, event)
+
+    def hideEvent(self, event):
+        self.guardar_ya()
+        super().hideEvent(event)
 
     def _ajustar_alto(self):
         # Con textos en varias líneas el área de desplazamiento apretaba todo

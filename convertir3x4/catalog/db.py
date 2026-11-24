@@ -521,6 +521,28 @@ CREATE TABLE texto_foto (
 );
 """
 
+# Texto en la foto corregido a mano y notas de cada medio (pedido del 24/11/2026),
+# desde los detalles de Buscar. Lo que escribe una persona no lo pisa el NAS:
+# una foto con `editado` no se vuelve a leer (ni con «rehacer» ni con otra
+# OCR_VERSION). Las notas van en `media` (el aviso a las PCs y `mover()` ya las
+# cubren) y se buscan con el nombre y las etiquetas (peso A).
+_V9 = r"""
+ALTER TABLE texto_foto
+    ADD COLUMN editado     boolean NOT NULL DEFAULT false,
+    ADD COLUMN editado_en  timestamptz,
+    ADD COLUMN editado_por text;
+CREATE TRIGGER texto_foto_aviso AFTER INSERT ON texto_foto
+    FOR EACH ROW WHEN (NEW.editado) EXECUTE FUNCTION avisar_cambio_catalogo();
+CREATE TRIGGER texto_foto_aviso_cambio AFTER UPDATE ON texto_foto
+    FOR EACH ROW WHEN (OLD.texto IS DISTINCT FROM NEW.texto)
+    EXECUTE FUNCTION avisar_cambio_catalogo();
+
+ALTER TABLE media
+    ADD COLUMN notas          text NOT NULL DEFAULT '',
+    ADD COLUMN notas_en       timestamptz,
+    ADD COLUMN notas_por      text;
+"""
+
 MIGRACIONES: list[tuple[int, str]] = [
     (1, _V1),
     (2, _V2),
@@ -530,6 +552,7 @@ MIGRACIONES: list[tuple[int, str]] = [
     (6, _V6),
     (7, _V7),
     (8, _V8),
+    (9, _V9),
 ]
 CANAL_CAMBIOS = "catalogo"
 VERSION_ESQUEMA = MIGRACIONES[-1][0]
