@@ -11,10 +11,10 @@ import os
 import re
 import threading
 
-from PyQt6.QtCore import Qt, QElapsedTimer, QPoint, QSize, QTimer, pyqtSignal
+from PyQt6.QtCore import Qt, QElapsedTimer, QPoint, QSettings, QSize, QTimer, pyqtSignal
 from PyQt6.QtGui import QIcon, QPixmap
 from PyQt6.QtWidgets import (
-    QAbstractItemView, QApplication, QComboBox, QProgressBar, QSizePolicy,
+    QAbstractItemView, QApplication, QComboBox, QProgressBar, QSizePolicy, QSplitter,
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QListWidgetItem, QFrame, QPushButton, QButtonGroup, QMessageBox,
 )
@@ -28,6 +28,7 @@ from ..widgets.media_grid import (
     DragOutListWidget, PATH_ROLE, MEDIA_ID_ROLE, KIND_ROLE, DURATION_ROLE, STATE_ROLE,
     STORYBOARD_ROLE, TAGS_ROLE,
 )
+from ..widgets.detalle_medio import ANCHO as _ANCHO_DETALLES, PanelDetalles, estado_de_item
 from ..widgets.dialogos import confirmar
 from ..widgets.tag_bar import TagBar
 from ...utils import open_file
@@ -179,6 +180,16 @@ class BuscarTab(QWidget):
         self.chk_pending.toggled.connect(lambda _: self._do_search())
         row.addWidget(self.chk_pending)
 
+        self.btn_detalles = QPushButton("Detalles")
+        self.btn_detalles.setObjectName("toggle_panel")      # azul: el violeta es de la IA
+        self.btn_detalles.setCheckable(True)
+        self.btn_detalles.setCursor(Qt.CursorShape.PointingHandCursor)
+        icons.set_icon(self.btn_detalles, "panel-right", 15, "text_2", active="text")
+        self.btn_detalles.setToolTip("Muestra u oculta, al costado, los detalles de lo "
+                                     "seleccionado (tecla I)")
+        self.btn_detalles.toggled.connect(self._ver_detalles)
+        row.addWidget(self.btn_detalles)
+
         self.lbl_count = QLabel("")
         self.lbl_count.setObjectName("muted")
         self.lbl_count.setMinimumWidth(96)
@@ -226,13 +237,31 @@ class BuscarTab(QWidget):
         self.grid.setAccessibleName("Resultados")
         self.grid.itemSelectionChanged.connect(self._on_selection_changed)
         self.grid.itemDoubleClicked.connect(self._open_item)
-        self.grid.detalles.connect(self._alternar_detalle)
-        self.grid.escape.connect(self._cerrar_detalle)
+        self.grid.detalles.connect(self.btn_detalles.toggle)
         self.grid.currentItemChanged.connect(lambda *_: self._seguir_detalle())
-        self._detalle = None
         self.grid.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.grid.customContextMenuRequested.connect(self._menu_grilla)
-        layout.addWidget(self.grid, 1)
+
+        # Detalles de lo elegido, al costado de la grilla (tecla I). Queda
+        # abierto o cerrado como lo deje el operador, con el ancho que le dio.
+        self.detalles = PanelDetalles()
+        self.detalles.cerrar.connect(lambda: self.btn_detalles.setChecked(False))
+        self.detalles.ir_a.connect(self._ir_a_elemento)
+        self.division = QSplitter(Qt.Orientation.Horizontal)
+        self.division.setChildrenCollapsible(False)
+        self.division.setHandleWidth(10)
+        self.division.addWidget(self.grid)
+        self.division.addWidget(self.detalles)
+        self.division.setStretchFactor(0, 1)
+        self.division.setStretchFactor(1, 0)
+        self.division.splitterMoved.connect(lambda *_: self._guardar_ancho_detalles())
+        self.detalles.setVisible(False)
+        self._detalles_timer = QTimer(self)        # Ctrl+A en mil: se arma una vez
+        self._detalles_timer.setSingleShot(True)
+        self._detalles_timer.setInterval(40)
+        self._detalles_timer.timeout.connect(self._actualizar_detalles)
+        layout.addWidget(self.division, 1)
+        self.btn_detalles.setChecked(_ajuste("buscar/detalles", False) in (True, "true"))
 
         # Tags de la selección, en un panel abajo
         panel = QFrame()
@@ -630,7 +659,7 @@ class BuscarTab(QWidget):
         else:
             verbo = "ya no está" if n == 1 else "ya no están"
             text = (f"{cuantos} {verbo} en su carpeta: pueden haberse movido o borrado. "
-                    "Elija uno y presione I para ver su ubicación anterior.")
+                    "Elija uno y abra los detalles (tecla I) para ver su ubicación anterior.")
         self.lbl_offline.setText(text)
         self.offline_box.setVisible(True)
 
@@ -739,67 +768,49 @@ class BuscarTab(QWidget):
         super().keyPressEvent(event)
 
     # ------------------------------------------------------------- detalles (I)
-    def _item_para_detalle(self):
-        """El actual de la grilla si está elegido; si no, el primero elegido."""
-        actual = self.grid.currentItem()
-        if actual is not None and actual.isSelected():
-            return actual
-        elegidos = self.grid.selectedItems()
-        return elegidos[0] if elegidos else actual
+    def _ver_detalles(self, abierto: bool):
+        self.detalles.setVisible(abierto)
+        if abierto:
+            ancho = int(_ajuste("buscar/detalles_ancho", _ANCHO_DETALLES) or _ANCHO_DETALLES)
+            total = max(self.division.width(), ancho + 400)
+            self.division.setSizes([total - ancho, ancho])
+            self._actualizar_detalles()
+        _guardar_ajuste("buscar/detalles", abierto)
 
-    def _alternar_detalle(self):
-        if self._detalle is not None and self._detalle.isVisible():
-            self._detalle.close()
-            return
-        item = self._item_para_detalle()
-        if item is None:
-            return
-        if self._detalle is None:
-            from ..widgets.detalle_medio import DetalleMedio
-            self._detalle = DetalleMedio(self.window(), grid=self.grid)
-            self._detalle.cerrada.connect(self._volver_a_la_grilla)
-        self._mostrar_detalle(item)
-        if not self._detalle.isVisible():
-            self._ubicar_detalle()
-        self._detalle.mostrar_con_foco()
-
-    def _cerrar_detalle(self):
-        if self._detalle is not None and self._detalle.isVisible():
-            self._detalle.close()
-
-    def _volver_a_la_grilla(self):
-        self.window().activateWindow()
-        self.grid.setFocus()
-
-    def _ubicar_detalle(self):
-        """Al lado de la ventana principal si entra en la pantalla; si no, adentro."""
-        ventana = self.window().frameGeometry()
-        pantalla = self.window().screen().availableGeometry()
-        d = self._detalle
-        d.adjustSize()
-        alto = min(max(d.sizeHint().height(), 560), pantalla.height() - 40)
-        d.resize(d.width(), alto)
-        x = ventana.right() + 8
-        if x + d.width() > pantalla.right():
-            x = ventana.right() - d.width() - 24
-        y = max(pantalla.top() + 20, min(ventana.top() + 60, pantalla.bottom() - alto - 20))
-        d.move(x, y)
-
-    def _mostrar_detalle(self, item):
-        from ..widgets.detalle_medio import estado_de_item
-        m = {r.id: r for r in getattr(self, "_results", [])}.get(item.data(MEDIA_ID_ROLE))
-        if m is not None:
-            self._detalle.mostrar(m, (getattr(self, "_minis", None) or {}).get(m.id),
-                                  estado_de_item(item))
+    def _guardar_ancho_detalles(self):
+        if self.btn_detalles.isChecked():
+            _guardar_ajuste("buscar/detalles_ancho", self.division.sizes()[1])
 
     def _seguir_detalle(self):
-        """La ventana de detalles sigue al elemento actual (flechas, clic) y se
-        pone al día cuando cambia algo (una etiqueta, el aviso del NAS)."""
-        if self._detalle is None or not self._detalle.isVisible() or self._restaurando:
+        """Los detalles siguen a lo elegido (flechas, clic) y se ponen al día
+        cuando cambia algo (una etiqueta, un aviso del NAS)."""
+        if self.btn_detalles.isChecked() and not self._restaurando:
+            self._detalles_timer.start()
+
+    def _actualizar_detalles(self):
+        if not self.btn_detalles.isChecked():
             return
-        item = self._item_para_detalle()
-        if item is not None:
-            self._mostrar_detalle(item)
+        por_id = {m.id: m for m in getattr(self, "_results", [])}
+        items = sorted(self.grid.selectedItems(), key=self.grid.row)   # orden de la grilla
+        medios, estados = [], {}
+        for it in items:
+            m = por_id.get(it.data(MEDIA_ID_ROLE))
+            if m is not None:
+                medios.append(m)
+                st = estado_de_item(it)
+                if st:
+                    estados[m.id] = st
+        self.detalles.mostrar(medios, getattr(self, "_minis", None) or {}, estados)
+
+    def _ir_a_elemento(self, mid: int):
+        """Clic en la lista de los detalles: se muestra en la grilla, sin cambiar lo elegido."""
+        for i in range(self.grid.count()):
+            it = self.grid.item(i)
+            if it.data(MEDIA_ID_ROLE) == mid:
+                self.grid.setCurrentItem(it, self.grid.selectionModel().SelectionFlag.NoUpdate)
+                self.grid.scrollToItem(it)
+                self.grid.setFocus()
+                return
 
     def _on_selection_changed(self):
         if self._restaurando:
@@ -979,3 +990,11 @@ def _icono(ruta: str | None) -> QIcon | None:
         return None
     px = QPixmap(ruta)
     return None if px.isNull() else QIcon(px)
+
+
+def _ajuste(clave: str, defecto=None):
+    return QSettings().value(clave, defecto)
+
+
+def _guardar_ajuste(clave: str, valor):
+    QSettings().setValue(clave, valor)

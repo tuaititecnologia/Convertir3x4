@@ -178,13 +178,13 @@ def test_el_catalogador_pide_el_texto(monkeypatch, pg_cfg):
 # ---------------------------------------------------------------- la interfaz
 
 def test_texto_en_el_detalle_de_buscar(app):
-    from convertir3x4.ui.widgets.detalle_medio import DetalleMedio
-    d = DetalleMedio()
-    d.mostrar(Media(path="/x/a.jpg", filename="a.jpg", kind="image", id=1,
-                    texto="VIGILIA\nViernes 22 hs"))
+    from convertir3x4.ui.widgets.detalle_medio import PanelDetalles
+    d = PanelDetalles()
+    d.mostrar([Media(path="/x/a.jpg", filename="a.jpg", kind="image", id=1,
+                     texto="VIGILIA\nViernes 22 hs")])
     assert d.txt_texto.toPlainText() == "VIGILIA\nViernes 22 hs"   # entero, se puede copiar
     assert d.sec_texto.isVisibleTo(d)
-    d.mostrar(Media(path="/x/b.jpg", filename="b.jpg", kind="image", id=2))
+    d.mostrar([Media(path="/x/b.jpg", filename="b.jpg", kind="image", id=2)])
     assert not d.sec_texto.isVisibleTo(d)
     d.deleteLater()
 

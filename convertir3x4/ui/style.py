@@ -369,6 +369,15 @@ QPushButton#toggle_chip {{
 QPushButton#toggle_chip:hover {{ color: {T.text}; border-color: {T.text_3}; }}
 QPushButton#toggle_chip:checked {{ background-color: {T.ia_soft}; border-color: {T.ia}; color: {T.ia}; }}
 QPushButton#toggle_chip:focus {{ border-color: {T.accent_text}; }}
+QPushButton#toggle_panel {{
+    background: transparent; border: 1px solid {T.border_strong}; border-radius: 14px;
+    color: {T.text_2}; padding: 5px 12px;
+}}
+QPushButton#toggle_panel:hover {{ color: {T.text}; border-color: {T.text_3}; }}
+QPushButton#toggle_panel:checked {{
+    background-color: {T.accent_soft}; border-color: {T.accent_line}; color: {T.text};
+}}
+QPushButton#toggle_panel:focus {{ border-color: {T.accent_text}; }}
 
 /* botón con aspecto de link (acciones secundarias dentro de un texto) */
 QPushButton#btn_link {{
@@ -547,7 +556,14 @@ QPushButton#tag_chip_ia_x {{
 QPushButton#tag_chip_ia_x:hover {{ color: {T.danger}; }}
 
 /* ---------- detalles de un elemento de Buscar (tecla I) ---------- */
-QDialog#detalle_medio, QWidget#detalle_cuerpo {{ background-color: {T.panel}; }}
+QFrame#detalle_panel {{
+    background-color: {T.panel}; border: 1px solid {T.border}; border-radius: {T.radius}px;
+}}
+QWidget#detalle_cuerpo {{ background-color: {T.panel}; }}
+QFrame#detalle_fila {{ background: transparent; border: none; border-radius: {T.radius_sm}px; }}
+QFrame#detalle_fila:hover {{ background-color: {T.hover}; }}
+QLabel#detalle_fila_mini {{ background-color: {T.bg}; border-radius: 4px; }}
+QSplitter::handle {{ background: transparent; }}
 QLabel#detalle_imagen {{
     background-color: {T.bg}; border: 1px solid {T.border}; border-radius: {T.radius}px;
     color: {T.text_3};
@@ -571,7 +587,9 @@ QPlainTextEdit#detalle_texto {{
     background-color: {T.raised}; border: 1px solid {T.border}; border-radius: {T.radius_sm}px;
     color: {T.text}; padding: 6px;
 }}
-QFrame#detalle_pie {{ background-color: {T.panel}; border: none; border-top: 1px solid {T.border}; }}
+QFrame#detalle_pie {{
+    background-color: transparent; border: none; border-top: 1px solid {T.border};
+}}
 
 /* ---------- pestañas (quedan donde todavía se usen) ---------- */
 QTabWidget::pane {{ border: none; }}

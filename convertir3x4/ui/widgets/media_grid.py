@@ -430,7 +430,6 @@ class DragOutListWidget(_HoverPreview, QListWidget):
     """
 
     detalles = pyqtSignal()          # tecla I: los detalles del elemento actual
-    escape = pyqtSignal()            # Esc: cierra los detalles si están abiertos
 
     def __init__(self, parent=None, thumb: int = 150, etiquetas: bool = False):
         super().__init__(parent)
@@ -472,8 +471,6 @@ class DragOutListWidget(_HoverPreview, QListWidget):
             self.detalles.emit()
             event.accept()
             return
-        if event.key() == Qt.Key.Key_Escape:
-            self.escape.emit()
         super().keyPressEvent(event)
 
     def resizeEvent(self, event):

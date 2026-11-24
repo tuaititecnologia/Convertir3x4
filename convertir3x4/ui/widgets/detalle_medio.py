@@ -1,8 +1,13 @@
-"""Detalles de una foto o un video de Buscar, con la tecla I (pedido del 24/11/2026).
+"""Panel de detalles de Buscar, al costado de la grilla (pedidos del 24/11/2026).
 
-Reemplaza el cartel que aparecía al dejar el puntero: una ventana chica, al lado
-de la principal, que muestra el elemento actual de la grilla y lo sigue mientras
-se recorre con las flechas (como la vista rápida de la Mac). I o Esc la cierran.
+Reemplaza el cartel que aparecía al dejar el puntero. Se abre y se cierra con la
+tecla I o el botón «Detalles», y queda como el operador lo deje. Muestra lo
+elegido en la grilla y lo sigue mientras se recorre:
+
+- un elemento: vista previa, fecha de la toma, medidas, etiquetas, el texto que
+  aparece en la foto y dónde está el archivo;
+- varios: un resumen («5 seleccionados: 3 fotos y 2 videos», fechas, tamaño
+  total, etiquetas en común) y la lista de todos.
 
 Todo sale de lo que Buscar ya trajo (`Media`) y de la miniatura guardada en la
 PC: no consulta la base. La foto original se lee aparte (puede estar en el NAS,
@@ -14,18 +19,21 @@ from __future__ import annotations
 from PyQt6.QtCore import QSize, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices, QImage, QPixmap
 from PyQt6.QtWidgets import (
-    QApplication, QDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QPlainTextEdit,
-    QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget,
+    QFrame, QGridLayout, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QScrollArea,
+    QSizePolicy, QVBoxLayout, QWidget,
 )
 
 from ...utils import open_file
 from ...workers import EngineWorker
-from ..style import T
+from .. import icons
 
-ANCHO = 440
-_ALTO_IMAGEN = 300
+ANCHO = 360                      # ancho inicial del panel
+ANCHO_MIN = 300
+_ALTO_IMAGEN = 260
 _LADO_ORIGINAL = 1200            # la foto original se achica a esto para mostrarla
 _ESPERA_ORIGINAL_MS = 250        # recorriendo con las flechas no se lee cada foto
+_LISTA_MAX = 200                 # con más elegidos, la lista muestra estos y «y N más»
+_MINI_LISTA = 48
 
 _CALIDAD = {"low_res": "Baja resolución: puede verse borrosa en la pantalla.",
             "corrupt": "El archivo parece dañado.",
@@ -104,20 +112,77 @@ def mapa(lat: float, lon: float) -> str:
     return f"https://www.openstreetmap.org/?mlat={lat:.6f}&mlon={lon:.6f}#map=17/{lat:.6f}/{lon:.6f}"
 
 
-# ---------------------------------------------------------------- ventana
-class DetalleMedio(QDialog):
-    """Una sola ventana que se reutiliza. `mostrar(m, mini, estado)` la llena."""
-    cerrada = pyqtSignal()
 
-    def __init__(self, parent=None, grid=None):
+def _plural(n: int, uno: str, varios: str) -> str:
+    return f"{n} {uno if n == 1 else varios}"
+
+
+def titulo_varios(medios) -> tuple[str, str]:
+    """(«5 seleccionados», «3 fotos y 2 videos»)."""
+    n = len(medios)
+    videos = sum(m.kind == "video" for m in medios)
+    fotos = n - videos
+    if not videos:
+        return f"{n} fotos seleccionadas", ""
+    if not fotos:
+        return f"{n} videos seleccionados", ""
+    return f"{n} seleccionados", f"{_plural(fotos, 'foto', 'fotos')} y {_plural(videos, 'video', 'videos')}"
+
+
+def resumen_de(medios, estados: dict) -> list[tuple[str, str]]:
+    """Las filas de datos del resumen de varios elementos."""
+    filas = []
+    fechas = sorted(m.tomada for m in medios if m.tomada)
+    if fechas:
+        a, b = (f.astimezone() if f.tzinfo else f for f in (fechas[0], fechas[-1]))
+        txt = f"{a:%d/%m/%Y}" if a.date() == b.date() else f"del {a:%d/%m/%Y} al {b:%d/%m/%Y}"
+        sin = len(medios) - len(fechas)
+        if sin:
+            txt += f" ({_plural(sin, 'sin fecha', 'sin fecha')})"
+        filas.append(("Fecha de la toma", txt))
+    carpetas = {m.folder_origin or "" for m in medios}
+    filas.append(("Carpeta", next(iter(carpetas)) or "—") if len(carpetas) == 1
+                 else ("Carpetas", f"{len(carpetas)} distintas"))
+    total = sum(m.size_bytes or 0 for m in medios)
+    if total:
+        filas.append(("Tamaño total", tamano_archivo(total)))
+    seg = sum(m.duration or 0 for m in medios if m.kind == "video")
+    if seg:
+        filas.append(("Duración de los videos", duracion(seg)))
+    return filas
+
+
+def no_disponibles(medios, estados: dict) -> int:
+    return sum(1 for m in medios if m.missing or estados.get(m.id))
+
+
+def etiquetas_en_comun(medios) -> list[tuple[str, int, bool]]:
+    """[(nombre, en cuántos, alguna sin confirmar)], las más repetidas primero."""
+    cuantos, sin_confirmar = {}, set()
+    for m in medios:
+        for nombre, confirmada in m.etiquetas or []:
+            cuantos[nombre] = cuantos.get(nombre, 0) + 1
+            if not confirmada:
+                sin_confirmar.add(nombre)
+    return [(n, c, n in sin_confirmar)
+            for n, c in sorted(cuantos.items(), key=lambda t: (-t[1], t[0]))]
+
+
+# ---------------------------------------------------------------- panel
+class PanelDetalles(QFrame):
+    """El panel. `mostrar(medios, minis, estados)`: ninguno, uno o varios."""
+    cerrar = pyqtSignal()
+    ir_a = pyqtSignal(int)          # clic en un elemento de la lista: mostrarlo en la grilla
+
+    def __init__(self, parent=None):
         super().__init__(parent)
-        self.setObjectName("detalle_medio")
-        self.setWindowTitle("Detalles")
-        self.setModal(False)
-        self.setFixedWidth(ANCHO)
-        self.setMinimumHeight(360)
-        self._grid = grid
+        self.setObjectName("detalle_panel")
+        self.setMinimumWidth(ANCHO_MIN)
         self.media = None
+        self._medios: list = []
+        self._minis: dict = {}
+        self._estados: dict = {}
+        self._fuente: QPixmap | None = None
         self._ruta_original: str | None = None
         self._pedido = 0
         self._workers: set = set()
@@ -125,45 +190,67 @@ class DetalleMedio(QDialog):
         self._espera.setSingleShot(True)
         self._espera.setInterval(_ESPERA_ORIGINAL_MS)
         self._espera.timeout.connect(self._leer_original)
+        self._al_cambiar_ancho = QTimer(self)
+        self._al_cambiar_ancho.setSingleShot(True)
+        self._al_cambiar_ancho.setInterval(80)
+        self._al_cambiar_ancho.timeout.connect(self._reacomodar)
 
         raiz = QVBoxLayout(self)
         raiz.setContentsMargins(0, 0, 0, 0)
         raiz.setSpacing(0)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        raiz.addWidget(scroll, 1)
+
+        cab = QHBoxLayout()
+        cab.setContentsMargins(16, 10, 8, 6)
+        t = QLabel("Detalles")
+        t.setObjectName("section_title")
+        cab.addWidget(t, 1)
+        self.btn_cerrar = QPushButton()
+        self.btn_cerrar.setObjectName("btn_icon")
+        self.btn_cerrar.setToolTip("Cerrar los detalles (tecla I)")
+        self.btn_cerrar.setAccessibleName("Cerrar los detalles")
+        self.btn_cerrar.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_cerrar.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        icons.set_icon(self.btn_cerrar, "x", 16, "text_2")
+        self.btn_cerrar.clicked.connect(self.cerrar)
+        cab.addWidget(self.btn_cerrar)
+        raiz.addLayout(cab)
+
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        raiz.addWidget(self._scroll, 1)
         self._cuerpo = QWidget()
         self._cuerpo.setObjectName("detalle_cuerpo")
-        scroll.setWidget(self._cuerpo)
+        self._scroll.setWidget(self._cuerpo)
         self._lay = QVBoxLayout(self._cuerpo)
-        self._lay.setContentsMargins(20, 20, 20, 16)
+        self._lay.setContentsMargins(16, 4, 16, 16)
         self._lay.setSpacing(14)
+
+        self.lbl_vacio = QLabel("Elija una foto o un video para ver sus detalles.")
+        self.lbl_vacio.setObjectName("muted")
+        self.lbl_vacio.setWordWrap(True)
+        self.lbl_vacio.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._lay.addWidget(self.lbl_vacio)
 
         self.imagen = QLabel()
         self.imagen.setObjectName("detalle_imagen")
         self.imagen.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.imagen.setFixedHeight(_ALTO_IMAGEN)
+        self.imagen.setMinimumWidth(10)
+        self.imagen.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self._lay.addWidget(self.imagen)
 
         cabeza = QVBoxLayout()
         cabeza.setSpacing(2)
-        self.lbl_nombre = QLabel()
-        self.lbl_nombre.setObjectName("detalle_nombre")
-        self.lbl_nombre.setWordWrap(True)
-        self.lbl_nombre.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.lbl_nombre = _etiqueta("detalle_nombre")
         cabeza.addWidget(self.lbl_nombre)
-        self.lbl_carpeta = QLabel()
-        self.lbl_carpeta.setObjectName("muted")
-        self.lbl_carpeta.setWordWrap(True)
-        self.lbl_carpeta.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.lbl_carpeta = _etiqueta("muted")
         cabeza.addWidget(self.lbl_carpeta)
         self._lay.addLayout(cabeza)
 
-        self.aviso = QLabel()
-        self.aviso.setObjectName("detalle_aviso")
-        self.aviso.setWordWrap(True)
+        self.aviso = _etiqueta("detalle_aviso", seleccionable=False)
         self._lay.addWidget(self.aviso)
 
         self._datos = QGridLayout()
@@ -176,6 +263,7 @@ class DetalleMedio(QDialog):
         self.btn_mapa.setObjectName("btn_link")
         self.btn_mapa.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_mapa.clicked.connect(self._ver_mapa)
+        self.btn_mapa.setVisible(False)
 
         self.sec_etiquetas = _Seccion("Etiquetas")
         self._lay.addWidget(self.sec_etiquetas)
@@ -187,41 +275,68 @@ class DetalleMedio(QDialog):
         self.sec_texto.cuerpo.addWidget(self.txt_texto)
         self._lay.addWidget(self.sec_texto)
         self.sec_ubicacion = _Seccion("Ubicación del archivo")
-        self.lbl_ruta = QLabel()
-        self.lbl_ruta.setObjectName("muted")
-        self.lbl_ruta.setWordWrap(True)
-        self.lbl_ruta.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.lbl_ruta = _etiqueta("muted")
         self.sec_ubicacion.cuerpo.addWidget(self.lbl_ruta)
         self._lay.addWidget(self.sec_ubicacion)
+        self.sec_lista = _Seccion("Elegidos")
+        self._lay.addWidget(self.sec_lista)
         self._lay.addStretch(1)
 
-        pie = QFrame()
-        pie.setObjectName("detalle_pie")
-        pl = QHBoxLayout(pie)
-        pl.setContentsMargins(20, 10, 20, 12)
-        ayuda = QLabel("Flechas: recorrer · I o Esc: cerrar")
+        self.pie = QFrame()
+        self.pie.setObjectName("detalle_pie")
+        pl = QHBoxLayout(self.pie)
+        pl.setContentsMargins(16, 8, 16, 10)
+        ayuda = QLabel("Tecla I: abrir o cerrar")
         ayuda.setObjectName("muted")
         pl.addWidget(ayuda, 1)
         self.btn_abrir = QPushButton("Abrir")
         self.btn_abrir.setToolTip("Abre el original en el visor de imágenes o el reproductor")
+        self.btn_abrir.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_abrir.clicked.connect(self._abrir)
         pl.addWidget(self.btn_abrir)
-        raiz.addWidget(pie)
+        raiz.addWidget(self.pie)
+        self.mostrar([])
 
     # ------------------------------------------------------------- contenido
-    def mostrar(self, m, miniatura: str | None = None, estado: str | None = None):
-        """Llena la ventana con `m` (Media). `estado`: None, 'missing' u 'offline'."""
+    def mostrar(self, medios: list, minis: dict | None = None, estados: dict | None = None,
+                actual=None):
+        """`medios`: lo elegido (Media). `minis` {id: miniatura local}; `estados`
+        {id: 'missing'/'offline'}; `actual`: el que se muestra si hay uno solo."""
+        self._medios, self._minis, self._estados = list(medios), minis or {}, estados or {}
+        n = len(self._medios)
+        uno = n == 1
+        for w in (self.imagen, self.lbl_nombre, self.sec_ubicacion):
+            w.setVisible(n > 0 and (uno or w is self.lbl_nombre))
+        self.lbl_vacio.setVisible(n == 0)
+        self.sec_lista.setVisible(n > 1)
+        self.btn_abrir.setVisible(uno)
+        if n == 0:
+            self.media = None
+            for w in (self.lbl_carpeta, self.aviso, self.sec_etiquetas, self.sec_texto):
+                w.setVisible(False)
+            self._limpiar_datos()
+            self.btn_mapa.setVisible(False)
+        elif uno:
+            self._mostrar_uno(self._medios[0])
+        else:
+            self.media = None
+            self._pedido += 1
+            self._mostrar_varios()
+        self._ajustar_alto()
+        QTimer.singleShot(0, self._ajustar_alto)       # ya con el estilo aplicado
+
+    def _mostrar_uno(self, m):
+        estado = self._estados.get(m.id)
         mismo = self.media is not None and self.media.id == m.id
-        self.media, self._estado = m, estado
-        self.setWindowTitle(m.filename)
+        self.media = m
         self.lbl_nombre.setText(m.filename)
         self.lbl_carpeta.setText(m.folder_origin or "")
         self.lbl_carpeta.setVisible(bool(m.folder_origin))
         aviso = aviso_de(m, estado)
         self.aviso.setText(aviso)
         self.aviso.setVisible(bool(aviso))
-        self._llenar_datos(m)
-        self._llenar_etiquetas(m.etiquetas or [])
+        self._llenar_datos(datos_de(m), m.lat, m.lon)
+        self._llenar_etiquetas([(nombre, 1, not conf) for nombre, conf in m.etiquetas or []], 1)
         texto = m.texto or ""
         if self.txt_texto.toPlainText() != texto:
             self.txt_texto.setPlainText(texto)
@@ -229,89 +344,118 @@ class DetalleMedio(QDialog):
         self.lbl_ruta.setText(m.path)
         disponible = not estado and not m.missing
         self.btn_abrir.setEnabled(disponible)
-        # Con textos en varias líneas el área de desplazamiento apretaba todo
-        # (la imagen tapaba el nombre): el alto mínimo es el que necesita.
-        self._ajustar_alto()
-        QTimer.singleShot(0, self._ajustar_alto)       # ya con el estilo aplicado
         if not mismo:
-            self._poner_imagen(miniatura)
+            self._poner_imagen(self._minis.get(m.id))
             self._pedido += 1
             self._ruta_original = m.path if (disponible and m.kind == "image") else None
             self._espera.start()
 
+    def _mostrar_varios(self):
+        medios = self._medios
+        titulo, sub = titulo_varios(medios)
+        self.lbl_nombre.setText(titulo)
+        self.lbl_carpeta.setText(sub)
+        self.lbl_carpeta.setVisible(bool(sub))
+        faltan = no_disponibles(medios, self._estados)
+        self.aviso.setText("" if not faltan else (
+            "1 de los elegidos no está disponible: no puede usarse en ProPresenter."
+            if faltan == 1 else
+            f"{faltan} de los elegidos no están disponibles: no pueden usarse en ProPresenter."))
+        self.aviso.setVisible(bool(faltan))
+        self._llenar_datos(resumen_de(medios, self._estados))
+        self._llenar_etiquetas(etiquetas_en_comun(medios), len(medios))
+        self.sec_texto.setVisible(False)
+        self._llenar_lista()
+
     def _ajustar_alto(self):
+        # Con textos en varias líneas el área de desplazamiento apretaba todo
+        # (la imagen tapaba el nombre): el alto mínimo es el que necesita.
         self._lay.invalidate()
         ancho = self._cuerpo.width() if self._cuerpo.width() > 100 else ANCHO
         self._cuerpo.setMinimumHeight(max(0, self._lay.heightForWidth(ancho)))
 
-    def _llenar_datos(self, m):
+    def _ancho_util(self) -> int:
+        ancho = self._scroll.viewport().width()
+        return (ancho if ancho > 100 else ANCHO) - 32
+
+    def _limpiar_datos(self):
         while self._datos.count():
             w = self._datos.takeAt(0).widget()
             if w is not None and w is not self.btn_mapa:
                 w.setParent(None)          # que desaparezca ya (deleteLater es diferido)
                 w.deleteLater()
-        filas = datos_de(m)
+
+    def _llenar_datos(self, filas, lat=None, lon=None):
+        self._limpiar_datos()
         for i, (nombre, valor) in enumerate(filas):
             k = QLabel(nombre)
             k.setObjectName("muted")
             k.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-            v = QLabel(valor)
-            v.setObjectName("detalle_aviso_texto" if nombre == "Calidad" else "detalle_valor")
-            v.setWordWrap(True)
-            v.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            v = _etiqueta("detalle_aviso_texto" if nombre == "Calidad" else "detalle_valor")
+            v.setText(valor)
             self._datos.addWidget(k, i, 0)
             self._datos.addWidget(v, i, 1)
-        if m.lat is not None and m.lon is not None:
+        if lat is not None and lon is not None:
             k = QLabel("Lugar")
             k.setObjectName("muted")
             self._datos.addWidget(k, len(filas), 0)
-            self._datos.addWidget(self.btn_mapa, len(filas), 1,
-                                  Qt.AlignmentFlag.AlignLeft)
+            self._datos.addWidget(self.btn_mapa, len(filas), 1, Qt.AlignmentFlag.AlignLeft)
             self.btn_mapa.setVisible(True)
         else:
             self.btn_mapa.setVisible(False)
 
-    def _llenar_etiquetas(self, etiquetas):
+    def _llenar_etiquetas(self, etiquetas: list[tuple[str, int, bool]], total: int):
+        """`etiquetas`: [(nombre, en cuántos, sin confirmar)]."""
         cuerpo = self.sec_etiquetas.cuerpo
-        while cuerpo.count():
-            item = cuerpo.takeAt(0)
-            _borrar_layout(item)
+        _vaciar(cuerpo)
+        self.sec_etiquetas.setVisible(True)
         if not etiquetas:
-            vacio = QLabel("Sin etiquetas. Agréguelas desde la barra «Etiquetas» de Buscar.")
-            vacio.setObjectName("muted")
-            vacio.setWordWrap(True)
+            vacio = _etiqueta("muted", seleccionable=False)
+            vacio.setText("Sin etiquetas. Agréguelas desde la barra «Etiquetas» de Buscar."
+                          if total == 1 else "Ninguno tiene etiquetas.")
             cuerpo.addWidget(vacio)
             return
         chips = []
-        for nombre, confirmada in etiquetas:
-            c = QLabel(nombre)
-            c.setObjectName("detalle_chip" if confirmada else "detalle_chip_ia")
-            if not confirmada:
+        for nombre, cuantos, ia in etiquetas:
+            c = QLabel(nombre if cuantos == total else f"{nombre} ({cuantos}/{total})")
+            c.setObjectName("detalle_chip_ia" if ia else "detalle_chip")
+            if ia:
                 c.setToolTip("Sugerida por la IA: confírmela o quítela desde la barra "
                              "«Etiquetas» de Buscar")
             chips.append(c)
-        _en_renglones(cuerpo, chips, ANCHO - 40)
-        if any(not c for _n, c in etiquetas):
-            nota = QLabel("Las punteadas son sugerencias de la IA sin confirmar.")
-            nota.setObjectName("muted")
-            nota.setWordWrap(True)
+        _en_renglones(cuerpo, chips, self._ancho_util())
+        if any(ia for _n, _c, ia in etiquetas):
+            nota = _etiqueta("muted", seleccionable=False)
+            nota.setText("Las punteadas son sugerencias de la IA sin confirmar.")
             cuerpo.addWidget(nota)
+
+    def _llenar_lista(self):
+        cuerpo = self.sec_lista.cuerpo
+        _vaciar(cuerpo)
+        for m in self._medios[:_LISTA_MAX]:
+            cuerpo.addWidget(_Fila(m, self._minis.get(m.id), self._estados.get(m.id),
+                                   self.ir_a))
+        resto = len(self._medios) - _LISTA_MAX
+        if resto > 0:
+            mas = _etiqueta("muted", seleccionable=False)
+            mas.setText(f"y {resto} más")
+            cuerpo.addWidget(mas)
 
     # ------------------------------------------------------------- imagen
     def _poner_imagen(self, ruta: str | None):
         px = QPixmap(ruta) if ruta else QPixmap()
-        if px.isNull():
+        self._fuente = None if px.isNull() else px
+        self._escalar()
+
+    def _escalar(self):
+        if self._fuente is None:
             self.imagen.setPixmap(QPixmap())
             self.imagen.setText("Sin vista previa")
             return
-        self._poner_pixmap(px)
-
-    def _poner_pixmap(self, px: QPixmap):
         dpr = self.devicePixelRatioF() or 1.0
-        ancho = self.imagen.width() if self.imagen.width() > 100 else ANCHO - 40
-        caja = QSize(ancho - 2, _ALTO_IMAGEN - 2)         # dentro del borde
-        px = px.scaled(caja * dpr, Qt.AspectRatioMode.KeepAspectRatio,
-                       Qt.TransformationMode.SmoothTransformation)
+        caja = QSize(self._ancho_util() - 2, _ALTO_IMAGEN - 2)      # dentro del borde
+        px = self._fuente.scaled(caja * dpr, Qt.AspectRatioMode.KeepAspectRatio,
+                                 Qt.TransformationMode.SmoothTransformation)
         px.setDevicePixelRatio(dpr)
         self.imagen.setText("")
         self.imagen.setPixmap(px)
@@ -328,7 +472,29 @@ class DetalleMedio(QDialog):
 
     def _llego_original(self, pedido: int, img):
         if pedido == self._pedido and img is not None and not img.isNull():
-            self._poner_pixmap(QPixmap.fromImage(img))
+            self._fuente = QPixmap.fromImage(img)
+            self._escalar()
+
+    # ------------------------------------------------------------- tamaño
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if event.oldSize().width() != event.size().width():
+            self._al_cambiar_ancho.start()
+
+    def _reacomodar(self):
+        """Cambió el ancho (el operador movió la división): imagen y etiquetas."""
+        if self.media is not None:
+            self._escalar()
+            m = self.media
+            self._llenar_etiquetas([(n, 1, not c) for n, c in m.etiquetas or []], 1)
+        elif len(self._medios) > 1:
+            self._llenar_etiquetas(etiquetas_en_comun(self._medios), len(self._medios))
+        self._ajustar_alto()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self.media is not None and self._ruta_original:
+            self._espera.start()
 
     # ------------------------------------------------------------- acciones
     def _abrir(self):
@@ -340,32 +506,58 @@ class DetalleMedio(QDialog):
         if m is not None and m.lat is not None and m.lon is not None:
             QDesktopServices.openUrl(QUrl(mapa(m.lat, m.lon)))
 
-    def keyPressEvent(self, event):
-        k = event.key()
-        if k in (Qt.Key.Key_Escape, Qt.Key.Key_I) and not (
-                event.modifiers() & ~Qt.KeyboardModifier.KeypadModifier):
-            self.close()
-            return
-        if self._grid is not None and k in (Qt.Key.Key_Left, Qt.Key.Key_Right,
-                                            Qt.Key.Key_Up, Qt.Key.Key_Down,
-                                            Qt.Key.Key_Home, Qt.Key.Key_End,
-                                            Qt.Key.Key_PageUp, Qt.Key.Key_PageDown):
-            QApplication.sendEvent(self._grid, event)      # recorrer desde acá también
-            return
-        super().keyPressEvent(event)
 
-    def mostrar_con_foco(self):
-        """Se abre con el foco (así anda Esc); las flechas siguen recorriendo la grilla."""
-        self.show()
-        self.raise_()
-        self.activateWindow()
-        self.setFocus()
+class _Fila(QFrame):
+    """Un elegido en la lista: miniatura, nombre y datos. Clic: se muestra en la grilla."""
 
-    def closeEvent(self, event):
-        self._espera.stop()
-        self._pedido += 1
-        super().closeEvent(event)
-        self.cerrada.emit()
+    def __init__(self, m, mini: str | None, estado: str | None, ir_a):
+        super().__init__()
+        self.setObjectName("detalle_fila")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip("Mostrarlo en la grilla")
+        self._id, self._ir_a = m.id, ir_a
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(6, 4, 6, 4)
+        lay.setSpacing(10)
+        img = QLabel()
+        img.setObjectName("detalle_fila_mini")
+        img.setFixedSize(_MINI_LISTA, _MINI_LISTA)
+        img.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        px = QPixmap(mini) if mini else QPixmap()
+        if not px.isNull():
+            dpr = self.devicePixelRatioF() or 1.0
+            px = px.scaled(QSize(_MINI_LISTA, _MINI_LISTA) * dpr,
+                           Qt.AspectRatioMode.KeepAspectRatio,
+                           Qt.TransformationMode.SmoothTransformation)
+            px.setDevicePixelRatio(dpr)
+            img.setPixmap(px)
+        lay.addWidget(img)
+        textos = QVBoxLayout()
+        textos.setSpacing(1)
+        nombre = QLabel(m.filename)
+        nombre.setObjectName("detalle_valor")
+        textos.addWidget(nombre)
+        partes = []
+        if m.tomada:
+            f = m.tomada.astimezone() if m.tomada.tzinfo else m.tomada
+            partes.append(f"{f:%d/%m/%Y}")
+        if m.kind == "video" and m.duration:
+            partes.append(duracion(m.duration))
+        if m.size_bytes:
+            partes.append(tamano_archivo(m.size_bytes))
+        sub = QLabel(" · ".join(partes) or ("Video" if m.kind == "video" else "Foto"))
+        sub.setObjectName("muted")
+        textos.addWidget(sub)
+        if estado or m.missing:
+            falta = QLabel("No está disponible")
+            falta.setObjectName("detalle_aviso_texto")
+            textos.addWidget(falta)
+        lay.addLayout(textos, 1)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._ir_a.emit(self._id)
+        super().mousePressEvent(event)
 
 
 class _Seccion(QWidget):
@@ -380,6 +572,15 @@ class _Seccion(QWidget):
         self.cuerpo = QVBoxLayout()
         self.cuerpo.setSpacing(6)
         lay.addLayout(self.cuerpo)
+
+
+def _etiqueta(nombre: str, seleccionable: bool = True) -> QLabel:
+    lbl = QLabel()
+    lbl.setObjectName(nombre)
+    lbl.setWordWrap(True)
+    if seleccionable:
+        lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+    return lbl
 
 
 def _en_renglones(destino: QVBoxLayout, widgets: list, ancho: int, sep: int = 6):
@@ -399,17 +600,21 @@ def _en_renglones(destino: QVBoxLayout, widgets: list, ancho: int, sep: int = 6)
         usado += ancho_w + sep
 
 
-def _borrar_layout(item):
+def _vaciar(lay):
+    while lay.count():
+        _borrar(lay.takeAt(0))
+
+
+def _borrar(item):
     w = item.widget()
     if w is not None:
         w.setParent(None)
         w.deleteLater()
         return
-    lay = item.layout()
-    if lay is not None:
-        while lay.count():
-            _borrar_layout(lay.takeAt(0))
-        lay.deleteLater()
+    sub = item.layout()
+    if sub is not None:
+        _vaciar(sub)
+        sub.deleteLater()
 
 
 def estado_de_item(item) -> str | None:

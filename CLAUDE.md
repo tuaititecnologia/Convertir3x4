@@ -108,9 +108,11 @@ convertir3x4/
                            Dev without NAS: CDLM_PANEL_URLS / CDLM_PANEL_TOKEN (see tests_discos.py)
     tabs/convert_workers.py  ThumbWorker / ConvertWorker / DownloadWorker (QThread, cancellable)
     widgets/advanced_dialog.py, widgets/help_panel.py (overlay help, first run + F1)
-    widgets/detalle_medio.py  DetalleMedio: Buscar's details window (key I on the grid; replaces the item tooltip):
-                         one reused non-modal window that follows the current item (arrows), built only from the
-                         loaded Media + local thumbnail; the original photo is read off-thread. I/Esc close it
+    widgets/detalle_medio.py  PanelDetalles: Buscar's details panel beside the grid (QSplitter; key I or «Detalles»
+                         toggles it; open state + width in QSettings buscar/detalles*). Replaces the item tooltip.
+                         One item: preview (original photo read off-thread), data, tags, OCR text, file path;
+                         several: summary («5 seleccionados: 4 fotos y 1 video», dates, size, tags n/N) + list (click
+                         = show it in the grid). Built only from the loaded Media + local thumbnails: no queries
     widgets/adaptable.py   Adaptable: two parts side by side if the width allows, else stacked (Grabadora history +
                            detail, Catalogar people + detail; both decide by the scroll viewport width)
 ```

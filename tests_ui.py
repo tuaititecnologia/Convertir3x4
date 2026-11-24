@@ -15,7 +15,8 @@ import pytest
 from PyQt6.QtCore import QPoint, QSize, Qt
 from PyQt6.QtGui import QColor, QIcon, QImage, QPainter, QPixmap
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication, QLabel, QListWidgetItem, QPushButton, QStyleOptionViewItem
+from PyQt6.QtWidgets import (QApplication, QFrame, QLabel, QListWidgetItem, QPushButton,
+                             QStyleOptionViewItem)
 
 from convertir3x4.ui.style import ASSETS_DIR, DARK, DARK_STYLE, LIGHT, T, apply_theme
 
@@ -285,7 +286,7 @@ class TestKeyboard:
         window.buscar_tab.txt_query.setFocus()
         app.processEvents()
         seen = []
-        for _ in range(6):
+        for _ in range(7):          # + el botón «Detalles»
             seen.append(type(app.focusWidget()).__name__)
             window.focusNextChild()
             app.processEvents()
@@ -359,12 +360,13 @@ class TestAvailability:
         assert "el disco «NO_EXISTE»" in tab.lbl_offline.text()
         assert "/Volumes" not in tab.lbl_offline.text()   # sin rutas del sistema
         assert not tab.grid.item(1).toolTip()               # los detalles van con la I
+        tab.btn_detalles.setChecked(True)
         tab.grid.setCurrentItem(tab.grid.item(1))
-        tab.grid.detalles.emit()
-        assert "No se encuentra el original" in tab._detalle.aviso.text()
-        assert tab._detalle.lbl_ruta.text() == "/Volumes/NO_EXISTE/a.jpg"
-        assert not tab._detalle.btn_abrir.isEnabled()
-        tab._detalle.close()
+        tab._actualizar_detalles()
+        assert "No se encuentra el original" in tab.detalles.aviso.text()
+        assert tab.detalles.lbl_ruta.text() == "/Volumes/NO_EXISTE/a.jpg"
+        assert not tab.detalles.btn_abrir.isEnabled()
+        tab.btn_detalles.setChecked(False)
         tab.deleteLater()
 
 
@@ -1158,81 +1160,119 @@ class TestEtiquetasAlInstante:
         srv.cerrar()
 
 
-# ------------------------------------------------- detalles con la tecla I (24/11)
+# ------------------------------------------------- detalles al costado, tecla I (24/11)
 class TestDetalles:
     def _tab(self, sin_catalogo, tmp_path):
         import datetime as dt
+        from PyQt6.QtCore import QSettings
         from convertir3x4.catalog.models import Media
         from convertir3x4.ui.tabs.tab_buscar import BuscarTab
-        for n in ("cartel.jpg", "culto.mp4"):
+        QSettings().remove("buscar")
+        for n in ("cartel.jpg", "culto.mp4", "otra.jpg"):
             (tmp_path / n).write_bytes(b"x")
+        tz = dt.timezone.utc
         fotos = [
             Media(path=str(tmp_path / "cartel.jpg"), filename="cartel.jpg", kind="image", id=1,
                   folder_origin="Historial/Reuniones", width=4000, height=3000,
                   size_bytes=5 * 1024 * 1024, quality_flag="low_res",
-                  tomada=dt.datetime(2025, 9, 21, 11, 30, tzinfo=dt.timezone.utc),
+                  tomada=dt.datetime(2025, 9, 21, 14, 30, tzinfo=tz),
                   lat=-34.6, lon=-58.4, texto="REUNIONES DE FE\nBIENVENIDO",
                   etiquetas=[("retiro", True), ("bautismo", False)]),
             Media(path=str(tmp_path / "culto.mp4"), filename="culto.mp4", kind="video", id=2,
-                  duration=3725, etiquetas=[]),
+                  folder_origin="Historial/Reuniones", duration=3725,
+                  size_bytes=1024 * 1024 * 1024, etiquetas=[("retiro", True)]),
+            Media(path=str(tmp_path / "otra.jpg"), filename="otra.jpg", kind="image", id=3,
+                  folder_origin="Historial/Reuniones", size_bytes=1024 * 1024,
+                  tomada=dt.datetime(2025, 9, 28, 14, 0, tzinfo=tz), etiquetas=[]),
         ]
         tab = BuscarTab(srv=sin_catalogo)
+        tab.resize(1200, 700)
         tab._results = fotos
         tab._populate(fotos)
         tab.show()
         return tab
 
-    def test_la_i_abre_sigue_y_cierra(self, app, sin_catalogo, tmp_path):
-        from PyQt6.QtCore import Qt
+    @staticmethod
+    def _datos(d):
+        g = d._datos
+        return {g.itemAtPosition(i, 0).widget().text(): g.itemAtPosition(i, 1).widget().text()
+                for i in range(g.rowCount()) if g.itemAtPosition(i, 0)}
+
+    def test_la_i_abre_y_cierra_y_queda_como_se_dejo(self, app, sin_catalogo, tmp_path):
+        from PyQt6.QtCore import QSettings, Qt
         from PyQt6.QtTest import QTest
         tab = self._tab(sin_catalogo, tmp_path)
-        g = tab.grid
+        g, d = tab.grid, tab.detalles
+        assert not d.isVisible()
         g.setFocus()
         g.setCurrentItem(g.item(0))
         QTest.keyClick(g, Qt.Key.Key_I)
-        d = tab._detalle
-        assert d.isVisible() and d.lbl_nombre.text() == "cartel.jpg"
-        assert g.currentItem() is g.item(0)                  # la I no movió la selección
-        datos = {d._datos.itemAtPosition(i, 0).widget().text():
-                 d._datos.itemAtPosition(i, 1).widget().text()
-                 for i in range(d._datos.rowCount()) if d._datos.itemAtPosition(i, 0)}
+        assert d.isVisible() and tab.btn_detalles.isChecked()
+        assert d.focusPolicy() == Qt.FocusPolicy.NoFocus or not d.hasFocus()
+        assert g.currentItem() is g.item(0)                  # la I no movió nada
+        assert QSettings().value("buscar/detalles") in (True, "true")
+        app.processEvents()
+        tab._actualizar_detalles()
+        assert d.lbl_nombre.text() == "cartel.jpg"
+        datos = self._datos(d)
         assert datos["Tipo"] == "Foto" and datos["Medidas"] == "4000 × 3000 px"
         assert datos["Tamaño del archivo"] == "5,0 MB" and "Baja resolución" in datos["Calidad"]
         assert "Fecha de la toma" in datos and d.btn_mapa.isVisibleTo(d)
         assert d.txt_texto.toPlainText() == "REUNIONES DE FE\nBIENVENIDO"
-        assert d.sec_texto.isVisibleTo(d) and not d.aviso.isVisibleTo(d)
-        # Las flechas recorren y la ventana sigue al actual
+        assert not d.sec_lista.isVisibleTo(d)
+        # Las flechas recorren y los detalles siguen al elegido
         QTest.keyClick(g, Qt.Key.Key_Right)
-        assert d.lbl_nombre.text() == "culto.mp4"
-        assert not d.sec_texto.isVisibleTo(d) and not d.btn_mapa.isVisibleTo(d)
-        datos = {d._datos.itemAtPosition(i, 0).widget().text():
-                 d._datos.itemAtPosition(i, 1).widget().text()
-                 for i in range(d._datos.rowCount()) if d._datos.itemAtPosition(i, 0)}
-        assert datos["Tipo"] == "Video" and datos["Duración"] == "1:02:05"
-        QTest.keyClick(d, Qt.Key.Key_Left)                   # también desde la ventana
-        assert d.lbl_nombre.text() == "cartel.jpg"
+        tab._actualizar_detalles()
+        assert d.lbl_nombre.text() == "culto.mp4" and self._datos(d)["Duración"] == "1:02:05"
+        assert not d.sec_texto.isVisibleTo(d)
+        # Una pestaña nueva (otra vez que se abre la aplicación) lo recuerda
+        otra = type(tab)(srv=sin_catalogo)
+        assert otra.btn_detalles.isChecked()
+        otra.deleteLater()
         QTest.keyClick(g, Qt.Key.Key_I)
         assert not d.isVisible()
-        QTest.keyClick(g, Qt.Key.Key_I)
+        assert QSettings().value("buscar/detalles") in (False, "false")
+        tab.btn_detalles.click()
         assert d.isVisible()
-        QTest.keyClick(d, Qt.Key.Key_Escape)
-        assert not d.isVisible()
-        # Si el operador volvió a hacer clic en la grilla, Esc también la cierra
-        QTest.keyClick(g, Qt.Key.Key_I)
-        assert d.isVisible()
-        QTest.keyClick(g, Qt.Key.Key_Escape)
-        assert not d.isVisible()
+        d.btn_cerrar.click()
+        assert not d.isVisible() and not tab.btn_detalles.isChecked()
+        tab.close()
+        tab.deleteLater()
+
+    def test_varios_elegidos_resumen_y_lista(self, app, sin_catalogo, tmp_path):
+        tab = self._tab(sin_catalogo, tmp_path)
+        g, d = tab.grid, tab.detalles
+        tab.btn_detalles.setChecked(True)
+        for i in range(3):
+            g.item(i).setSelected(True)
+        tab._actualizar_detalles()
+        assert d.lbl_nombre.text() == "3 seleccionados"
+        assert d.lbl_carpeta.text() == "2 fotos y 1 video"
+        datos = self._datos(d)
+        assert datos["Fecha de la toma"] == "del 21/09/2025 al 28/09/2025 (1 sin fecha)"
+        assert datos["Carpeta"] == "Historial/Reuniones"
+        assert datos["Tamaño total"] == "1,0 GB" and datos["Duración de los videos"] == "1:02:05"
+        chips = [w.text() for w in d.sec_etiquetas.findChildren(type(d.lbl_nombre))
+                 if w.objectName().startswith("detalle_chip")]
+        assert chips == ["retiro (2/3)", "bautismo (1/3)"]
+        filas = [f for f in d.sec_lista.findChildren(QFrame) if f.objectName() == "detalle_fila"]
+        assert len(filas) == 3 and d.sec_lista.isVisibleTo(d) and not d.imagen.isVisibleTo(d)
+        # Clic en uno de la lista: se muestra en la grilla sin perder lo elegido
+        d.ir_a.emit(3)
+        assert g.currentItem() is g.item(2) and len(g.selectedItems()) == 3
+        g.clearSelection()
+        tab._actualizar_detalles()
+        assert d.lbl_vacio.isVisibleTo(d)
         tab.close()
         tab.deleteLater()
 
     def test_escribir_i_en_la_busqueda_no_abre_nada(self, app, sin_catalogo, tmp_path):
-        from PyQt6.QtCore import Qt
         from PyQt6.QtTest import QTest
         tab = self._tab(sin_catalogo, tmp_path)
         tab.grid.setCurrentItem(tab.grid.item(1))
         tab.txt_query.setFocus()
         QTest.keyClicks(tab.txt_query, "iglesia")
-        assert tab.txt_query.text() == "iglesia" and tab._detalle is None
+        assert tab.txt_query.text() == "iglesia" and not tab.detalles.isVisible()
         assert tab.grid.currentItem() is tab.grid.item(1)
         tab.close()
         tab.deleteLater()
