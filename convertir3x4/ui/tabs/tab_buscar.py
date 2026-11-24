@@ -9,12 +9,13 @@ esta PC y, si faltan, se bajan de la base en segundo plano.
 import ntpath
 import os
 import re
+import socket
 import threading
 
-from PyQt6.QtCore import Qt, QElapsedTimer, QPoint, QSize, QTimer, pyqtSignal
+from PyQt6.QtCore import Qt, QElapsedTimer, QPoint, QSettings, QSize, QTimer, pyqtSignal
 from PyQt6.QtGui import QIcon, QPixmap
 from PyQt6.QtWidgets import (
-    QAbstractItemView, QApplication, QComboBox, QProgressBar, QSizePolicy,
+    QAbstractItemView, QApplication, QComboBox, QProgressBar, QSizePolicy, QSplitter,
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QListWidgetItem, QFrame, QPushButton, QButtonGroup, QMessageBox,
 )
@@ -28,6 +29,7 @@ from ..widgets.media_grid import (
     DragOutListWidget, PATH_ROLE, MEDIA_ID_ROLE, KIND_ROLE, DURATION_ROLE, STATE_ROLE,
     STORYBOARD_ROLE, TAGS_ROLE,
 )
+from ..widgets.detalle_medio import ANCHO as _ANCHO_DETALLES, PanelDetalles, estado_de_item
 from ..widgets.dialogos import confirmar
 from ..widgets.tag_bar import TagBar
 from ...utils import open_file
@@ -56,9 +58,6 @@ def _existe(raiz: str) -> bool:
     return os.path.exists(raiz)
 
 
-_QUALITY = {"low_res": "Baja resolución: puede verse borrosa en la pantalla.",
-            "corrupt": "El archivo parece dañado.",
-            "en_negro": "La imagen está en negro: no muestra nada."}
 
 
 class SearchLineEdit(QLineEdit):
@@ -182,6 +181,16 @@ class BuscarTab(QWidget):
         self.chk_pending.toggled.connect(lambda _: self._do_search())
         row.addWidget(self.chk_pending)
 
+        self.btn_detalles = QPushButton("Detalles")
+        self.btn_detalles.setObjectName("toggle_panel")      # azul: el violeta es de la IA
+        self.btn_detalles.setCheckable(True)
+        self.btn_detalles.setCursor(Qt.CursorShape.PointingHandCursor)
+        icons.set_icon(self.btn_detalles, "panel-right", 15, "text_2", active="text")
+        self.btn_detalles.setToolTip("Muestra u oculta, al costado, los detalles de lo "
+                                     "seleccionado (tecla I)")
+        self.btn_detalles.toggled.connect(self._ver_detalles)
+        row.addWidget(self.btn_detalles)
+
         self.lbl_count = QLabel("")
         self.lbl_count.setObjectName("muted")
         self.lbl_count.setMinimumWidth(96)
@@ -229,9 +238,33 @@ class BuscarTab(QWidget):
         self.grid.setAccessibleName("Resultados")
         self.grid.itemSelectionChanged.connect(self._on_selection_changed)
         self.grid.itemDoubleClicked.connect(self._open_item)
+        self.grid.detalles.connect(self.btn_detalles.toggle)
+        self.grid.currentItemChanged.connect(lambda *_: self._seguir_detalle())
         self.grid.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.grid.customContextMenuRequested.connect(self._menu_grilla)
-        layout.addWidget(self.grid, 1)
+
+        # Detalles de lo elegido, al costado de la grilla (tecla I). Queda
+        # abierto o cerrado como lo deje el operador, con el ancho que le dio.
+        self.detalles = PanelDetalles()
+        self.detalles.cerrar.connect(lambda: self.btn_detalles.setChecked(False))
+        self.detalles.ir_a.connect(self._ir_a_elemento)
+        self.detalles.guardar.connect(self._guardar_detalle)
+        self.detalles.set_editable(self._srv.estado == "ok")
+        self.division = QSplitter(Qt.Orientation.Horizontal)
+        self.division.setChildrenCollapsible(False)
+        self.division.setHandleWidth(10)
+        self.division.addWidget(self.grid)
+        self.division.addWidget(self.detalles)
+        self.division.setStretchFactor(0, 1)
+        self.division.setStretchFactor(1, 0)
+        self.division.splitterMoved.connect(lambda *_: self._guardar_ancho_detalles())
+        self.detalles.setVisible(False)
+        self._detalles_timer = QTimer(self)        # Ctrl+A en mil: se arma una vez
+        self._detalles_timer.setSingleShot(True)
+        self._detalles_timer.setInterval(40)
+        self._detalles_timer.timeout.connect(self._actualizar_detalles)
+        layout.addWidget(self.division, 1)
+        self.btn_detalles.setChecked(_ajuste("buscar/detalles", False) in (True, "true"))
 
         # Tags de la selección, en un panel abajo
         panel = QFrame()
@@ -282,6 +315,7 @@ class BuscarTab(QWidget):
                                      "carpeta del NAS en el Explorador.")
             self.tag_bar.set_enabled(False)
             self._actualizar_seleccion()
+        self.detalles.set_editable(estado == "ok")
 
     def _reintentar_si_hace_falta(self):
         if self._srv.estado == "error" and self.isVisible():
@@ -502,7 +536,10 @@ class BuscarTab(QWidget):
         self._total = len(results) if total is None else total
         if conservar and _iguales(getattr(self, "_results", None), results) \
                 and presentes == getattr(self, "_presentes", None):
-            # Cambió algo que no se ve en la grilla (p. ej. una etiqueta)
+            # Cambió algo que no se ve en la grilla (p. ej. una etiqueta, el
+            # texto de una foto o las notas): se pasa a lo ya cargado
+            for antes, ahora in zip(self._results, results):
+                antes.texto, antes.notas = ahora.texto, ahora.notas
             self._contar()
             self._on_selection_changed()
             return
@@ -568,20 +605,7 @@ class BuscarTab(QWidget):
             item.setIcon(icon)
         elif disponible and m.id in (bajando or ()):
             item.setData(STATE_ROLE, "loading")     # se está bajando de la base
-        tip = m.folder_origin or ""
-        if m.tomada:
-            tip += "\n" + _fecha_de_toma(m.tomada)
-        if m.width and m.height:
-            tip += f"\n{m.width}×{m.height}"
-        if m.quality_flag and m.quality_flag != "ok":
-            tip += "\n" + _QUALITY.get(m.quality_flag, "")
-        if m.texto:
-            tip += "\n\n" + _texto_de_la_foto(m.texto)
-        if not disponible:
-            tip = (f"No se encuentra el original:\n{m.path}\n"
-                   "Verifique que el NAS o el disco estén conectados. Mientras tanto, no "
-                   "puede usarse en ProPresenter.")
-        item.setToolTip(tip.strip())
+        # Sin cartel al pasar el puntero: los detalles se ven con la tecla I.
         return item
 
     def _populate(self, results, minis: dict | None = None, present: dict | None = None,
@@ -642,7 +666,7 @@ class BuscarTab(QWidget):
         else:
             verbo = "ya no está" if n == 1 else "ya no están"
             text = (f"{cuantos} {verbo} en su carpeta: pueden haberse movido o borrado. "
-                    "Pase el puntero sobre cada elemento para ver su ubicación anterior.")
+                    "Elija uno y abra los detalles (tecla I) para ver su ubicación anterior.")
         self.lbl_offline.setText(text)
         self.offline_box.setVisible(True)
 
@@ -750,9 +774,85 @@ class BuscarTab(QWidget):
             return
         super().keyPressEvent(event)
 
+    # ------------------------------------------------------------- detalles (I)
+    def _ver_detalles(self, abierto: bool):
+        self.detalles.setVisible(abierto)
+        if abierto:
+            ancho = int(_ajuste("buscar/detalles_ancho", _ANCHO_DETALLES) or _ANCHO_DETALLES)
+            total = max(self.division.width(), ancho + 400)
+            self.division.setSizes([total - ancho, ancho])
+            self._actualizar_detalles()
+        _guardar_ajuste("buscar/detalles", abierto)
+
+    def _guardar_ancho_detalles(self):
+        if self.btn_detalles.isChecked():
+            _guardar_ajuste("buscar/detalles_ancho", self.division.sizes()[1])
+
+    def _seguir_detalle(self):
+        """Los detalles siguen a lo elegido (flechas, clic) y se ponen al día
+        cuando cambia algo (una etiqueta, un aviso del NAS)."""
+        if self.btn_detalles.isChecked() and not self._restaurando:
+            self._detalles_timer.start()
+
+    def _actualizar_detalles(self):
+        if not self.btn_detalles.isChecked():
+            return
+        por_id = {m.id: m for m in getattr(self, "_results", [])}
+        items = sorted(self.grid.selectedItems(), key=self.grid.row)   # orden de la grilla
+        medios, estados = [], {}
+        for it in items:
+            m = por_id.get(it.data(MEDIA_ID_ROLE))
+            if m is not None:
+                medios.append(m)
+                st = estado_de_item(it)
+                if st:
+                    estados[m.id] = st
+        self.detalles.mostrar(medios, getattr(self, "_minis", None) or {}, estados)
+
+    def _guardar_detalle(self, mid: int, campo: str, valor: str):
+        """Texto de la foto o notas escritos en los detalles. Si no se puede
+        guardar (NAS caído), se avisa en el panel y lo escrito queda ahí."""
+        quien = socket.gethostname()
+        if campo == "texto":
+            hacer = lambda repo: repo.corregir_texto(mid, valor, quien)   # noqa: E731
+        else:
+            hacer = lambda repo: repo.guardar_notas(mid, valor, quien)    # noqa: E731
+
+        def listo(_):
+            for m in self._por_id([mid]):
+                if campo == "texto":
+                    m.texto = valor.strip() or None
+                else:
+                    m.notas = valor.strip()
+            self.detalles.guardado(mid, campo, None)
+
+        def fallo(e):
+            self.detalles.guardado(mid, campo, texto_para(e))
+            actual = self.detalles.media
+            if actual is None or actual.id != mid:
+                # Ya eligió otro: el aviso del panel no se vería y lo escrito se perdería
+                nombre = next((m.filename for m in self._por_id([mid])), "un elemento")
+                que = "el texto de la foto" if campo == "texto" else "las notas"
+                self.lbl_seleccion.setText(
+                    f"No se pudo guardar {que} de {nombre}. {texto_para(e)} "
+                    "Vuelva a elegirlo y escríbalo de nuevo.")
+
+        self._srv.pedir(hacer, ok=listo, error=fallo)
+
+    def _ir_a_elemento(self, mid: int):
+        """Clic en la lista de los detalles: se muestra en la grilla, sin cambiar lo elegido."""
+        for i in range(self.grid.count()):
+            it = self.grid.item(i)
+            if it.data(MEDIA_ID_ROLE) == mid:
+                self.grid.setCurrentItem(it, self.grid.selectionModel().SelectionFlag.NoUpdate)
+                self.grid.scrollToItem(it)
+                self.grid.setFocus()
+                return
+
     def _on_selection_changed(self):
         if self._restaurando:
             return                      # se está rearmando la grilla: se avisa al final
+        self._seguir_detalle()
         self._actualizar_seleccion()
         ids = self._selected_ids()
         self.tag_bar.set_enabled(bool(ids) and self._srv.estado == "ok")
@@ -761,8 +861,20 @@ class BuscarTab(QWidget):
         if not ids:
             self.tag_bar.set_chips([], 0)
             return
+        # Buscar ya trajo las etiquetas de cada uno: se muestran al instante,
+        # sin esperar al NAS (la consulta hacía fila detrás de las miniaturas).
+        medios = self._por_id(ids)
+        locales = _etiquetas_de(medios) if len(medios) == len(ids) else None
+        if locales is not None:
+            self.tag_bar.set_chips(locales[0], len(ids), locales[1])
+            return
         self._srv.pedir(lambda repo: (repo.tag_counts(ids), repo.pending_tag_counts(ids)),
                         ok=lambda r: self._mostrar_tags(n, len(ids), *r))
+
+    def _por_id(self, ids: list[int]) -> list:
+        """Los medios ya cargados en la grilla para estos ids (los que estén)."""
+        cargados = {m.id: m for m in getattr(self, "_results", [])}
+        return [cargados[i] for i in ids if i in cargados]
 
     def _mostrar_tags(self, n, cuantos, counts, pendientes):
         if n == self._seleccion:
@@ -780,6 +892,7 @@ class BuscarTab(QWidget):
                 getattr(repo, accion)(mid, name)
 
         def listo(_):
+            _cambiar_locales(self._por_id(ids), accion, name)   # la barra, ya
             self._reload_known_tags()
             self._on_selection_changed()
             self._do_search(conservar=True)     # que la grilla muestre la etiqueta ya
@@ -868,22 +981,36 @@ def _preparar(repo, cache, results) -> tuple:
     return results, minis, faltan, presentes, raices
 
 
-def _fecha_de_toma(f) -> str:
-    """«Tomada el 14/07/2019 a las 10:31», en la hora de esta PC."""
-    local = f.astimezone() if f.tzinfo else f
-    return f"Tomada el {local:%d/%m/%Y} a las {local:%H:%M}"
-
-
-def _texto_de_la_foto(texto: str, renglones: int = 8, largo: int = 70) -> str:
-    """El texto que leyó el NAS en la foto, para el detalle (cartel de ayuda)."""
-    lineas = [ln if len(ln) <= largo else ln[:largo - 1] + "…" for ln in texto.splitlines()]
-    if len(lineas) > renglones:
-        lineas = lineas[:renglones] + ["…"]
-    return "Texto en la foto:\n" + "\n".join(lineas)
-
-
 def _miles(n: int) -> str:
     return f"{n:,}".replace(",", ".")
+
+
+def _etiquetas_de(medios: list):
+    """Los chips de la barra con las etiquetas que trajo Buscar: [(nombre, en
+    cuántos)] como `Repo.tag_counts` y {nombre: sin confirmar} como
+    `Repo.pending_tag_counts`. None si falta alguno (se le pregunta al NAS)."""
+    if not medios or any(m.etiquetas is None for m in medios):
+        return None
+    cuantos, pendientes = {}, {}
+    for m in medios:
+        for nombre, confirmada in m.etiquetas:
+            cuantos[nombre] = cuantos.get(nombre, 0) + 1
+            if not confirmada:
+                pendientes[nombre] = pendientes.get(nombre, 0) + 1
+    return sorted(cuantos.items(), key=lambda t: (-t[1], t[0])), pendientes
+
+
+def _cambiar_locales(medios: list, accion: str, name: str):
+    """Lo mismo que acaba de guardar el NAS, en las etiquetas ya cargadas, para
+    que la barra cambie sin esperar a la nueva búsqueda (que después lo confirma)."""
+    name = " ".join(name.strip().lower().split())          # Repo.normalize_tag
+    for m in medios:
+        if m.etiquetas is None:
+            continue
+        otras = [e for e in m.etiquetas if e[0] != name]
+        if accion == "apply_tag" or (accion == "confirm_tag" and len(otras) < len(m.etiquetas)):
+            otras.append((name, True))
+        m.etiquetas = sorted(otras, key=lambda e: (not e[1], e[0]))
 
 
 def _iguales(antes, ahora) -> bool:
@@ -900,3 +1027,11 @@ def _icono(ruta: str | None) -> QIcon | None:
         return None
     px = QPixmap(ruta)
     return None if px.isNull() else QIcon(px)
+
+
+def _ajuste(clave: str, defecto=None):
+    return QSettings().value(clave, defecto)
+
+
+def _guardar_ajuste(clave: str, valor):
+    QSettings().setValue(clave, valor)

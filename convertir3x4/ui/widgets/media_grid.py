@@ -429,6 +429,8 @@ class DragOutListWidget(_HoverPreview, QListWidget):
     copia. Se ofrece Copy|Link y el destino decide; PP linkea.
     """
 
+    detalles = pyqtSignal()          # tecla I: los detalles del elemento actual
+
     def __init__(self, parent=None, thumb: int = 150, etiquetas: bool = False):
         super().__init__(parent)
         self.setObjectName("media_grid")
@@ -461,6 +463,15 @@ class DragOutListWidget(_HoverPreview, QListWidget):
         self.setIconSize(QSize(thumb, thumb))
         _fit_columns(self, self._delegate)
         self.doItemsLayout()
+
+    def keyPressEvent(self, event):
+        # Solo la I sola: sin esto, la grilla salta al primero que empieza con «i».
+        if event.key() == Qt.Key.Key_I and not (
+                event.modifiers() & ~Qt.KeyboardModifier.KeypadModifier):
+            self.detalles.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)

@@ -108,6 +108,14 @@ convertir3x4/
                            Dev without NAS: CDLM_PANEL_URLS / CDLM_PANEL_TOKEN (see tests_discos.py)
     tabs/convert_workers.py  ThumbWorker / ConvertWorker / DownloadWorker (QThread, cancellable)
     widgets/advanced_dialog.py, widgets/help_panel.py (overlay help, first run + F1)
+    widgets/detalle_medio.py  PanelDetalles: Buscar's details panel beside the grid (QSplitter; key I or «Detalles»
+                         toggles it; open state + width in QSettings buscar/detalles*). Replaces the item tooltip.
+                         One item: preview (original photo read off-thread), data, tags, OCR text, file path;
+                         several: summary («5 seleccionados: 4 fotos y 1 video», dates, size, tags n/N) + list (click
+                         = show it in the grid). Built only from the loaded Media + local thumbnails: no queries.
+                         One item: the photo's OCR text is editable and there are «Notas» (photos and videos), saved
+                         alone (pause, focus out, other selection) via signal `guardar` -> BuscarTab -> servicio;
+                         what the NAS pushes never overwrites a box being edited (schema v9)
     widgets/adaptable.py   Adaptable: two parts side by side if the width allows, else stacked (Grabadora history +
                            detail, Catalogar people + detail; both decide by the scroll viewport width)
 ```
@@ -173,7 +181,8 @@ convertir3x4/
     ocr.py               text in photos (v0.8.1, schema 8 `texto_foto`): PaddleOCR det v3 mobile + rec v5 latin ONNX
                          (ai_models), own DB/CTC pre/post (no paddle/pyclipper). Photos only. leer_fotos() = the
                          «texto» step; text goes into search_doc (weight B) and Buscar's tooltip. Bump OCR_VERSION
-                         to re-read. ~1.5 s/photo on the NAS (4,053 photos ≈ 1 h 45 min once), 400 MB peak
+                         to re-read (never a text edited by hand: texto_foto.editado, schema v9; media.notas also go into
+                         search_doc, weight A). ~1.5 s/photo on the NAS (4,053 photos ≈ 1 h 45 min once), 400 MB peak
   ui/avisos_catalogo.py  AvisosCatalogo(QThread): own connection, LISTEN catalogo (schema v3 triggers on media,
                          media_tag, tag) → `cambio`; reconnects alone and emits on reconnect. Started by __main__
                          (MainWindow.iniciar_avisos), not by tests. BuscarTab.cambio_en_el_catalogo re-queries keeping

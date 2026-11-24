@@ -15,7 +15,8 @@ import pytest
 from PyQt6.QtCore import QPoint, QSize, Qt
 from PyQt6.QtGui import QColor, QIcon, QImage, QPainter, QPixmap
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication, QLabel, QListWidgetItem, QPushButton, QStyleOptionViewItem
+from PyQt6.QtWidgets import (QApplication, QFrame, QLabel, QListWidgetItem, QPushButton,
+                             QStyleOptionViewItem)
 
 from convertir3x4.ui.style import ASSETS_DIR, DARK, DARK_STYLE, LIGHT, T, apply_theme
 
@@ -285,7 +286,7 @@ class TestKeyboard:
         window.buscar_tab.txt_query.setFocus()
         app.processEvents()
         seen = []
-        for _ in range(6):
+        for _ in range(7):          # + el botón «Detalles»
             seen.append(type(app.focusWidget()).__name__)
             window.focusNextChild()
             app.processEvents()
@@ -349,14 +350,23 @@ class TestAvailability:
         real = tmp_path / "esta.jpg"
         real.write_bytes(b"x")
         tab = BuscarTab(srv=sin_catalogo)
-        tab._populate([Media(path=str(real), filename="esta.jpg", kind="image", id=1),
-                       Media(path="/Volumes/NO_EXISTE/a.jpg", filename="a.jpg", kind="image", id=2)])
+        tab._results = [Media(path=str(real), filename="esta.jpg", kind="image", id=1),
+                        Media(path="/Volumes/NO_EXISTE/a.jpg", filename="a.jpg", kind="image",
+                              id=2)]
+        tab._populate(tab._results)
         states = [tab.grid.item(i).data(STATE_ROLE) for i in range(2)]
         assert states == [None, "offline"]   # el volumen entero no está: lo explica el aviso
         assert tab.offline_box.isVisibleTo(tab)
         assert "el disco «NO_EXISTE»" in tab.lbl_offline.text()
         assert "/Volumes" not in tab.lbl_offline.text()   # sin rutas del sistema
-        assert "No se encuentra el original" in tab.grid.item(1).toolTip()
+        assert not tab.grid.item(1).toolTip()               # los detalles van con la I
+        tab.btn_detalles.setChecked(True)
+        tab.grid.setCurrentItem(tab.grid.item(1))
+        tab._actualizar_detalles()
+        assert "No se encuentra el original" in tab.detalles.aviso.text()
+        assert tab.detalles.lbl_ruta.text() == "/Volumes/NO_EXISTE/a.jpg"
+        assert not tab.detalles.btn_abrir.isEnabled()
+        tab.btn_detalles.setChecked(False)
         tab.deleteLater()
 
 
@@ -1085,3 +1095,201 @@ def test_qcolor_entiende_los_colores_con_transparencia():
                 assert qcolor(valor).isValid(), nombre
     c = qcolor("rgba(150, 110, 240, 0.16)")
     assert (c.red(), c.green(), c.blue(), round(c.alphaF(), 2)) == (150, 110, 240, 0.16)
+
+
+# ------------------------------------------- etiquetas de la selección al instante
+def test_etiquetas_de_lo_cargado():
+    from convertir3x4.catalog.models import Media
+    from convertir3x4.ui.tabs.tab_buscar import _cambiar_locales, _etiquetas_de
+    a = Media(path="a", filename="a", kind="image", id=1,
+              etiquetas=[("retiro", True), ("bautismo", False)])
+    b = Media(path="b", filename="b", kind="image", id=2, etiquetas=[("retiro", True)])
+    assert _etiquetas_de([a, b]) == ([("retiro", 2), ("bautismo", 1)], {"bautismo": 1})
+    assert _etiquetas_de([a, Media(path="c", filename="c", kind="image")]) is None
+    _cambiar_locales([a, b], "apply_tag", "  Blessed  Land ")
+    assert _etiquetas_de([a, b])[0][0] == ("blessed land", 2)
+    _cambiar_locales([a], "confirm_tag", "bautismo")
+    assert _etiquetas_de([a])[1] == {}
+    _cambiar_locales([b], "confirm_tag", "bautismo")        # no la tenía: no se agrega
+    _cambiar_locales([a, b], "remove_tag", "retiro")
+    assert _etiquetas_de([a, b])[0] == [("blessed land", 2), ("bautismo", 1)]
+
+
+class TestEtiquetasAlInstante:
+    def test_la_barra_no_espera_al_nas(self, app, pg_cfg, tmp_path, monkeypatch):
+        from convertir3x4.catalog.db import conectar
+        from convertir3x4.catalog.models import Media
+        from convertir3x4.catalog.repo import Repo
+        from convertir3x4.ui.servicio_catalogo import ServicioCatalogo
+        from convertir3x4.ui.tabs import tab_buscar
+
+        monkeypatch.setattr(tab_buscar, "catalog_thumb_dir", lambda: str(tmp_path / "cache"))
+        with Repo(conectar(pg_cfg), str(tmp_path)) as r:
+            for nombre in ("retiro_1.jpg", "retiro_2.jpg"):
+                r.upsert_media(Media(path=str(tmp_path / nombre), filename=nombre, kind="image"))
+            r.apply_tag(r.get_media_by_path(str(tmp_path / "retiro_1.jpg")).id, "jóvenes")
+        srv = ServicioCatalogo(abrir=lambda: Repo(conectar(pg_cfg), str(tmp_path)))
+        t = tab_buscar.BuscarTab(srv=srv)
+        t.show()
+        t.txt_query.blockSignals(True)          # sin la búsqueda diferida de lo escrito
+        t.txt_query.setText("retiro")
+        t.txt_query.blockSignals(False)
+        t._do_search()
+        assert _esperar(app, lambda: t.grid.count() == 2)
+
+        def chips():
+            row = t.tag_bar._chips_row
+            return [row.itemAt(i).widget().text() for i in range(row.count())
+                    if row.itemAt(i).widget()]
+
+        def no_consultar(*a, **k):
+            raise AssertionError("tenía que salir de lo que ya trajo Buscar")
+        monkeypatch.setattr(Repo, "tag_counts", no_consultar)
+        t.grid.item(0).setSelected(True)
+        assert chips() == ["jóvenes ✕"]                    # sin esperar ningún pedido
+        t.grid.item(1).setSelected(True)
+        assert chips() == ["jóvenes (1/2) ✕"]
+        monkeypatch.setattr(tab_buscar, "confirmar", lambda *a, **k: False)   # hermanas: no
+        t.tag_bar.tagApplied.emit("blessedland")
+        assert _esperar(app, lambda: "blessedland ✕" in chips())
+        assert _esperar(app, lambda: all(("blessedland", True) in m.etiquetas
+                                         for m in t._results))     # la búsqueda lo confirma
+        assert chips() == ["blessedland ✕", "jóvenes (1/2) ✕"] and len(t._selected_ids()) == 2
+        t.close()
+        t.deleteLater()
+        srv.cerrar()
+
+
+# ------------------------------------------------- detalles al costado, tecla I (24/11)
+class TestDetalles:
+    def _tab(self, sin_catalogo, tmp_path):
+        import datetime as dt
+        from PyQt6.QtCore import QSettings
+        from convertir3x4.catalog.models import Media
+        from convertir3x4.ui.tabs.tab_buscar import BuscarTab
+        QSettings().remove("buscar")
+        for n in ("cartel.jpg", "culto.mp4", "otra.jpg"):
+            (tmp_path / n).write_bytes(b"x")
+        tz = dt.timezone.utc
+        fotos = [
+            Media(path=str(tmp_path / "cartel.jpg"), filename="cartel.jpg", kind="image", id=1,
+                  folder_origin="Historial/Reuniones", width=4000, height=3000,
+                  size_bytes=5 * 1024 * 1024, quality_flag="low_res",
+                  tomada=dt.datetime(2025, 9, 21, 14, 30, tzinfo=tz),
+                  lat=-34.6, lon=-58.4, texto="REUNIONES DE FE\nBIENVENIDO",
+                  etiquetas=[("retiro", True), ("bautismo", False)]),
+            Media(path=str(tmp_path / "culto.mp4"), filename="culto.mp4", kind="video", id=2,
+                  folder_origin="Historial/Reuniones", duration=3725,
+                  size_bytes=1024 * 1024 * 1024, etiquetas=[("retiro", True)]),
+            Media(path=str(tmp_path / "otra.jpg"), filename="otra.jpg", kind="image", id=3,
+                  folder_origin="Historial/Reuniones", size_bytes=1024 * 1024,
+                  tomada=dt.datetime(2025, 9, 28, 14, 0, tzinfo=tz), etiquetas=[]),
+        ]
+        tab = BuscarTab(srv=sin_catalogo)
+        tab.resize(1200, 700)
+        tab._results = fotos
+        tab._populate(fotos)
+        tab.show()
+        return tab
+
+    @staticmethod
+    def _datos(d):
+        g = d._datos
+        return {g.itemAtPosition(i, 0).widget().text(): g.itemAtPosition(i, 1).widget().text()
+                for i in range(g.rowCount()) if g.itemAtPosition(i, 0)}
+
+    def test_la_i_abre_y_cierra_y_queda_como_se_dejo(self, app, sin_catalogo, tmp_path):
+        from PyQt6.QtCore import QSettings, Qt
+        from PyQt6.QtTest import QTest
+        tab = self._tab(sin_catalogo, tmp_path)
+        g, d = tab.grid, tab.detalles
+        assert not d.isVisible()
+        g.setFocus()
+        g.setCurrentItem(g.item(0))
+        QTest.keyClick(g, Qt.Key.Key_I)
+        assert d.isVisible() and tab.btn_detalles.isChecked()
+        assert d.focusPolicy() == Qt.FocusPolicy.NoFocus or not d.hasFocus()
+        assert g.currentItem() is g.item(0)                  # la I no movió nada
+        assert QSettings().value("buscar/detalles") in (True, "true")
+        app.processEvents()
+        tab._actualizar_detalles()
+        assert d.lbl_nombre.text() == "cartel.jpg"
+        datos = self._datos(d)
+        assert datos["Tipo"] == "Foto" and datos["Medidas"] == "4000 × 3000 px"
+        assert datos["Tamaño del archivo"] == "5,0 MB" and "Baja resolución" in datos["Calidad"]
+        assert "Fecha de la toma" in datos and d.btn_mapa.isVisibleTo(d)
+        assert d.txt_texto.toPlainText() == "REUNIONES DE FE\nBIENVENIDO"
+        assert not d.sec_lista.isVisibleTo(d)
+        # Las flechas recorren y los detalles siguen al elegido
+        QTest.keyClick(g, Qt.Key.Key_Right)
+        tab._actualizar_detalles()
+        assert d.lbl_nombre.text() == "culto.mp4" and self._datos(d)["Duración"] == "1:02:05"
+        assert not d.sec_texto.isVisibleTo(d)
+        # Una pestaña nueva (otra vez que se abre la aplicación) lo recuerda
+        otra = type(tab)(srv=sin_catalogo)
+        assert otra.btn_detalles.isChecked()
+        otra.deleteLater()
+        QTest.keyClick(g, Qt.Key.Key_I)
+        assert not d.isVisible()
+        assert QSettings().value("buscar/detalles") in (False, "false")
+        tab.btn_detalles.click()
+        assert d.isVisible()
+        d.btn_cerrar.click()
+        assert not d.isVisible() and not tab.btn_detalles.isChecked()
+        tab.close()
+        tab.deleteLater()
+
+    def test_varios_elegidos_resumen_y_lista(self, app, sin_catalogo, tmp_path):
+        tab = self._tab(sin_catalogo, tmp_path)
+        g, d = tab.grid, tab.detalles
+        tab.btn_detalles.setChecked(True)
+        for i in range(3):
+            g.item(i).setSelected(True)
+        tab._actualizar_detalles()
+        assert d.lbl_nombre.text() == "3 seleccionados"
+        assert d.lbl_carpeta.text() == "2 fotos y 1 video"
+        datos = self._datos(d)
+        assert datos["Fecha de la toma"] == "del 21/09/2025 al 28/09/2025 (1 sin fecha)"
+        assert datos["Carpeta"] == "Historial/Reuniones"
+        assert datos["Tamaño total"] == "1,0 GB" and datos["Duración de los videos"] == "1:02:05"
+        chips = [w.text() for w in d.sec_etiquetas.findChildren(type(d.lbl_nombre))
+                 if w.objectName().startswith("detalle_chip")]
+        assert chips == ["retiro (2/3)", "bautismo (1/3)"]
+        filas = [f for f in d.sec_lista.findChildren(QFrame) if f.objectName() == "detalle_fila"]
+        assert len(filas) == 3 and d.sec_lista.isVisibleTo(d) and not d.imagen.isVisibleTo(d)
+        # Clic en uno de la lista: se muestra en la grilla sin perder lo elegido
+        d.ir_a.emit(3)
+        assert g.currentItem() is g.item(2) and len(g.selectedItems()) == 3
+        g.clearSelection()
+        tab._actualizar_detalles()
+        assert d.lbl_vacio.isVisibleTo(d)
+        tab.close()
+        tab.deleteLater()
+
+    def test_escribir_i_en_la_busqueda_no_abre_nada(self, app, sin_catalogo, tmp_path):
+        from PyQt6.QtTest import QTest
+        tab = self._tab(sin_catalogo, tmp_path)
+        tab.grid.setCurrentItem(tab.grid.item(1))
+        tab.txt_query.setFocus()
+        QTest.keyClicks(tab.txt_query, "iglesia")
+        assert tab.txt_query.text() == "iglesia" and not tab.detalles.isVisible()
+        assert tab.grid.currentItem() is tab.grid.item(1)
+        tab.close()
+        tab.deleteLater()
+
+
+def test_datos_del_detalle():
+    from convertir3x4.ui.widgets import detalle_medio as dm
+    assert dm.tamano_archivo(512) == "1 KB" and dm.tamano_archivo(3 * 1024 ** 3) == "3,0 GB"
+    assert dm.duracion(65) == "1:05" and dm.duracion(None) == ""
+    assert "mlat=-34.600000" in dm.mapa(-34.6, -58.4)
+
+
+def test_detalle_lee_el_original(tmp_path):
+    from PIL import Image
+    from convertir3x4.ui.widgets.detalle_medio import leer_original
+    p = tmp_path / "grande.jpg"
+    Image.new("RGB", (3000, 2000), "red").save(p)
+    img = leer_original(str(p))
+    assert img is not None and max(img.width(), img.height()) <= 1200
+    assert leer_original(str(tmp_path / "no_esta.jpg")) is None
