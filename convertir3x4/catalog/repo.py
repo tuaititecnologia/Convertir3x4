@@ -509,11 +509,20 @@ class Repo:
     def normalize_tag(self, name: str) -> str:
         return " ".join(name.strip().lower().split())
 
+    def _tag_por_nombre(self, norm: str):
+        """La etiqueta con ese nombre, con o sin tildes (pedido del 24/11/2026:
+        «predicacion» es la misma que «predicación»). Primero la exacta."""
+        return self._q("SELECT id, kind, name FROM tag WHERE sin_acentos(name) = sin_acentos(%s) "
+                       "ORDER BY name = %s DESC, id LIMIT 1", (norm, norm)).fetchone()
+
     def get_or_create_tag(self, name: str, kind: str = "descriptivo") -> int:
         norm = self.normalize_tag(name)
-        self._q("INSERT INTO tag (name, kind) VALUES (%s, %s) ON CONFLICT (name) DO NOTHING",
-                (norm, kind))
-        return self._q("SELECT id FROM tag WHERE name = %s", (norm,)).fetchone()["id"]
+        row = self._tag_por_nombre(norm)
+        if row is None:
+            self._q("INSERT INTO tag (name, kind) VALUES (%s, %s) ON CONFLICT (name) DO NOTHING",
+                    (norm, kind))
+            row = self._tag_por_nombre(norm)
+        return row["id"]
 
     def all_tag_names(self) -> list[str]:
         return [r["name"] for r in self._q("SELECT name FROM tag ORDER BY name")]
@@ -530,14 +539,14 @@ class Repo:
         """El id de la etiqueta `name`, creándola con ese tipo si no existe.
         NombreEnUso si existe con otro tipo (lugar/evento vs. el resto)."""
         norm = self.normalize_tag(name)
-        row = self._q("SELECT id, kind FROM tag WHERE name = %s", (norm,)).fetchone()
+        row = self._tag_por_nombre(norm)
         if row is None:
             self._q("INSERT INTO tag (name, kind) VALUES (%s, %s) ON CONFLICT (name) DO NOTHING",
                     (norm, kind))
-            row = self._q("SELECT id, kind FROM tag WHERE name = %s", (norm,)).fetchone()
+            row = self._tag_por_nombre(norm)
         especial = kind in ESPECIALES
         if (row["kind"] != kind) if especial else (row["kind"] in ESPECIALES):
-            raise NombreEnUso(norm, row["kind"], kind)
+            raise NombreEnUso(row["name"], row["kind"], kind)
         return row["id"]
 
     def poner_lugar(self, media_ids: list[int], name: str):
@@ -570,9 +579,10 @@ class Repo:
         eso es para lo que propone la IA)."""
         ids = list(media_ids)
         with self.conn.transaction():
-            self._q("DELETE FROM media_tag mt USING tag t WHERE t.id = mt.tag_id "
-                    "AND t.name = %s AND mt.media_id = ANY(%s)",
-                    (self.normalize_tag(name), ids))
+            row = self._tag_por_nombre(self.normalize_tag(name))
+            if row is not None:
+                self._q("DELETE FROM media_tag WHERE tag_id = %s AND media_id = ANY(%s)",
+                        (row["id"], ids))
             self._actualizar_busqueda(ids)
 
     def especiales_de(self, media_ids: list[int]) -> dict[str, list[tuple[str, int]]]:
@@ -593,8 +603,10 @@ class Repo:
         norm = self.normalize_tag(name)
         destino = kind if kind in ESPECIALES else "descriptivo"
         with self.conn.transaction():
-            row = self._q("SELECT id, kind FROM tag WHERE name = %s FOR UPDATE",
-                          (norm,)).fetchone()
+            row = self._tag_por_nombre(norm)
+            if row is not None:
+                norm = row["name"]
+                self._q("SELECT 1 FROM tag WHERE id = %s FOR UPDATE", (row["id"],))
             if row is None:
                 raise NoSePuedeConvertir(f"No existe la etiqueta «{norm}».")
             if row["kind"] not in _CONVERTIBLES:
@@ -660,8 +672,7 @@ class Repo:
 
     def remove_tag(self, media_id: int, name: str):
         """Saca un tag y lo anota como rechazado, para que la IA no lo reponga."""
-        row = self._q("SELECT id FROM tag WHERE name = %s",
-                      (self.normalize_tag(name),)).fetchone()
+        row = self._tag_por_nombre(self.normalize_tag(name))
         if not row:
             return
         with self.conn.transaction():

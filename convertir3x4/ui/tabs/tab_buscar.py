@@ -29,7 +29,7 @@ from ..servicio_catalogo import servicio, texto_para
 from ..widgets.caja_conexion import CajaConexion
 from ..widgets.media_grid import (
     DragOutListWidget, PATH_ROLE, MEDIA_ID_ROLE, KIND_ROLE, DURATION_ROLE, STATE_ROLE,
-    STORYBOARD_ROLE, TAGS_ROLE,
+    STORYBOARD_ROLE, TAGS_ROLE, LUGAR_ROLE, EVENTOS_ROLE, FECHA_ROLE,
 )
 from ...catalog import consulta
 from ...catalog.consulta import analizar
@@ -730,7 +730,7 @@ class BuscarTab(QWidget):
         item.setData(MEDIA_ID_ROLE, m.id)
         item.setData(KIND_ROLE, m.kind)
         item.setData(DURATION_ROLE, m.duration)
-        item.setData(TAGS_ROLE, m.etiquetas or [])
+        _datos_de_ficha(item, m)
         if self._tiras.get(m.id):
             item.setData(STORYBOARD_ROLE, self._tiras[m.id])
         disponible = present[m.path] and not m.missing
@@ -1042,6 +1042,7 @@ class BuscarTab(QWidget):
 
         def listo(_):
             _cambiar_locales(self._por_id(ids), accion, name)   # la barra, ya
+            self._refrescar_celdas(ids)
             self._reload_known_tags()
             self._on_selection_changed()
             self._do_search(conservar=True)     # que la grilla muestre la etiqueta ya
@@ -1051,14 +1052,26 @@ class BuscarTab(QWidget):
 
         self._srv.pedir(hacer, ok=listo, error=fallo)
 
+    def _refrescar_celdas(self, ids: list[int]):
+        """Las celdas de esos elementos, con lo que ya se cambió en lo cargado (la
+        nueva búsqueda puede volver igual y no rearmar la grilla)."""
+        por_id = {m.id: m for m in self._por_id(ids)}
+        for i in range(self.grid.count()):
+            it = self.grid.item(i)
+            m = por_id.get(it.data(MEDIA_ID_ROLE))
+            if m is not None:
+                _datos_de_ficha(it, m)
+
     def _cambiar_especial(self, accion: str, name: str):
         """Pone el lugar, suma un evento o saca uno de los dos, en toda la selección."""
         ids = self._selected_ids()
         if not ids:
             return
+        name = _ya_existe(name, self._lugares + self._eventos) or name   # con sus tildes
 
         def listo(_):
             _cambiar_especiales_locales(self._por_id(ids), accion, name)
+            self._refrescar_celdas(ids)
             self._reload_known_tags()
             self._on_selection_changed()
             self._seguir_detalle()
@@ -1091,12 +1104,13 @@ class BuscarTab(QWidget):
 
     def _apply_tag_to_selection(self, name: str):
         ids = self._selected_ids()
-        norm = " ".join(name.strip().lower().split())
-        if norm in self._lugares or norm in self._eventos:
-            campo = "el campo Lugar" if norm in self._lugares else "el campo Eventos"
-            que = "un lugar" if norm in self._lugares else "un evento"
-            self.lbl_seleccion.setText(f"«{norm}» ya es {que}: póngalo desde {campo}.")
-            return
+        for lista, que, campo in ((self._lugares, "un lugar", "el campo Lugar"),
+                                  (self._eventos, "un evento", "el campo Eventos")):
+            ya = _ya_existe(name, lista)
+            if ya:
+                self.lbl_seleccion.setText(f"«{ya}» ya es {que}: póngalo desde {campo}.")
+                return
+        name = _ya_existe(name, self._etiquetas_conocidas) or name   # con sus tildes
         self._cambiar_tags("apply_tag", name)
         if ids:
             self._ofrecer_a_hermanas(ids, name)
@@ -1208,6 +1222,22 @@ def _etiquetas_de(medios: list):
     return sorted(cuantos.items(), key=lambda t: (-t[1], t[0])), pendientes
 
 
+def _ya_existe(nombre: str, conocidos: list[str]) -> str | None:
+    """El nombre ya existente que es el mismo con o sin tildes y mayúsculas
+    («predicacion» → «predicación»), o None."""
+    clave = consulta._simple(" ".join(nombre.split()))
+    return next((c for c in conocidos if consulta._simple(c) == clave), None)
+
+
+def _datos_de_ficha(item, m):
+    """Lo que la celda muestra debajo de la miniatura (ver ThumbDelegate)."""
+    item.setData(TAGS_ROLE, m.etiquetas or [])
+    item.setData(LUGAR_ROLE, m.lugar)
+    item.setData(EVENTOS_ROLE, list(m.eventos or []))
+    f = m.tomada
+    item.setData(FECHA_ROLE, f"{(f.astimezone() if f.tzinfo else f):%d/%m/%Y}" if f else None)
+
+
 def _especiales_de(medios: list) -> tuple[list, list]:
     """([(lugar, en cuántos)], [(evento, en cuántos)]) de lo que trajo Buscar."""
     lugares, eventos = {}, {}
@@ -1261,7 +1291,7 @@ def _iguales(antes, ahora) -> bool:
     if antes is None:
         return False
     clave = lambda m: (m.id, m.path, m.missing_since, m.quality_flag, m.width, m.height,  # noqa: E731
-                       tuple(m.etiquetas or ()))
+                       tuple(m.etiquetas or ()), m.lugar, tuple(m.eventos or ()), m.tomada)
     return [clave(m) for m in antes] == [clave(m) for m in ahora]
 
 

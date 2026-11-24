@@ -60,7 +60,7 @@ SURFACE_KEYS = ("bg", "panel", "raised")
 @pytest.mark.parametrize("pal_name", list(PALETTES))
 class TestContrast:
     @pytest.mark.parametrize("name", ["text", "text_2", "text_3", "accent_text",
-                                      "ok", "warn", "danger"])
+                                      "ok", "warn", "danger", "evento"])
     @pytest.mark.parametrize("surface", SURFACE_KEYS)
     def test_readable_text_is_aa(self, pal_name, name, surface):
         pal = PALETTES[pal_name]
@@ -79,7 +79,7 @@ class TestContrast:
         assert contrast(pal["field_border"], pal[surface]) >= 3.0
 
     @pytest.mark.parametrize("fg, soft", [("warn", "warn_soft"), ("ia", "ia_soft"),
-                                          ("text", "accent_soft")])
+                                          ("evento", "evento_soft"), ("text", "accent_soft")])
     def test_chips_are_readable(self, pal_name, fg, soft):
         pal = PALETTES[pal_name]
         chip_bg = _blend(pal[soft], pal["panel"])
@@ -1065,7 +1065,7 @@ def test_la_grilla_de_buscar_muestra_las_etiquetas(app, sin_catalogo):
     from convertir3x4.ui.tabs.tab_buscar import BuscarTab
     from convertir3x4.ui.widgets.media_grid import TAGS_ROLE
     t = BuscarTab(srv=sin_catalogo)
-    t.resize(700, 500)
+    t.resize(700, 760)       # la celda entera (con lugar y eventos)
     t.show()
     m = Media(path="/a.jpg", filename="a.jpg", kind="image", id=1,
               etiquetas=[("predicación", False)])

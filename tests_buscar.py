@@ -206,6 +206,25 @@ class TestLugarYEvento:
         # La IA no pone lugares ni eventos aunque el nombre coincida
         assert nas.suggest_tag(d["sin"], "campamento") is False
 
+    def test_con_o_sin_tildes_es_la_misma(self, nas, datos):
+        from convertir3x4.catalog.repo import NombreEnUso
+        d = datos
+        nas.apply_tag(d["sin"], "Ramirez")                # existe «ramírez»
+        assert nas.tags_for(d["sin"]) == ["ramírez"]
+        assert "ramirez" not in nas.all_tag_names()
+        nas.remove_tag(d["sin"], "RAMIREZ")
+        assert nas.tags_for(d["sin"]) == []
+        nas.poner_evento([d["sin"]], "Reunión de oración")
+        nas.poner_evento([d["retiro"]], "reunion de oracion")
+        assert nas.nombres_por_tipo()["evento"] == ["reunión de oración"]
+        with pytest.raises(NombreEnUso, match="«reunión de oración» ya es un evento"):
+            nas.apply_tag(d["placa"], "Reunion de Oracion")
+        nas.quitar_de([d["sin"]], "reunion de oracion")
+        assert _ids(nas, "evento:reunion") == []           # el operador pide el nombre entero
+        assert _ids(nas, 'evento:"reunion de oracion"') == [d["retiro"]]
+        nas.cambiar_tipo("reunion de oracion", "descriptivo")
+        assert nas.nombres_por_tipo()["evento"] == []
+
     def test_convertir(self, nas, datos, pg_cfg):
         from convertir3x4.catalog import db as catdb
         from convertir3x4.catalog.repo import NoSePuedeConvertir
@@ -506,6 +525,10 @@ class TestLugarYEventoEnBuscar:
         srv = self._Srv()
         tab, _ = self._tab(srv, tmp_path)
         tab.grid.item(0).setSelected(True)
+        tab._etiquetas_conocidas = ["predicación"]
+        tab.tag_bar.tagApplied.emit("predicacion")         # va con sus tildes
+        assert ("apply_tag", 1, "predicación") in srv.hechos
+        srv.hechos.clear()
         tab.tag_bar.tagApplied.emit("Blessedland")
         assert not any(h[0] == "apply_tag" for h in srv.hechos)
         assert tab.lbl_seleccion.text() == ("«blessedland» ya es un lugar: póngalo desde el "

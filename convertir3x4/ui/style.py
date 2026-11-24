@@ -44,6 +44,8 @@ DARK = {
     "ia": "#b79cf7",
     "ia_soft": "rgba(150, 110, 240, 0.16)",
     "ia_hover": "rgba(150, 110, 240, 0.28)",
+    "evento": "#4fd1c5",        # eventos (Buscar): verde azulado, distinto de la IA y del aviso
+    "evento_soft": "rgba(79, 209, 197, 0.16)",
     "danger": "#f87171",
     "ok": "#4ade80",            # terminado bien (Discos: "Copiado completo")
     "on_image": "#ffffff",      # texto de insignias sobre la miniatura (fondo negro translúcido)
@@ -73,6 +75,8 @@ LIGHT = {
     "ia": "#6d28d9",
     "ia_soft": "rgba(109, 40, 217, 0.10)",
     "ia_hover": "rgba(109, 40, 217, 0.20)",
+    "evento": "#0f6e66",
+    "evento_soft": "rgba(15, 118, 110, 0.10)",
     "danger": "#c81e1e",
     "ok": "#166534",
     "on_image": "#ffffff",
