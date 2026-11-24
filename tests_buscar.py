@@ -426,6 +426,19 @@ class TestFormulario:
         tab.close()
         tab.deleteLater()
 
+    def test_orden_por_defecto_y_recordado(self, app, sin_catalogo):
+        from PyQt6.QtCore import QSettings
+        from convertir3x4.ui.tabs.tab_buscar import BuscarTab
+        QSettings().remove("buscar/orden")
+        tab = BuscarTab(srv=sin_catalogo)
+        assert tab.cmb_orden.currentData() == "nuevas"          # más recientes primero
+        tab.cmb_orden.setCurrentIndex(tab.cmb_orden.findData("viejas"))
+        otra = BuscarTab(srv=sin_catalogo)                       # al volver a abrir
+        assert otra.cmb_orden.currentData() == "viejas"
+        QSettings().remove("buscar/orden")
+        tab.deleteLater()
+        otra.deleteLater()
+
     def test_aviso_y_orden_con_filtros(self, app, sin_catalogo):
         from convertir3x4.ui.tabs.tab_buscar import BuscarTab
         pedidos = []

@@ -201,6 +201,12 @@ class BuscarTab(QWidget):
                              ("nuevas", "Más recientes primero"),
                              ("viejas", "Más antiguos primero")):
             self.cmb_orden.addItem(texto, clave)
+        # Por defecto, lo más reciente primero (pedido del 24/11/2026); queda el
+        # último orden elegido, también al volver a abrir la aplicación.
+        guardado = _ajuste("buscar/orden", "nuevas")
+        self.cmb_orden.setCurrentIndex(max(0, self.cmb_orden.findData(guardado)))
+        self.cmb_orden.currentIndexChanged.connect(
+            lambda _: _guardar_ajuste("buscar/orden", self.cmb_orden.currentData()))
         self.cmb_orden.currentIndexChanged.connect(lambda _: self._do_search())
         self.txt_query.textChanged.connect(self._nombrar_orden)
         self._nombrar_orden()
