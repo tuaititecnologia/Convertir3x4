@@ -23,6 +23,14 @@ HELP = [
         ("Buscar", "Escriba parte del nombre, de la carpeta o una etiqueta. Con «Fotos» o "
                    "«Videos» se muestra solo ese tipo. El orden puede ser por fecha de la "
                    "toma (si la foto o el video la tiene)."),
+        ("Búsqueda avanzada", "El botón a la derecha del campo (o la flecha abajo) abre "
+                              "un formulario para buscar por etiqueta, tipo, carpeta, "
+                              "texto de la foto, notas o fecha de la toma. También puede "
+                              "escribirlo directamente: etiqueta:placa, tipo:video, "
+                              "carpeta:Reuniones, desde:01/09/2025, hasta:09/2025, "
+                              "tiene:notas, sin:etiquetas. Con un guion adelante se "
+                              "excluye: -etiqueta:retiro. Para varias palabras, use "
+                              "comillas: etiqueta:\"santa cena\"."),
         ("Detalles", "Presione I (o el botón «Detalles») para abrir o cerrar, al costado "
                      "de la grilla, los detalles de lo seleccionado: fecha de la toma, "
                      "medidas, etiquetas, el texto que aparece en la foto y dónde está "

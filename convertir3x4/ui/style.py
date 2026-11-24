@@ -462,6 +462,9 @@ QCheckBox::indicator:checked {{
 QFrame#sidebar, QFrame#panel {{
     background-color: {T.panel}; border: 1px solid {T.border}; border-radius: {T.radius}px;
 }}
+QFrame#busqueda_avanzada {{
+    background-color: {T.panel}; border: 1px solid {T.border_strong}; border-radius: {T.radius}px;
+}}
 QFrame#separator {{ background-color: {T.border}; border: none; }}
 QLabel#group_title {{ color: {T.text_3}; font-size: 11px; font-weight: 600; letter-spacing: 1px; }}
 QLabel#section_title {{ color: {T.text}; font-weight: 600; }}

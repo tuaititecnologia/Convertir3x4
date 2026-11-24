@@ -21,7 +21,7 @@ python -m venv venv && source venv/bin/activate && pip install -r requirements.t
 ./venv/bin/python Convertir3x4.py      # shim entry point (also: python -m convertir3x4)
 
 # Tests — pass both files explicitly (pytest's default discovery skips the tests.py name)
-./venv/bin/python -m pytest tests.py tests_catalog.py tests_ai.py tests_clips.py tests_ui.py tests_convertir.py tests_discos.py tests_catalogador.py tests_v08.py tests_actualizacion.py tests_ocr.py -v
+./venv/bin/python -m pytest tests.py tests_catalog.py tests_ai.py tests_clips.py tests_ui.py tests_convertir.py tests_discos.py tests_catalogador.py tests_v08.py tests_actualizacion.py tests_ocr.py tests_buscar.py -v
 # tests_discos.py also runs the real panel-copias.py (fake lsblk/systemctl) when ~/Documents/Agents/CDLM-Freenas is present
 # tests_ai.py also runs real-model tests when CDLM_MODELS points to a folder with the downloaded models
 # Catalog tests (tests_catalog/tests_ai/tests_ui) need the dev PostgreSQL; fixtures in conftest.py create a
@@ -150,7 +150,11 @@ convertir3x4/
                          Media.path = full path on this PC. Missing files get missing_since (never auto-deleted);
                          mover() keeps tags. tomar_carpeta(): advisory lock per folder
                          buscar(): one paged query for Buscar (two-layer search, missing last, kind filter, total,
-                         tags per item, no search_doc); Buscar loads 120 at a time as you scroll
+                         tags per item, no search_doc); Buscar loads 120 at a time as you scroll.
+                         Gmail-like operators (etiqueta:/tag:/persona:, tipo:, carpeta:, nombre:, texto:, notas:,
+                         desde:/hasta:/fecha:, tiene:/sin:, leading - excludes) -> one WHERE per filter (_filtro_sql)
+    consulta.py          Qt-free parser of those operators: analizar() -> Consulta, armar() back to text; unknown
+                         clave:valor stays a plain word (10:30, C:\...). Form: ui/widgets/busqueda_avanzada.py
     rutas.py             a_relativa / a_completa (UNC, drive letters, posix)
     referencias.py       do a person's reference photos work? Judges each one (no face, several faces of similar
                          size, small/unclear face, and cosine vs the person's other photos: an outlier may be someone

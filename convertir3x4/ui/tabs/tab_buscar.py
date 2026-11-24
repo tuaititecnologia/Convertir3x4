@@ -29,6 +29,9 @@ from ..widgets.media_grid import (
     DragOutListWidget, PATH_ROLE, MEDIA_ID_ROLE, KIND_ROLE, DURATION_ROLE, STATE_ROLE,
     STORYBOARD_ROLE, TAGS_ROLE,
 )
+from ...catalog import consulta
+from ...catalog.consulta import analizar
+from ..widgets.busqueda_avanzada import FormularioBusqueda
 from ..widgets.detalle_medio import ANCHO as _ANCHO_DETALLES, PanelDetalles, estado_de_item
 from ..widgets.dialogos import confirmar
 from ..widgets.tag_bar import TagBar
@@ -61,7 +64,9 @@ def _existe(raiz: str) -> bool:
 
 
 class SearchLineEdit(QLineEdit):
-    """Campo de búsqueda: botón X para limpiar + ESC vacía el campo."""
+    """Campo de búsqueda: botón X para limpiar + ESC vacía el campo. El botón
+    de la derecha (o la flecha abajo) abre la búsqueda avanzada."""
+    avanzada = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -69,10 +74,18 @@ class SearchLineEdit(QLineEdit):
         self.setClearButtonEnabled(True)
         lupa = self.addAction(QIcon(), QLineEdit.ActionPosition.LeadingPosition)
         icons.set_icon(lupa, "search", 16, "text_3")
+        self.accion_avanzada = self.addAction(QIcon(), QLineEdit.ActionPosition.TrailingPosition)
+        icons.set_icon(self.accion_avanzada, "sliders-horizontal", 16, "text_2")
+        self.accion_avanzada.setToolTip("Búsqueda avanzada: por etiqueta, tipo, carpeta, "
+                                        "fecha… (flecha abajo)")
+        self.accion_avanzada.triggered.connect(self.avanzada)
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Escape and self.text():
             self.clear()
+            return
+        if event.key() == Qt.Key.Key_Down and not event.modifiers():
+            self.avanzada.emit()
             return
         super().keyPressEvent(event)
 
@@ -131,10 +144,15 @@ class BuscarTab(QWidget):
         row = QHBoxLayout()
         row.setSpacing(12)
         self.txt_query = SearchLineEdit()
-        self.txt_query.setPlaceholderText("Buscar por nombre, carpeta o etiqueta…")
+        self.txt_query.setPlaceholderText("Buscar por nombre, carpeta o etiqueta…  "
+                                          "(también etiqueta:placa, tipo:video, desde:09/2025)")
         self.txt_query.setAccessibleName("Buscar en el catálogo")
         self.txt_query.textChanged.connect(lambda _: self._debounce.start())
+        self.txt_query.textChanged.connect(self._revisar_consulta)
+        self.txt_query.avanzada.connect(self._abrir_formulario)
         row.addWidget(self.txt_query, 1)
+        self.formulario = FormularioBusqueda(self)
+        self.formulario.buscar.connect(self.txt_query.setText)
 
         seg = QFrame()
         seg.setObjectName("segmented")
@@ -156,7 +174,7 @@ class BuscarTab(QWidget):
             if kind is None:
                 b.setChecked(True)
         # Filtra en la base: con páginas, filtrar lo ya traído dejaría casi vacío «Videos»
-        self._kind_group.buttonClicked.connect(lambda _: self._do_search())
+        self._kind_group.buttonClicked.connect(self._eligio_tipo)
         row.addWidget(seg)
 
         self.cmb_orden = QComboBox()
@@ -197,6 +215,13 @@ class BuscarTab(QWidget):
         self.lbl_count.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         row.addWidget(self.lbl_count)
         layout.addLayout(row)
+
+        # Lo escrito que no se entiende (una fecha mal escrita…): se dice por qué
+        self.lbl_aviso_busqueda = QLabel("")
+        self.lbl_aviso_busqueda.setObjectName("detalle_aviso_texto")
+        self.lbl_aviso_busqueda.setWordWrap(True)
+        self.lbl_aviso_busqueda.setVisible(False)
+        layout.addWidget(self.lbl_aviso_busqueda)
 
         # Se está trayendo la búsqueda del NAS. Su lugar queda reservado aunque
         # no se vea, para que la grilla no salte cada vez que aparece.
@@ -457,9 +482,35 @@ class BuscarTab(QWidget):
                         error=lambda _e: self._fin_carga() if n == self._busqueda else None)
 
     def _nombrar_orden(self, *_):
-        """Sin texto buscado, «parecidos» no dice nada: el orden es por nombre."""
-        self.cmb_orden.setItemText(0, "Más parecidos primero" if self.txt_query.text().strip()
+        """Sin palabras sueltas, «parecidos» no dice nada: el orden es por nombre
+        (los filtros como etiqueta:placa no ordenan)."""
+        self.cmb_orden.setItemText(0, "Más parecidos primero"
+                                   if analizar(self.txt_query.text()).palabras
                                    else "Por nombre")
+
+    # ------------------------------------------------------------- búsqueda avanzada
+    def _abrir_formulario(self):
+        self.formulario.abrir_debajo_de(self.txt_query, self.txt_query.text())
+
+    def _revisar_consulta(self, *_):
+        """Con cada letra: el aviso de lo que no se entiende y los botones
+        Todo / Fotos / Videos, que siguen al «tipo:» escrito."""
+        c = analizar(self.txt_query.text())
+        self.lbl_aviso_busqueda.setText(" ".join(c.avisos))
+        self.lbl_aviso_busqueda.setVisible(bool(c.avisos))
+        tipo = c.tipo
+        if tipo is not None and tipo != self._kind():
+            for b in self._kind_group.buttons():
+                if b.property("kind") == tipo:
+                    b.setChecked(True)
+
+    def _eligio_tipo(self, _boton):
+        """Un botón Todo / Fotos / Videos manda: se saca el «tipo:» del texto."""
+        texto = self.txt_query.text()
+        sin = consulta.sin_tipo(texto)
+        if sin != texto:
+            self.txt_query.setText(sin)
+        self._do_search()
 
     def _mostrar_cargando(self):
         self.barra_cargando.setVisible(True)
@@ -968,7 +1019,10 @@ class BuscarTab(QWidget):
                         error=lambda _e: self._tiras.pop(mid, None))
 
     def _reload_known_tags(self):
-        self._srv.pedir(lambda repo: repo.all_tag_names(), ok=self.tag_bar.set_known_tags)
+        def ok(nombres):
+            self.tag_bar.set_known_tags(nombres)
+            self.formulario.set_etiquetas(nombres)
+        self._srv.pedir(lambda repo: repo.all_tag_names(), ok=ok)
 
 
 def _preparar(repo, cache, results) -> tuple:

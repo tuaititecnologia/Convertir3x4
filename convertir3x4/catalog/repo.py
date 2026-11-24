@@ -22,7 +22,7 @@ import re
 import psycopg
 import psycopg.types.json
 
-from . import rutas
+from . import consulta, rutas
 from .db import LLAVE_CATALOGAR
 from .models import Media
 
@@ -920,10 +920,16 @@ class Repo:
 
         `orden`: "relevancia" (lo de arriba), "nuevas" o "viejas" (por fecha de
         toma; los que no la tienen, al final, por nombre).
+
+        `query` admite filtros como los de Gmail (`etiqueta:placa`, `tipo:video`,
+        `desde:09/2025`, `-etiqueta:retiro`…): ver `consulta.py`. La relevancia
+        se calcula solo con las palabras sueltas.
         """
         where, params = [], []
-        terms = [t for t in (query or "").split() if t]
-        tsq = _to_tsquery(query) if terms else None
+        c = consulta.analizar(query)
+        kind = c.tipo or kind               # «tipo:» escrito manda sobre los botones
+        terms = [consulta.terminos(t) for t in c.palabras]
+        tsq = _to_tsquery(" ".join(terms)) if terms else None
         if terms:
             conds = []
             if tsq:
@@ -934,6 +940,21 @@ class Repo:
                 for _ in terms) + ")")
             params += [f"%{_escape_like(t)}%" for t in terms]
             where.append("(" + " OR ".join(conds) + ")")
+        for palabra in c.excluidas:
+            t = consulta.terminos(palabra)
+            q = _to_tsquery(t)
+            cond = "texto_nombre(m.filename, m.folder_origin) LIKE sin_acentos(lower(%s))"
+            p = [f"%{_escape_like(t)}%"]
+            if q:
+                cond = f"m.search_doc @@ to_tsquery('catalogo', %s) OR {cond}"
+                p.insert(0, q)
+            where.append(f"NOT COALESCE(({cond}), false)")
+            params += p
+        for f in c.filtros:
+            sql, p = _filtro_sql(f)
+            if sql:
+                where.append(f"NOT COALESCE(({sql}), false)" if f.negado else f"({sql})")
+                params += p
         if kind:
             where.append("m.kind = %s")
             params.append(kind)
@@ -1085,6 +1106,48 @@ class PendienteIA:
     caras: bool
     modelo: str | None
     firma: str
+
+
+def _filtro_sql(f: "consulta.Filtro") -> tuple[str | None, list]:
+    """Un filtro de la búsqueda (`etiqueta:placa`, `desde:09/2025`…) como
+    condición sobre `media m`. (None, []) si no filtra nada (p. ej. `tipo:`,
+    que va por `kind`)."""
+    contiene = lambda: [f"%{_escape_like(f.valor.lower())}%"]   # noqa: E731
+    if f.clave == "tipo":                   # el pedido va por `kind`; aquí, el excluido
+        return ("m.kind = %s", [consulta.TIPOS[consulta._simple(f.valor)]]) if f.negado \
+            else (None, [])
+    if f.clave == "etiqueta":
+        return ("EXISTS (SELECT 1 FROM media_tag mt JOIN tag t ON t.id = mt.tag_id "
+                "WHERE mt.media_id = m.id AND sin_acentos(t.name) = sin_acentos(%s))",
+                [" ".join(f.valor.lower().split())])
+    if f.clave == "carpeta":
+        return ("sin_acentos(lower(COALESCE(m.folder_origin, ''))) LIKE sin_acentos(%s)",
+                contiene())
+    if f.clave == "nombre":
+        return "sin_acentos(lower(m.filename)) LIKE sin_acentos(%s)", contiene()
+    if f.clave == "texto":
+        return ("EXISTS (SELECT 1 FROM texto_foto tf WHERE tf.media_id = m.id "
+                "AND sin_acentos(lower(tf.texto)) LIKE sin_acentos(%s))", contiene())
+    if f.clave == "notas":
+        return "sin_acentos(lower(m.notas)) LIKE sin_acentos(%s)", contiene()
+    if f.clave in consulta.FECHAS:
+        dia = f"(m.tomada AT TIME ZONE '{ZONA_IGLESIA}')::date"
+        ini, fin = f.periodo
+        if f.clave == "desde":
+            return f"{dia} >= %s", [ini]
+        if f.clave == "hasta":
+            return f"{dia} <= %s", [fin]
+        return f"{dia} BETWEEN %s AND %s", [ini, fin]
+    if f.clave in ("tiene", "sin"):
+        que = consulta.TIENE[consulta._simple(f.valor)]
+        sql = {"texto": "EXISTS (SELECT 1 FROM texto_foto tf WHERE tf.media_id = m.id "
+                        "AND tf.texto <> '')",
+               "notas": "m.notas <> ''",
+               "etiquetas": "EXISTS (SELECT 1 FROM media_tag mt WHERE mt.media_id = m.id)",
+               "fecha": "m.tomada IS NOT NULL",
+               "lugar": "m.lat IS NOT NULL"}[que]
+        return (sql if f.clave == "tiene" else f"NOT ({sql})"), []
+    return None, []
 
 
 def _to_tsquery(query: str) -> str | None:
