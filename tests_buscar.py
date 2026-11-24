@@ -63,10 +63,13 @@ class TestAnalizar:
         for texto in ('culto "dia del padre" -ensayo etiqueta:"santa cena" -etiqueta:retiro '
                       'tipo:video carpeta:Historial desde:01/09/2025 hasta:2025 tiene:notas '
                       'sin:etiquetas',
-                      "10:30 nombre:DSC texto:vigilia notas:pastor fecha:09/2025"):
+                      "10:30 nombre:DSC texto:vigilia notas:pastor fecha:09/2025",
+                      "antes:2025 después:01/09/2024"):
             assert armar(analizar(texto)) == texto
             assert armar(analizar(armar(analizar(texto)))) == texto
         assert armar(analizar("tag:placa tipo:fotos")) == "etiqueta:placa tipo:foto"
+        assert armar(analizar("despues:2024")) == "después:2024"
+        assert "antes:13/2025" in analizar("antes:13/2025").invalidos
 
     def test_sin_tipo_deja_el_resto_como_estaba(self):
         assert consulta.sin_tipo("culto tipo:video desde:99 -etiqueta:x") == \
@@ -85,6 +88,8 @@ class TestSugerencias:
         assert self._s("culto eti") == (6, ["etiqueta:"])
         assert self._s("-eti") == (0, ["-etiqueta:"])
         assert self._s("sin") == (0, ["sin:"])
+        assert self._s("desp") == (0, ["después:"])                   # sin tilde también
+        assert self._s("des") == (0, ["desde:", "después:"])
         assert self._s("ca") == (0, []) and self._s("et") == (0, [])   # menos de 3: nada
         assert self._s("culto") == (0, [])
         assert self._s("tag") == (0, [])                     # tag: se entiende, no se ofrece
@@ -179,6 +184,13 @@ class TestBuscarConFiltros:
         assert _ids(nas, "hasta:21/09/2025") == sorted([d["placa"], d["retiro"]])  # incluye
         assert _ids(nas, "fecha:2024") == [d["retiro"]]
         assert _ids(nas, "-fecha:2025") == sorted([d["retiro"], d["sin"]])  # sin fecha también
+        # antes: y después: no incluyen la fecha dada (como Gmail)
+        assert _ids(nas, "antes:21/09/2025") == [d["retiro"]]
+        assert _ids(nas, "antes:22/09/2025") == sorted([d["placa"], d["retiro"]])
+        assert _ids(nas, "antes:2025") == [d["retiro"]]
+        assert _ids(nas, "después:21/09/2025") == [d["video"]]
+        assert _ids(nas, "despues:09/2025") == []                    # empieza en octubre
+        assert _ids(nas, "despues:2024 antes:28/09/2025") == [d["placa"]]
 
     def test_tiene_y_sin(self, nas, datos):
         d = datos

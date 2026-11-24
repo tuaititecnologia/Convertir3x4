@@ -1137,6 +1137,10 @@ def _filtro_sql(f: "consulta.Filtro") -> tuple[str | None, list]:
             return f"{dia} >= %s", [ini]
         if f.clave == "hasta":
             return f"{dia} <= %s", [fin]
+        if f.clave == "antes":                  # sin incluir esa fecha (como Gmail)
+            return f"{dia} < %s", [ini]
+        if f.clave == "después":
+            return f"{dia} > %s", [fin]
         return f"{dia} BETWEEN %s AND %s", [ini, fin]
     if f.clave in ("tiene", "sin"):
         que = consulta.TIENE[consulta._simple(f.valor)]

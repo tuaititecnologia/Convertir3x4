@@ -152,7 +152,7 @@ convertir3x4/
                          buscar(): one paged query for Buscar (two-layer search, missing last, kind filter, total,
                          tags per item, no search_doc); Buscar loads 120 at a time as you scroll.
                          Gmail-like operators (etiqueta:/tag:, tipo:, carpeta:, nombre:, texto:, notas:,
-                         desde:/hasta:/fecha:, tiene:/sin:, leading - excludes) -> one WHERE per filter (_filtro_sql)
+                         desde:/hasta:/fecha: inclusive, antes:/después: exclusive like Gmail, tiene:/sin:, leading - excludes) -> one WHERE per filter (_filtro_sql)
     consulta.py          Qt-free parser of those operators: analizar() -> Consulta, armar() back to text; unknown
                          clave:valor stays a plain word (10:30, C:\...). Form: ui/widgets/busqueda_avanzada.py
                          sugerencias(): what to offer while typing (QCompleter on the field). Something not understood

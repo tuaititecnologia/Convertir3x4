@@ -13,7 +13,10 @@ filtros con la forma `clave:valor`:
   «C:\\Fotos» se siguen buscando como siempre (por fragmento del nombre).
 - Un operador sin valor (`etiqueta:` mientras se escribe) no hace nada.
 - Las fechas son las de la toma, en la hora de la iglesia: `21/09/2025`,
-  `09/2025` (todo el mes) o `2025` (todo el año). «Hasta» incluye ese día.
+  `09/2025` (todo el mes) o `2025` (todo el año). `desde:` y `hasta:` incluyen
+  esa fecha; `antes:` y `después:` no, como en Gmail (`antes:2025` llega al
+  31/12/2024; `después:09/2025` empieza el 01/10/2025). `despues:` sin tilde
+  también vale.
 
 `analizar(texto)` lo convierte en una `Consulta`; `armar(consulta)` la vuelve
 a escribir (el formulario de búsqueda de Buscar usa las dos). La traducción a
@@ -38,6 +41,7 @@ CLAVES = {
     "texto": "texto",
     "notas": "notas", "nota": "notas",
     "desde": "desde", "hasta": "hasta", "fecha": "fecha",
+    "antes": "antes", "despues": "después",
     "tiene": "tiene", "sin": "sin",
 }
 TIPOS = {"foto": "image", "fotos": "image", "imagen": "image", "imagenes": "image",
@@ -47,7 +51,7 @@ NOMBRE_TIPO = {"image": "foto", "video": "video"}
 TIENE = {"texto": "texto", "notas": "notas", "nota": "notas",
          "etiquetas": "etiquetas", "etiqueta": "etiquetas",
          "fecha": "fecha", "lugar": "lugar", "ubicacion": "lugar"}
-FECHAS = ("desde", "hasta", "fecha")
+FECHAS = ("desde", "hasta", "fecha", "antes", "después")
 
 _TOKEN = re.compile(r'''
     (?P<neg>-)?
@@ -209,7 +213,7 @@ def terminos(palabra: str) -> str:
 # Las claves que se sugieren al escribir (las otras formas, como tag:, se
 # entienden igual pero no se ofrecen).
 SUGERIR = ("etiqueta", "tipo", "carpeta", "nombre", "texto", "notas",
-           "desde", "hasta", "fecha", "tiene", "sin")
+           "desde", "hasta", "fecha", "antes", "después", "tiene", "sin")
 _MAX_SUGERENCIAS = 12
 
 
@@ -236,8 +240,9 @@ def sugerencias(texto: str, cursor: int, etiquetas: list[str]) -> tuple[int, lis
         p = _simple(escrito)
         if len(p) < 3:                        # con menos, salta con cualquier palabra
             return inicio, []
-        return inicio, [f"{neg}{k}:" for k in SUGERIR if k.startswith(p) and k != p] + \
-            [f"{neg}{k}:" for k in SUGERIR if k == p]
+        return inicio, [f"{neg}{k}:" for k in SUGERIR
+                        if _simple(k).startswith(p) and _simple(k) != p] + \
+            [f"{neg}{k}:" for k in SUGERIR if _simple(k) == p]
     clave, valor = escrito.split(":", 1)
     canon = CLAVES.get(_simple(clave))
     v = _simple(valor.lstrip('"'))
