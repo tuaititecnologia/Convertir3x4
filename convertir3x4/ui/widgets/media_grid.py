@@ -63,6 +63,19 @@ def _pin(color: str, lado: int) -> QPixmap:
     return _PINES[clave]
 
 
+def es_para_escribir(event) -> bool:
+    """Una tecla que escribe (letra, número, signo, espacio) o borra, sin Ctrl,
+    ⌘ ni Alt: en Buscar va al campo de búsqueda esté donde esté el foco."""
+    mods = event.modifiers() & ~(Qt.KeyboardModifier.ShiftModifier
+                                 | Qt.KeyboardModifier.KeypadModifier)
+    if mods:
+        return False
+    if event.key() == Qt.Key.Key_Backspace:
+        return True
+    texto = event.text()
+    return bool(texto) and texto.isprintable()
+
+
 def format_duration(seconds: float | None) -> str:
     if not seconds:
         return ""
@@ -513,7 +526,9 @@ class DragOutListWidget(_HoverPreview, QListWidget):
     copia. Se ofrece Copy|Link y el destino decide; PP linkea.
     """
 
-    detalles = pyqtSignal()          # tecla I: los detalles del elemento actual
+    # Lo que se teclea en la grilla va al campo de búsqueda (24/11/2026): la
+    # grilla no busca por la primera letra ni abre nada con una letra.
+    escribir = pyqtSignal(object)    # el QKeyEvent, para mandarlo al campo
 
     def __init__(self, parent=None, thumb: int = 150, etiquetas: bool = False):
         super().__init__(parent)
@@ -549,10 +564,8 @@ class DragOutListWidget(_HoverPreview, QListWidget):
         self.doItemsLayout()
 
     def keyPressEvent(self, event):
-        # Solo la I sola: sin esto, la grilla salta al primero que empieza con «i».
-        if event.key() == Qt.Key.Key_I and not (
-                event.modifiers() & ~Qt.KeyboardModifier.KeypadModifier):
-            self.detalles.emit()
+        if es_para_escribir(event):
+            self.escribir.emit(event)
             event.accept()
             return
         super().keyPressEvent(event)

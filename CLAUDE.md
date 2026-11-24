@@ -108,7 +108,9 @@ convertir3x4/
                            Dev without NAS: CDLM_PANEL_URLS / CDLM_PANEL_TOKEN (see tests_discos.py)
     tabs/convert_workers.py  ThumbWorker / ConvertWorker / DownloadWorker (QThread, cancellable)
     widgets/advanced_dialog.py, widgets/help_panel.py (overlay help, first run + F1)
-    widgets/detalle_medio.py  PanelDetalles: Buscar's details panel beside the grid (QSplitter; key I or «Detalles»
+    (Buscar keyboard: any printable key / Backspace typed anywhere in the tab except text boxes goes to the
+     search field — grid.escribir + BuscarTab.keyPressEvent, media_grid.es_para_escribir; letters do nothing else)
+    widgets/detalle_medio.py  PanelDetalles: Buscar's details panel beside the grid (QSplitter; Ctrl+I / ⌘I or «Detalles»
                          toggles it; open state + width in QSettings buscar/detalles*). Replaces the item tooltip.
                          One item: preview (original photo read off-thread), data, tags, OCR text, file path;
                          several: summary («5 seleccionados: 4 fotos y 1 video», dates, size, tags n/N) + list (click

@@ -1190,6 +1190,9 @@ class TestDetalles:
         tab._results = fotos
         tab._populate(fotos)
         tab.show()
+        # Ventana activa, como en la app: si no, los atajos (Ctrl+I) no llegan
+        from PyQt6.QtWidgets import QApplication
+        QApplication.setActiveWindow(tab)
         return tab
 
     @staticmethod
@@ -1198,7 +1201,7 @@ class TestDetalles:
         return {g.itemAtPosition(i, 0).widget().text(): g.itemAtPosition(i, 1).widget().text()
                 for i in range(g.rowCount()) if g.itemAtPosition(i, 0)}
 
-    def test_la_i_abre_y_cierra_y_queda_como_se_dejo(self, app, sin_catalogo, tmp_path):
+    def test_ctrl_i_abre_y_cierra_y_queda_como_se_dejo(self, app, sin_catalogo, tmp_path):
         from PyQt6.QtCore import QSettings, Qt
         from PyQt6.QtTest import QTest
         tab = self._tab(sin_catalogo, tmp_path)
@@ -1206,10 +1209,10 @@ class TestDetalles:
         assert not d.isVisible()
         g.setFocus()
         g.setCurrentItem(g.item(0))
-        QTest.keyClick(g, Qt.Key.Key_I)
+        QTest.keyClick(g, Qt.Key.Key_I, Qt.KeyboardModifier.ControlModifier)
         assert d.isVisible() and tab.btn_detalles.isChecked()
         assert d.focusPolicy() == Qt.FocusPolicy.NoFocus or not d.hasFocus()
-        assert g.currentItem() is g.item(0)                  # la I no movió nada
+        assert g.currentItem() is g.item(0)                  # el atajo no movió nada
         assert QSettings().value("buscar/detalles") in (True, "true")
         app.processEvents()
         tab._actualizar_detalles()
@@ -1229,7 +1232,7 @@ class TestDetalles:
         otra = type(tab)(srv=sin_catalogo)
         assert otra.btn_detalles.isChecked()
         otra.deleteLater()
-        QTest.keyClick(g, Qt.Key.Key_I)
+        QTest.keyClick(g, Qt.Key.Key_I, Qt.KeyboardModifier.ControlModifier)
         assert not d.isVisible()
         assert QSettings().value("buscar/detalles") in (False, "false")
         tab.btn_detalles.click()
@@ -1266,14 +1269,36 @@ class TestDetalles:
         tab.close()
         tab.deleteLater()
 
-    def test_escribir_i_en_la_busqueda_no_abre_nada(self, app, sin_catalogo, tmp_path):
+    def test_lo_que_se_teclea_va_a_la_busqueda(self, app, sin_catalogo, tmp_path):
+        from PyQt6.QtCore import Qt
         from PyQt6.QtTest import QTest
         tab = self._tab(sin_catalogo, tmp_path)
-        tab.grid.setCurrentItem(tab.grid.item(1))
-        tab.txt_query.setFocus()
-        QTest.keyClicks(tab.txt_query, "iglesia")
+        g = tab.grid
+        g.setFocus()
+        g.setCurrentItem(g.item(1))
+        QTest.keyClicks(g, "igle")                            # desde la grilla
+        assert tab.txt_query.text() == "igle"
+        QTest.keyClicks(tab.txt_query, "sia")
         assert tab.txt_query.text() == "iglesia" and not tab.detalles.isVisible()
-        assert tab.grid.currentItem() is tab.grid.item(1)
+        assert g.currentItem() is g.item(1)                   # la grilla no saltó
+        # Borrar también; y las flechas y el atajo siguen siendo de la grilla
+        g.setFocus()
+        QTest.keyClick(g, Qt.Key.Key_Backspace)
+        assert tab.txt_query.text() == "iglesi"
+        g.setFocus()
+        QTest.keyClick(g, Qt.Key.Key_Right)
+        assert g.currentItem() is g.item(2) and tab.txt_query.text() == "iglesi"
+        # Desde un botón también
+        tab.btn_detalles.setFocus()
+        QTest.keyClicks(tab.btn_detalles, "a")
+        assert tab.txt_query.text() == "iglesia"
+        # Lo que se escribe en las notas se queda en las notas
+        tab.btn_detalles.setChecked(True)
+        tab._actualizar_detalles()
+        tab.detalles.txt_notas.setFocus()
+        QTest.keyClicks(tab.detalles.txt_notas, "hola")
+        assert tab.detalles.txt_notas.toPlainText() == "hola"
+        assert tab.txt_query.text() == "iglesia"
         tab.close()
         tab.deleteLater()
 

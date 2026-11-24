@@ -15,7 +15,7 @@ import threading
 from PyQt6.QtCore import (
     QElapsedTimer, QPoint, QSettings, QSize, QStringListModel, Qt, QTimer, pyqtSignal,
 )
-from PyQt6.QtGui import QIcon, QPixmap
+from PyQt6.QtGui import QIcon, QKeyEvent, QKeySequence, QPixmap, QShortcut
 from PyQt6.QtWidgets import (
     QAbstractItemView, QApplication, QComboBox, QCompleter, QProgressBar, QSizePolicy, QSplitter,
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
@@ -29,7 +29,7 @@ from ..servicio_catalogo import servicio, texto_para
 from ..widgets.caja_conexion import CajaConexion
 from ..widgets.media_grid import (
     DragOutListWidget, PATH_ROLE, MEDIA_ID_ROLE, KIND_ROLE, DURATION_ROLE, STATE_ROLE,
-    STORYBOARD_ROLE, TAGS_ROLE, LUGAR_ROLE, EVENTOS_ROLE, FECHA_ROLE,
+    STORYBOARD_ROLE, TAGS_ROLE, LUGAR_ROLE, EVENTOS_ROLE, FECHA_ROLE, es_para_escribir,
 )
 from ...catalog import consulta
 from ...catalog.consulta import analizar
@@ -42,6 +42,7 @@ from .. import icons
 from ..style import T
 
 _GRID_THUMB = 150
+_ATAJO_DETALLES = QKeySequence("Ctrl+I").toString(QKeySequence.SequenceFormat.NativeText)
 # Cambios que avisa el NAS: se juntan y se muestran a lo sumo cada 20 s. Durante
 # una pasada llega un aviso por archivo; cada puesta al día rehace la búsqueda y
 # revisa los archivos en el NAS, y las etiquetas que se pongan esperan detrás.
@@ -220,7 +221,7 @@ class BuscarTab(QWidget):
         self.btn_detalles.setCursor(Qt.CursorShape.PointingHandCursor)
         icons.set_icon(self.btn_detalles, "panel-right", 15, "text_2", active="text")
         self.btn_detalles.setToolTip("Muestra u oculta, al costado, los detalles de lo "
-                                     "seleccionado (tecla I)")
+                                     f"seleccionado ({_ATAJO_DETALLES})")
         self.btn_detalles.toggled.connect(self._ver_detalles)
         row.addWidget(self.btn_detalles)
 
@@ -278,12 +279,16 @@ class BuscarTab(QWidget):
         self.grid.setAccessibleName("Resultados")
         self.grid.itemSelectionChanged.connect(self._on_selection_changed)
         self.grid.itemDoubleClicked.connect(self._open_item)
-        self.grid.detalles.connect(self.btn_detalles.toggle)
+        self.grid.escribir.connect(self._escribir_en_busqueda)
+        # Los detalles: Ctrl+I (⌘I en Mac, como «Obtener información»). Las letras
+        # sueltas van a la búsqueda.
+        atajo = QShortcut(QKeySequence("Ctrl+I"), self, self.btn_detalles.toggle)
+        atajo.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         self.grid.currentItemChanged.connect(lambda *_: self._seguir_detalle())
         self.grid.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.grid.customContextMenuRequested.connect(self._menu_grilla)
 
-        # Detalles de lo elegido, al costado de la grilla (tecla I). Queda
+        # Detalles de lo elegido, al costado de la grilla (Ctrl+I). Queda
         # abierto o cerrado como lo deje el operador, con el ancho que le dio.
         self.detalles = PanelDetalles()
         self.detalles.cerrar.connect(lambda: self.btn_detalles.setChecked(False))
@@ -745,7 +750,7 @@ class BuscarTab(QWidget):
             item.setIcon(icon)
         elif disponible and m.id in (bajando or ()):
             item.setData(STATE_ROLE, "loading")     # se está bajando de la base
-        # Sin cartel al pasar el puntero: los detalles se ven con la tecla I.
+        # Sin cartel al pasar el puntero: los detalles se ven con Ctrl+I.
         return item
 
     def _populate(self, results, minis: dict | None = None, present: dict | None = None,
@@ -806,7 +811,7 @@ class BuscarTab(QWidget):
         else:
             verbo = "ya no está" if n == 1 else "ya no están"
             text = (f"{cuantos} {verbo} en su carpeta: pueden haberse movido o borrado. "
-                    "Elija uno y abra los detalles (tecla I) para ver su ubicación anterior.")
+                    f"Elija uno y abra los detalles ({_ATAJO_DETALLES}) para ver su ubicación anterior.")
         self.lbl_offline.setText(text)
         self.offline_box.setVisible(True)
 
@@ -912,9 +917,24 @@ class BuscarTab(QWidget):
                 and event.modifiers() & Qt.KeyboardModifier.ControlModifier):
             self._mandar_a_convertir()
             return
+        # Una tecla que nadie usó (el foco en un botón, en la grilla vacía…):
+        # se escribe en la búsqueda. Los cuadros de texto se quedan con lo suyo.
+        if es_para_escribir(event):
+            self._escribir_en_busqueda(event)
+            return
         super().keyPressEvent(event)
 
-    # ------------------------------------------------------------- detalles (I)
+    def _escribir_en_busqueda(self, event):
+        """Lleva el foco al campo de búsqueda y le pasa la tecla, al final de lo
+        escrito. Las siguientes ya van directo al campo."""
+        q = self.txt_query
+        q.setFocus(Qt.FocusReason.ShortcutFocusReason)
+        q.deselect()
+        q.end(False)
+        QApplication.sendEvent(q, QKeyEvent(event.type(), event.key(), event.modifiers(),
+                                            event.text(), event.isAutoRepeat(), event.count()))
+
+    # ------------------------------------------------------------- detalles (Ctrl+I)
     def _ver_detalles(self, abierto: bool):
         self.detalles.setVisible(abierto)
         if abierto:

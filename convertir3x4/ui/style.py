@@ -571,7 +571,7 @@ QPushButton#tag_chip_ia_x {{
 }}
 QPushButton#tag_chip_ia_x:hover {{ color: {T.danger}; }}
 
-/* ---------- detalles de un elemento de Buscar (tecla I) ---------- */
+/* ---------- detalles de un elemento de Buscar (Ctrl+I) ---------- */
 QFrame#detalle_panel {{
     background-color: {T.panel}; border: 1px solid {T.border}; border-radius: {T.radius}px;
 }}
