@@ -81,10 +81,11 @@ class TestSugerencias:
         return consulta.sugerencias(texto, len(texto) if cursor is None else cursor, self.E)
 
     def test_claves(self):
-        assert self._s("ca") == (0, ["carpeta:"])
-        assert self._s("culto et") == (6, ["etiqueta:"])
-        assert self._s("-et") == (0, ["-etiqueta:"])
-        assert self._s("c") == (0, [])                       # una letra: nada
+        assert self._s("car") == (0, ["carpeta:"])
+        assert self._s("culto eti") == (6, ["etiqueta:"])
+        assert self._s("-eti") == (0, ["-etiqueta:"])
+        assert self._s("sin") == (0, ["sin:"])
+        assert self._s("ca") == (0, []) and self._s("et") == (0, [])   # menos de 3: nada
         assert self._s("culto") == (0, [])
         assert self._s("tag") == (0, [])                     # tag: se entiende, no se ofrece
 
@@ -289,6 +290,8 @@ class TestFormulario:
         tab.show()
         tab.txt_query.setFocus()
         QTest.keyClicks(tab.txt_query, "culto et")
+        assert not tab.completar.popup().isVisible()          # con 2 letras, todavía no
+        QTest.keyClicks(tab.txt_query, "i")
         pop = tab.completar.popup()
         assert pop.isVisible() and tab._sugerencias.stringList() == ["etiqueta:"]
         tab.completar.activated[str].emit("etiqueta:")

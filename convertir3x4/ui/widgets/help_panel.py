@@ -30,7 +30,7 @@ HELP = [
                               "carpeta:Reuniones, desde:01/09/2025, hasta:09/2025, "
                               "tiene:notas, sin:etiquetas. Con un guion adelante se "
                               "excluye: -etiqueta:retiro. Para varias palabras, use "
-                              "comillas: etiqueta:\"santa cena\". Mientras escribe, se "
+                              "comillas: etiqueta:\"santa cena\". Desde la tercera letra, se "
                               "sugieren los filtros y las etiquetas. Si algo no se "
                               "entiende (una fecha mal escrita), el campo queda en rojo "
                               "y no se busca hasta corregirlo."),

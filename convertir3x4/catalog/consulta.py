@@ -218,7 +218,7 @@ def sugerencias(texto: str, cursor: int, etiquetas: list[str]) -> tuple[int, lis
 
     Devuelve (desde dónde se reemplaza, opciones); cada opción reemplaza
     `texto[desde:cursor]`. Sin opciones: ([], no se muestra nada).
-      «ca»            → carpeta:
+      «car»           → carpeta:
       «etiqueta:pl»   → etiqueta:placa, etiqueta:"placa grande"…
       «tipo:»         → tipo:foto, tipo:video
     """
@@ -234,7 +234,7 @@ def sugerencias(texto: str, cursor: int, etiquetas: list[str]) -> tuple[int, lis
     escrito = escrito[len(neg):]
     if ":" not in escrito:
         p = _simple(escrito)
-        if len(p) < 2:
+        if len(p) < 3:                        # con menos, salta con cualquier palabra
             return inicio, []
         return inicio, [f"{neg}{k}:" for k in SUGERIR if k.startswith(p) and k != p] + \
             [f"{neg}{k}:" for k in SUGERIR if k == p]
