@@ -761,8 +761,20 @@ class BuscarTab(QWidget):
         if not ids:
             self.tag_bar.set_chips([], 0)
             return
+        # Buscar ya trajo las etiquetas de cada uno: se muestran al instante,
+        # sin esperar al NAS (la consulta hacía fila detrás de las miniaturas).
+        medios = self._por_id(ids)
+        locales = _etiquetas_de(medios) if len(medios) == len(ids) else None
+        if locales is not None:
+            self.tag_bar.set_chips(locales[0], len(ids), locales[1])
+            return
         self._srv.pedir(lambda repo: (repo.tag_counts(ids), repo.pending_tag_counts(ids)),
                         ok=lambda r: self._mostrar_tags(n, len(ids), *r))
+
+    def _por_id(self, ids: list[int]) -> list:
+        """Los medios ya cargados en la grilla para estos ids (los que estén)."""
+        cargados = {m.id: m for m in getattr(self, "_results", [])}
+        return [cargados[i] for i in ids if i in cargados]
 
     def _mostrar_tags(self, n, cuantos, counts, pendientes):
         if n == self._seleccion:
@@ -780,6 +792,7 @@ class BuscarTab(QWidget):
                 getattr(repo, accion)(mid, name)
 
         def listo(_):
+            _cambiar_locales(self._por_id(ids), accion, name)   # la barra, ya
             self._reload_known_tags()
             self._on_selection_changed()
             self._do_search(conservar=True)     # que la grilla muestre la etiqueta ya
@@ -884,6 +897,34 @@ def _texto_de_la_foto(texto: str, renglones: int = 8, largo: int = 70) -> str:
 
 def _miles(n: int) -> str:
     return f"{n:,}".replace(",", ".")
+
+
+def _etiquetas_de(medios: list):
+    """Los chips de la barra con las etiquetas que trajo Buscar: [(nombre, en
+    cuántos)] como `Repo.tag_counts` y {nombre: sin confirmar} como
+    `Repo.pending_tag_counts`. None si falta alguno (se le pregunta al NAS)."""
+    if not medios or any(m.etiquetas is None for m in medios):
+        return None
+    cuantos, pendientes = {}, {}
+    for m in medios:
+        for nombre, confirmada in m.etiquetas:
+            cuantos[nombre] = cuantos.get(nombre, 0) + 1
+            if not confirmada:
+                pendientes[nombre] = pendientes.get(nombre, 0) + 1
+    return sorted(cuantos.items(), key=lambda t: (-t[1], t[0])), pendientes
+
+
+def _cambiar_locales(medios: list, accion: str, name: str):
+    """Lo mismo que acaba de guardar el NAS, en las etiquetas ya cargadas, para
+    que la barra cambie sin esperar a la nueva búsqueda (que después lo confirma)."""
+    name = " ".join(name.strip().lower().split())          # Repo.normalize_tag
+    for m in medios:
+        if m.etiquetas is None:
+            continue
+        otras = [e for e in m.etiquetas if e[0] != name]
+        if accion == "apply_tag" or (accion == "confirm_tag" and len(otras) < len(m.etiquetas)):
+            otras.append((name, True))
+        m.etiquetas = sorted(otras, key=lambda e: (not e[1], e[0]))
 
 
 def _iguales(antes, ahora) -> bool:

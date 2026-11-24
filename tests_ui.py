@@ -1085,3 +1085,66 @@ def test_qcolor_entiende_los_colores_con_transparencia():
                 assert qcolor(valor).isValid(), nombre
     c = qcolor("rgba(150, 110, 240, 0.16)")
     assert (c.red(), c.green(), c.blue(), round(c.alphaF(), 2)) == (150, 110, 240, 0.16)
+
+
+# ------------------------------------------- etiquetas de la selección al instante
+def test_etiquetas_de_lo_cargado():
+    from convertir3x4.catalog.models import Media
+    from convertir3x4.ui.tabs.tab_buscar import _cambiar_locales, _etiquetas_de
+    a = Media(path="a", filename="a", kind="image", id=1,
+              etiquetas=[("retiro", True), ("bautismo", False)])
+    b = Media(path="b", filename="b", kind="image", id=2, etiquetas=[("retiro", True)])
+    assert _etiquetas_de([a, b]) == ([("retiro", 2), ("bautismo", 1)], {"bautismo": 1})
+    assert _etiquetas_de([a, Media(path="c", filename="c", kind="image")]) is None
+    _cambiar_locales([a, b], "apply_tag", "  Blessed  Land ")
+    assert _etiquetas_de([a, b])[0][0] == ("blessed land", 2)
+    _cambiar_locales([a], "confirm_tag", "bautismo")
+    assert _etiquetas_de([a])[1] == {}
+    _cambiar_locales([b], "confirm_tag", "bautismo")        # no la tenía: no se agrega
+    _cambiar_locales([a, b], "remove_tag", "retiro")
+    assert _etiquetas_de([a, b])[0] == [("blessed land", 2), ("bautismo", 1)]
+
+
+class TestEtiquetasAlInstante:
+    def test_la_barra_no_espera_al_nas(self, app, pg_cfg, tmp_path, monkeypatch):
+        from convertir3x4.catalog.db import conectar
+        from convertir3x4.catalog.models import Media
+        from convertir3x4.catalog.repo import Repo
+        from convertir3x4.ui.servicio_catalogo import ServicioCatalogo
+        from convertir3x4.ui.tabs import tab_buscar
+
+        monkeypatch.setattr(tab_buscar, "catalog_thumb_dir", lambda: str(tmp_path / "cache"))
+        with Repo(conectar(pg_cfg), str(tmp_path)) as r:
+            for nombre in ("retiro_1.jpg", "retiro_2.jpg"):
+                r.upsert_media(Media(path=str(tmp_path / nombre), filename=nombre, kind="image"))
+            r.apply_tag(r.get_media_by_path(str(tmp_path / "retiro_1.jpg")).id, "jóvenes")
+        srv = ServicioCatalogo(abrir=lambda: Repo(conectar(pg_cfg), str(tmp_path)))
+        t = tab_buscar.BuscarTab(srv=srv)
+        t.show()
+        t.txt_query.blockSignals(True)          # sin la búsqueda diferida de lo escrito
+        t.txt_query.setText("retiro")
+        t.txt_query.blockSignals(False)
+        t._do_search()
+        assert _esperar(app, lambda: t.grid.count() == 2)
+
+        def chips():
+            row = t.tag_bar._chips_row
+            return [row.itemAt(i).widget().text() for i in range(row.count())
+                    if row.itemAt(i).widget()]
+
+        def no_consultar(*a, **k):
+            raise AssertionError("tenía que salir de lo que ya trajo Buscar")
+        monkeypatch.setattr(Repo, "tag_counts", no_consultar)
+        t.grid.item(0).setSelected(True)
+        assert chips() == ["jóvenes ✕"]                    # sin esperar ningún pedido
+        t.grid.item(1).setSelected(True)
+        assert chips() == ["jóvenes (1/2) ✕"]
+        monkeypatch.setattr(tab_buscar, "confirmar", lambda *a, **k: False)   # hermanas: no
+        t.tag_bar.tagApplied.emit("blessedland")
+        assert _esperar(app, lambda: "blessedland ✕" in chips())
+        assert _esperar(app, lambda: all(("blessedland", True) in m.etiquetas
+                                         for m in t._results))     # la búsqueda lo confirma
+        assert chips() == ["blessedland ✕", "jóvenes (1/2) ✕"] and len(t._selected_ids()) == 2
+        t.close()
+        t.deleteLater()
+        srv.cerrar()
