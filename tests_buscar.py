@@ -65,7 +65,7 @@ class TestAnalizar:
                       'sin:etiquetas',
                       "10:30 nombre:DSC texto:vigilia notas:pastor fecha:09/2025",
                       "antes:2025 después:01/09/2024",
-                      'lugar:blessedland evento:"santa cena" tiene:gps -evento:retiro'):
+                      'lugar:blessedland evento:"santa cena" tiene:ubicación -evento:retiro'):
             assert armar(analizar(texto)) == texto
             assert armar(analizar(armar(analizar(texto)))) == texto
         assert armar(analizar("tag:placa tipo:fotos")) == "etiqueta:placa tipo:foto"
@@ -102,7 +102,9 @@ class TestSugerencias:
         assert self._s("tipo:")[1] == ["tipo:foto", "tipo:video"]
         assert self._s("sin:et")[1] == ["sin:etiquetas"]
         assert self._s("tiene:")[1] == ["tiene:texto", "tiene:notas", "tiene:etiquetas",
-                                        "tiene:lugar", "tiene:evento", "tiene:fecha", "tiene:gps"]
+                                        "tiene:lugar", "tiene:evento", "tiene:fecha",
+                                        "tiene:ubicación"]
+        assert self._s("sin:ubic")[1] == ["sin:ubicación"]
         s = consulta.sugerencias("lugar:bl", 8, self.E, ["blessedland"], ["campamento"])
         assert s[1] == ["lugar:blessedland"]
         assert consulta.sugerencias("evento:", 7, self.E, ["x"], ["campamento"])[1] == \
@@ -284,7 +286,8 @@ class TestBuscarConFiltros:
         assert _ids(nas, "tiene:notas") == [d["video"]]
         assert _ids(nas, "sin:etiquetas") == [d["sin"]]
         assert _ids(nas, "sin:fecha") == [d["sin"]]
-        assert _ids(nas, "tiene:gps") == [d["placa"]]                 # coordenadas del archivo
+        assert _ids(nas, "tiene:ubicación") == [d["placa"]]           # coordenadas del archivo
+        assert _ids(nas, "tiene:ubicacion") == _ids(nas, "tiene:gps") == [d["placa"]]
         assert _ids(nas, "tiene:lugar") == []                         # lugar escrito: ninguno
 
     def test_palabras_con_filtros(self, nas, datos):

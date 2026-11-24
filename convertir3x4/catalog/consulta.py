@@ -50,13 +50,13 @@ TIPOS = {"foto": "image", "fotos": "image", "imagen": "image", "imagenes": "imag
          "video": "video", "videos": "video"}
 NOMBRE_TIPO = {"image": "foto", "video": "video"}
 # tiene:… / sin:…
-# `lugar` es el lugar escrito (etiqueta de tipo lugar); `gps`, las coordenadas
-# que trae el archivo (pocas fotos de teléfono).
+# `lugar` es el lugar escrito (etiqueta de tipo lugar); `ubicación`, las
+# coordenadas que trae el archivo (pocas fotos de teléfono). `gps` también vale.
 TIENE = {"texto": "texto", "notas": "notas", "nota": "notas",
          "etiquetas": "etiquetas", "etiqueta": "etiquetas",
          "fecha": "fecha", "lugar": "lugar", "evento": "evento", "eventos": "evento",
-         "gps": "gps"}
-_VALORES_TIENE = ("texto", "notas", "etiquetas", "lugar", "evento", "fecha", "gps")
+         "ubicacion": "ubicacion", "gps": "ubicacion"}
+_VALORES_TIENE = ("texto", "notas", "etiquetas", "lugar", "evento", "fecha", "ubicación")
 FECHAS = ("desde", "hasta", "fecha", "antes", "después")
 
 _TOKEN = re.compile(r'''
@@ -147,7 +147,7 @@ def _agregar_filtro(c: Consulta, clave: str, valor: str, neg: bool) -> bool:
     elif clave in ("tiene", "sin"):
         if _simple(valor) not in TIENE:
             c.avisos.append(f"«{clave}:{valor}» no se entiende: use {clave}:texto, notas, "
-                            "etiquetas, lugar, evento, fecha o gps.")
+                            "etiquetas, lugar, evento, fecha o ubicación.")
             return False
     elif clave in FECHAS:
         periodo = periodo_de(valor)
@@ -261,7 +261,7 @@ def sugerencias(texto: str, cursor: int, etiquetas: list[str], lugares=(),
     elif canon == "tipo":
         valores = [t for t in ("foto", "video") if t.startswith(v)]
     elif canon in ("tiene", "sin"):
-        valores = [t for t in _VALORES_TIENE if t.startswith(v)]
+        valores = [t for t in _VALORES_TIENE if _simple(t).startswith(v)]
     else:
         return inicio, []
     opciones = [f"{neg}{clave}:{x}" for x in valores[:_MAX_SUGERENCIAS]]

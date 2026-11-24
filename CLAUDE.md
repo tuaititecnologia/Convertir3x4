@@ -205,8 +205,8 @@ item (poner_lugar replaces), any number of eventos. A name has ONE kind: apply_t
 and poner_* refuse others (NombreEnUso, message for the operator); suggest_tag never attaches them. Only
 'descriptivo' tags convert (cambiar_tipo, right-click on a chip; refuses persona/ia-sugerido and double lugar;
 pg_notify by hand since `tag` has no UPDATE trigger). Media.lugar/eventos come split out of `etiquetas` in
-_row_to_media; tag_counts/pending exclude them. Search: lugar:/evento:, tiene:lugar = place tag, tiene:gps =
-coordinates.
+_row_to_media; tag_counts/pending exclude them. Search: lugar:/evento:, tiene:lugar = place tag, tiene:ubicación
+(or gps) = coordinates.
 
 **AI tags (Fase 5, present):** everything the AI proposes is `media_tag.source='ia', confirmed=0`
 (purple chips in Buscar: ✓ confirms, ✕ removes). `suggest_tag()` never overrides an existing tag and

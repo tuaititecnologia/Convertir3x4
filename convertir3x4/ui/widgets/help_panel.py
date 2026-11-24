@@ -38,7 +38,7 @@ HELP = [
                               "carpeta:Reuniones, desde:01/09/2025, hasta:09/2025 (las dos "
                               "incluyen esa fecha), antes:2025, después:09/2025 (sin "
                               "incluirla), "
-                              "tiene:notas, sin:etiquetas, sin:lugar, tiene:gps (coordenadas "
+                              "tiene:notas, sin:etiquetas, sin:lugar, tiene:ubicación (coordenadas "
                               "del archivo). Con un guion adelante se "
                               "excluye: -etiqueta:retiro. Para varias palabras, use "
                               "comillas: etiqueta:\"santa cena\". Desde la tercera letra, se "

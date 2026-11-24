@@ -1307,7 +1307,7 @@ def _filtro_sql(f: "consulta.Filtro") -> tuple[str | None, list]:
                         "WHERE mt.media_id = m.id AND t.kind = 'lugar')",
                "evento": "EXISTS (SELECT 1 FROM media_tag mt JOIN tag t ON t.id = mt.tag_id "
                          "WHERE mt.media_id = m.id AND t.kind = 'evento')",
-               "gps": "m.lat IS NOT NULL"}[que]
+               "ubicacion": "m.lat IS NOT NULL"}[que]
         return (sql if f.clave == "tiene" else f"NOT ({sql})"), []
     return None, []
 
