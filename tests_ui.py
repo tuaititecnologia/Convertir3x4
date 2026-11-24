@@ -349,14 +349,22 @@ class TestAvailability:
         real = tmp_path / "esta.jpg"
         real.write_bytes(b"x")
         tab = BuscarTab(srv=sin_catalogo)
-        tab._populate([Media(path=str(real), filename="esta.jpg", kind="image", id=1),
-                       Media(path="/Volumes/NO_EXISTE/a.jpg", filename="a.jpg", kind="image", id=2)])
+        tab._results = [Media(path=str(real), filename="esta.jpg", kind="image", id=1),
+                        Media(path="/Volumes/NO_EXISTE/a.jpg", filename="a.jpg", kind="image",
+                              id=2)]
+        tab._populate(tab._results)
         states = [tab.grid.item(i).data(STATE_ROLE) for i in range(2)]
         assert states == [None, "offline"]   # el volumen entero no está: lo explica el aviso
         assert tab.offline_box.isVisibleTo(tab)
         assert "el disco «NO_EXISTE»" in tab.lbl_offline.text()
         assert "/Volumes" not in tab.lbl_offline.text()   # sin rutas del sistema
-        assert "No se encuentra el original" in tab.grid.item(1).toolTip()
+        assert not tab.grid.item(1).toolTip()               # los detalles van con la I
+        tab.grid.setCurrentItem(tab.grid.item(1))
+        tab.grid.detalles.emit()
+        assert "No se encuentra el original" in tab._detalle.aviso.text()
+        assert tab._detalle.lbl_ruta.text() == "/Volumes/NO_EXISTE/a.jpg"
+        assert not tab._detalle.btn_abrir.isEnabled()
+        tab._detalle.close()
         tab.deleteLater()
 
 
@@ -1148,3 +1156,95 @@ class TestEtiquetasAlInstante:
         t.close()
         t.deleteLater()
         srv.cerrar()
+
+
+# ------------------------------------------------- detalles con la tecla I (24/11)
+class TestDetalles:
+    def _tab(self, sin_catalogo, tmp_path):
+        import datetime as dt
+        from convertir3x4.catalog.models import Media
+        from convertir3x4.ui.tabs.tab_buscar import BuscarTab
+        for n in ("cartel.jpg", "culto.mp4"):
+            (tmp_path / n).write_bytes(b"x")
+        fotos = [
+            Media(path=str(tmp_path / "cartel.jpg"), filename="cartel.jpg", kind="image", id=1,
+                  folder_origin="Historial/Reuniones", width=4000, height=3000,
+                  size_bytes=5 * 1024 * 1024, quality_flag="low_res",
+                  tomada=dt.datetime(2025, 9, 21, 11, 30, tzinfo=dt.timezone.utc),
+                  lat=-34.6, lon=-58.4, texto="REUNIONES DE FE\nBIENVENIDO",
+                  etiquetas=[("retiro", True), ("bautismo", False)]),
+            Media(path=str(tmp_path / "culto.mp4"), filename="culto.mp4", kind="video", id=2,
+                  duration=3725, etiquetas=[]),
+        ]
+        tab = BuscarTab(srv=sin_catalogo)
+        tab._results = fotos
+        tab._populate(fotos)
+        tab.show()
+        return tab
+
+    def test_la_i_abre_sigue_y_cierra(self, app, sin_catalogo, tmp_path):
+        from PyQt6.QtCore import Qt
+        from PyQt6.QtTest import QTest
+        tab = self._tab(sin_catalogo, tmp_path)
+        g = tab.grid
+        g.setFocus()
+        g.setCurrentItem(g.item(0))
+        QTest.keyClick(g, Qt.Key.Key_I)
+        d = tab._detalle
+        assert d.isVisible() and d.lbl_nombre.text() == "cartel.jpg"
+        assert g.currentItem() is g.item(0)                  # la I no movió la selección
+        datos = {d._datos.itemAtPosition(i, 0).widget().text():
+                 d._datos.itemAtPosition(i, 1).widget().text()
+                 for i in range(d._datos.rowCount()) if d._datos.itemAtPosition(i, 0)}
+        assert datos["Tipo"] == "Foto" and datos["Medidas"] == "4000 × 3000 px"
+        assert datos["Tamaño del archivo"] == "5,0 MB" and "Baja resolución" in datos["Calidad"]
+        assert "Fecha de la toma" in datos and d.btn_mapa.isVisibleTo(d)
+        assert d.txt_texto.toPlainText() == "REUNIONES DE FE\nBIENVENIDO"
+        assert d.sec_texto.isVisibleTo(d) and not d.aviso.isVisibleTo(d)
+        # Las flechas recorren y la ventana sigue al actual
+        QTest.keyClick(g, Qt.Key.Key_Right)
+        assert d.lbl_nombre.text() == "culto.mp4"
+        assert not d.sec_texto.isVisibleTo(d) and not d.btn_mapa.isVisibleTo(d)
+        datos = {d._datos.itemAtPosition(i, 0).widget().text():
+                 d._datos.itemAtPosition(i, 1).widget().text()
+                 for i in range(d._datos.rowCount()) if d._datos.itemAtPosition(i, 0)}
+        assert datos["Tipo"] == "Video" and datos["Duración"] == "1:02:05"
+        QTest.keyClick(d, Qt.Key.Key_Left)                   # también desde la ventana
+        assert d.lbl_nombre.text() == "cartel.jpg"
+        QTest.keyClick(g, Qt.Key.Key_I)
+        assert not d.isVisible()
+        QTest.keyClick(g, Qt.Key.Key_I)
+        assert d.isVisible()
+        QTest.keyClick(d, Qt.Key.Key_Escape)
+        assert not d.isVisible()
+        tab.close()
+        tab.deleteLater()
+
+    def test_escribir_i_en_la_busqueda_no_abre_nada(self, app, sin_catalogo, tmp_path):
+        from PyQt6.QtCore import Qt
+        from PyQt6.QtTest import QTest
+        tab = self._tab(sin_catalogo, tmp_path)
+        tab.grid.setCurrentItem(tab.grid.item(1))
+        tab.txt_query.setFocus()
+        QTest.keyClicks(tab.txt_query, "iglesia")
+        assert tab.txt_query.text() == "iglesia" and tab._detalle is None
+        assert tab.grid.currentItem() is tab.grid.item(1)
+        tab.close()
+        tab.deleteLater()
+
+
+def test_datos_del_detalle():
+    from convertir3x4.ui.widgets import detalle_medio as dm
+    assert dm.tamano_archivo(512) == "1 KB" and dm.tamano_archivo(3 * 1024 ** 3) == "3,0 GB"
+    assert dm.duracion(65) == "1:05" and dm.duracion(None) == ""
+    assert "mlat=-34.600000" in dm.mapa(-34.6, -58.4)
+
+
+def test_detalle_lee_el_original(tmp_path):
+    from PIL import Image
+    from convertir3x4.ui.widgets.detalle_medio import leer_original
+    p = tmp_path / "grande.jpg"
+    Image.new("RGB", (3000, 2000), "red").save(p)
+    img = leer_original(str(p))
+    assert img is not None and max(img.width(), img.height()) <= 1200
+    assert leer_original(str(tmp_path / "no_esta.jpg")) is None

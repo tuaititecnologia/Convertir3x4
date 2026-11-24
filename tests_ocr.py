@@ -26,6 +26,13 @@ real = pytest.mark.skipif(
     reason="CDLM_MODELS no tiene los modelos del OCR")
 
 
+@pytest.fixture(scope="module")
+def app():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PyQt6.QtWidgets import QApplication
+    return QApplication.instance() or QApplication([])
+
+
 @pytest.fixture
 def raiz():
     with tempfile.TemporaryDirectory() as d:
@@ -170,13 +177,16 @@ def test_el_catalogador_pide_el_texto(monkeypatch, pg_cfg):
 
 # ---------------------------------------------------------------- la interfaz
 
-def test_texto_en_el_detalle_de_buscar():
-    from convertir3x4.ui.tabs.tab_buscar import _texto_de_la_foto
-    assert _texto_de_la_foto("VIGILIA\nViernes 22 hs") == "Texto en la foto:\nVIGILIA\nViernes 22 hs"
-    largo = _texto_de_la_foto("x" * 200 + "\n" + "\n".join(str(i) * 3 for i in range(12)))
-    lineas = largo.splitlines()
-    assert lineas[1].endswith("…") and len(lineas[1]) == 70
-    assert lineas[-1] == "…" and len(lineas) == 1 + 8 + 1
+def test_texto_en_el_detalle_de_buscar(app):
+    from convertir3x4.ui.widgets.detalle_medio import DetalleMedio
+    d = DetalleMedio()
+    d.mostrar(Media(path="/x/a.jpg", filename="a.jpg", kind="image", id=1,
+                    texto="VIGILIA\nViernes 22 hs"))
+    assert d.txt_texto.toPlainText() == "VIGILIA\nViernes 22 hs"   # entero, se puede copiar
+    assert d.sec_texto.isVisibleTo(d)
+    d.mostrar(Media(path="/x/b.jpg", filename="b.jpg", kind="image", id=2))
+    assert not d.sec_texto.isVisibleTo(d)
+    d.deleteLater()
 
 
 def test_paso_en_catalogar_por_partes():

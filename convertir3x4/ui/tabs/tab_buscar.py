@@ -56,9 +56,6 @@ def _existe(raiz: str) -> bool:
     return os.path.exists(raiz)
 
 
-_QUALITY = {"low_res": "Baja resolución: puede verse borrosa en la pantalla.",
-            "corrupt": "El archivo parece dañado.",
-            "en_negro": "La imagen está en negro: no muestra nada."}
 
 
 class SearchLineEdit(QLineEdit):
@@ -229,6 +226,9 @@ class BuscarTab(QWidget):
         self.grid.setAccessibleName("Resultados")
         self.grid.itemSelectionChanged.connect(self._on_selection_changed)
         self.grid.itemDoubleClicked.connect(self._open_item)
+        self.grid.detalles.connect(self._alternar_detalle)
+        self.grid.currentItemChanged.connect(lambda *_: self._seguir_detalle())
+        self._detalle = None
         self.grid.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.grid.customContextMenuRequested.connect(self._menu_grilla)
         layout.addWidget(self.grid, 1)
@@ -568,20 +568,7 @@ class BuscarTab(QWidget):
             item.setIcon(icon)
         elif disponible and m.id in (bajando or ()):
             item.setData(STATE_ROLE, "loading")     # se está bajando de la base
-        tip = m.folder_origin or ""
-        if m.tomada:
-            tip += "\n" + _fecha_de_toma(m.tomada)
-        if m.width and m.height:
-            tip += f"\n{m.width}×{m.height}"
-        if m.quality_flag and m.quality_flag != "ok":
-            tip += "\n" + _QUALITY.get(m.quality_flag, "")
-        if m.texto:
-            tip += "\n\n" + _texto_de_la_foto(m.texto)
-        if not disponible:
-            tip = (f"No se encuentra el original:\n{m.path}\n"
-                   "Verifique que el NAS o el disco estén conectados. Mientras tanto, no "
-                   "puede usarse en ProPresenter.")
-        item.setToolTip(tip.strip())
+        # Sin cartel al pasar el puntero: los detalles se ven con la tecla I.
         return item
 
     def _populate(self, results, minis: dict | None = None, present: dict | None = None,
@@ -642,7 +629,7 @@ class BuscarTab(QWidget):
         else:
             verbo = "ya no está" if n == 1 else "ya no están"
             text = (f"{cuantos} {verbo} en su carpeta: pueden haberse movido o borrado. "
-                    "Pase el puntero sobre cada elemento para ver su ubicación anterior.")
+                    "Elija uno y presione I para ver su ubicación anterior.")
         self.lbl_offline.setText(text)
         self.offline_box.setVisible(True)
 
@@ -750,9 +737,65 @@ class BuscarTab(QWidget):
             return
         super().keyPressEvent(event)
 
+    # ------------------------------------------------------------- detalles (I)
+    def _item_para_detalle(self):
+        """El actual de la grilla si está elegido; si no, el primero elegido."""
+        actual = self.grid.currentItem()
+        if actual is not None and actual.isSelected():
+            return actual
+        elegidos = self.grid.selectedItems()
+        return elegidos[0] if elegidos else actual
+
+    def _alternar_detalle(self):
+        if self._detalle is not None and self._detalle.isVisible():
+            self._detalle.close()
+            return
+        item = self._item_para_detalle()
+        if item is None:
+            return
+        if self._detalle is None:
+            from ..widgets.detalle_medio import DetalleMedio
+            self._detalle = DetalleMedio(self.window(), grid=self.grid)
+            self._detalle.cerrada.connect(lambda: self.grid.setFocus())
+        self._mostrar_detalle(item)
+        if not self._detalle.isVisible():
+            self._ubicar_detalle()
+            self._detalle.show()
+
+    def _ubicar_detalle(self):
+        """Al lado de la ventana principal si entra en la pantalla; si no, adentro."""
+        ventana = self.window().frameGeometry()
+        pantalla = self.window().screen().availableGeometry()
+        d = self._detalle
+        d.adjustSize()
+        alto = min(max(d.sizeHint().height(), 560), pantalla.height() - 40)
+        d.resize(d.width(), alto)
+        x = ventana.right() + 8
+        if x + d.width() > pantalla.right():
+            x = ventana.right() - d.width() - 24
+        y = max(pantalla.top() + 20, min(ventana.top() + 60, pantalla.bottom() - alto - 20))
+        d.move(x, y)
+
+    def _mostrar_detalle(self, item):
+        from ..widgets.detalle_medio import estado_de_item
+        m = {r.id: r for r in getattr(self, "_results", [])}.get(item.data(MEDIA_ID_ROLE))
+        if m is not None:
+            self._detalle.mostrar(m, (getattr(self, "_minis", None) or {}).get(m.id),
+                                  estado_de_item(item))
+
+    def _seguir_detalle(self):
+        """La ventana de detalles sigue al elemento actual (flechas, clic) y se
+        pone al día cuando cambia algo (una etiqueta, el aviso del NAS)."""
+        if self._detalle is None or not self._detalle.isVisible() or self._restaurando:
+            return
+        item = self._item_para_detalle()
+        if item is not None:
+            self._mostrar_detalle(item)
+
     def _on_selection_changed(self):
         if self._restaurando:
             return                      # se está rearmando la grilla: se avisa al final
+        self._seguir_detalle()
         self._actualizar_seleccion()
         ids = self._selected_ids()
         self.tag_bar.set_enabled(bool(ids) and self._srv.estado == "ok")
@@ -879,20 +922,6 @@ def _preparar(repo, cache, results) -> tuple:
     presentes = availability(paths)
     raices = {r: os.path.exists(r) for r in {storage_root(p) for p in paths}}
     return results, minis, faltan, presentes, raices
-
-
-def _fecha_de_toma(f) -> str:
-    """«Tomada el 14/07/2019 a las 10:31», en la hora de esta PC."""
-    local = f.astimezone() if f.tzinfo else f
-    return f"Tomada el {local:%d/%m/%Y} a las {local:%H:%M}"
-
-
-def _texto_de_la_foto(texto: str, renglones: int = 8, largo: int = 70) -> str:
-    """El texto que leyó el NAS en la foto, para el detalle (cartel de ayuda)."""
-    lineas = [ln if len(ln) <= largo else ln[:largo - 1] + "…" for ln in texto.splitlines()]
-    if len(lineas) > renglones:
-        lineas = lineas[:renglones] + ["…"]
-    return "Texto en la foto:\n" + "\n".join(lineas)
 
 
 def _miles(n: int) -> str:

@@ -22,11 +22,14 @@ HELP = [
     ("Buscar", [
         ("Buscar", "Escriba parte del nombre, de la carpeta o una etiqueta. Con «Fotos» o "
                    "«Videos» se muestra solo ese tipo. El orden puede ser por fecha de la "
-                   "toma (si la foto o el video la tiene); la fecha aparece al dejar el "
-                   "puntero sobre cada uno."),
+                   "toma (si la foto o el video la tiene)."),
+        ("Detalles", "Elija una foto o un video y presione I: se abre una ventana con la "
+                     "fecha de la toma, las medidas, las etiquetas, el texto que aparece en "
+                     "la foto y dónde está guardado el archivo. Con las flechas pasa al "
+                     "siguiente; I o Esc la cierran."),
         ("Texto en las fotos", "También se encuentran las fotos por el texto que aparece "
                                "en ellas (carteles, flyers, pantallas). Ese texto se ve "
-                               "al dejar el puntero sobre la foto."),
+                               "en los detalles (tecla I)."),
         ("Vista previa de videos", "Deje el puntero sobre un video para ver cuadros de "
                                    "todo el video, sin abrirlo."),
         ("Usar en ProPresenter", "Arrastre la foto o el video directamente a ProPresenter. "

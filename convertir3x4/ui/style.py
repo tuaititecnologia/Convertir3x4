@@ -546,6 +546,33 @@ QPushButton#tag_chip_ia_x {{
 }}
 QPushButton#tag_chip_ia_x:hover {{ color: {T.danger}; }}
 
+/* ---------- detalles de un elemento de Buscar (tecla I) ---------- */
+QDialog#detalle_medio, QWidget#detalle_cuerpo {{ background-color: {T.panel}; }}
+QLabel#detalle_imagen {{
+    background-color: {T.bg}; border: 1px solid {T.border}; border-radius: {T.radius}px;
+    color: {T.text_3};
+}}
+QLabel#detalle_nombre {{ color: {T.text}; font-size: 16px; font-weight: 600; }}
+QLabel#detalle_valor {{ color: {T.text}; }}
+QLabel#detalle_aviso_texto {{ color: {T.warn}; }}
+QLabel#detalle_aviso {{
+    background-color: {T.warn_soft}; border: 1px solid {T.warn_line}; color: {T.warn};
+    border-radius: {T.radius_sm}px; padding: 10px 12px;
+}}
+QLabel#detalle_chip {{
+    background-color: {T.accent_soft}; border: 1px solid {T.accent_line}; color: {T.text};
+    border-radius: 12px; padding: 3px 10px;
+}}
+QLabel#detalle_chip_ia {{
+    background-color: {T.ia_soft}; border: 1px dashed {T.ia}; color: {T.ia};
+    border-radius: 12px; padding: 3px 10px;
+}}
+QPlainTextEdit#detalle_texto {{
+    background-color: {T.raised}; border: 1px solid {T.border}; border-radius: {T.radius_sm}px;
+    color: {T.text}; padding: 6px;
+}}
+QFrame#detalle_pie {{ background-color: {T.panel}; border: none; border-top: 1px solid {T.border}; }}
+
 /* ---------- pestañas (quedan donde todavía se usen) ---------- */
 QTabWidget::pane {{ border: none; }}
 QTabBar::tab {{
