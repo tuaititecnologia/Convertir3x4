@@ -1217,6 +1217,11 @@ class TestDetalles:
         assert d.isVisible()
         QTest.keyClick(d, Qt.Key.Key_Escape)
         assert not d.isVisible()
+        # Si el operador volvió a hacer clic en la grilla, Esc también la cierra
+        QTest.keyClick(g, Qt.Key.Key_I)
+        assert d.isVisible()
+        QTest.keyClick(g, Qt.Key.Key_Escape)
+        assert not d.isVisible()
         tab.close()
         tab.deleteLater()
 

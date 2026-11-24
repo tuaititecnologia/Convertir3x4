@@ -227,6 +227,7 @@ class BuscarTab(QWidget):
         self.grid.itemSelectionChanged.connect(self._on_selection_changed)
         self.grid.itemDoubleClicked.connect(self._open_item)
         self.grid.detalles.connect(self._alternar_detalle)
+        self.grid.escape.connect(self._cerrar_detalle)
         self.grid.currentItemChanged.connect(lambda *_: self._seguir_detalle())
         self._detalle = None
         self.grid.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -756,11 +757,19 @@ class BuscarTab(QWidget):
         if self._detalle is None:
             from ..widgets.detalle_medio import DetalleMedio
             self._detalle = DetalleMedio(self.window(), grid=self.grid)
-            self._detalle.cerrada.connect(lambda: self.grid.setFocus())
+            self._detalle.cerrada.connect(self._volver_a_la_grilla)
         self._mostrar_detalle(item)
         if not self._detalle.isVisible():
             self._ubicar_detalle()
-            self._detalle.show()
+        self._detalle.mostrar_con_foco()
+
+    def _cerrar_detalle(self):
+        if self._detalle is not None and self._detalle.isVisible():
+            self._detalle.close()
+
+    def _volver_a_la_grilla(self):
+        self.window().activateWindow()
+        self.grid.setFocus()
 
     def _ubicar_detalle(self):
         """Al lado de la ventana principal si entra en la pantalla; si no, adentro."""

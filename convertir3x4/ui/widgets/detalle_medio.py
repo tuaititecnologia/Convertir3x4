@@ -116,8 +116,6 @@ class DetalleMedio(QDialog):
         self.setModal(False)
         self.setFixedWidth(ANCHO)
         self.setMinimumHeight(360)
-        # La grilla sigue con el teclado: las flechas recorren y la ventana sigue.
-        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self._grid = grid
         self.media = None
         self._ruta_original: str | None = None
@@ -350,10 +348,18 @@ class DetalleMedio(QDialog):
             return
         if self._grid is not None and k in (Qt.Key.Key_Left, Qt.Key.Key_Right,
                                             Qt.Key.Key_Up, Qt.Key.Key_Down,
-                                            Qt.Key.Key_Home, Qt.Key.Key_End):
+                                            Qt.Key.Key_Home, Qt.Key.Key_End,
+                                            Qt.Key.Key_PageUp, Qt.Key.Key_PageDown):
             QApplication.sendEvent(self._grid, event)      # recorrer desde acá también
             return
         super().keyPressEvent(event)
+
+    def mostrar_con_foco(self):
+        """Se abre con el foco (así anda Esc); las flechas siguen recorriendo la grilla."""
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        self.setFocus()
 
     def closeEvent(self, event):
         self._espera.stop()
