@@ -125,7 +125,7 @@ class FormularioBusqueda(QFrame):
         lay.addLayout(g)
 
         self.lbl_aviso = QLabel("")
-        self.lbl_aviso.setObjectName("detalle_aviso_texto")
+        self.lbl_aviso.setObjectName("aviso_error")
         self.lbl_aviso.setWordWrap(True)
         self.lbl_aviso.setVisible(False)
         lay.addWidget(self.lbl_aviso)
@@ -180,8 +180,17 @@ class FormularioBusqueda(QFrame):
                 casillas.add((f.clave, consulta.TIENE[consulta._simple(f.valor)]))
             else:
                 resto.append(f)
+        # Una fecha mal escrita va a su cuadro, en rojo, para corregirla ahí
+        invalidos = []
+        for bruto in c.invalidos:
+            clave, _, valor = bruto.partition(":")
+            clave = consulta.CLAVES.get(consulta._simple(clave))
+            if clave in ("desde", "hasta") and clave not in simples:
+                simples[clave] = consulta.terminos(valor)
+            else:
+                invalidos.append(bruto)
         palabras = armar(Consulta(c.palabras, c.excluidas, resto))
-        self.txt_palabras.setText(" ".join(p for p in [palabras] + c.invalidos if p))
+        self.txt_palabras.setText(" ".join(p for p in [palabras] + invalidos if p))
         self.txt_etiquetas.setText(", ".join(con))
         self.txt_sin_etiquetas.setText(", ".join(sin))
         self.cmb_tipo.setCurrentIndex(max(0, self.cmb_tipo.findData(tipo)))
@@ -217,8 +226,15 @@ class FormularioBusqueda(QFrame):
         return " ".join(p for p in [armado] + base.invalidos if p)
 
     def _revisar(self, *_):
-        malas = [e.text().strip() for e in (self.txt_desde, self.txt_hasta)
-                 if e.text().strip() and periodo_de(e.text()) is None]
+        malas = []
+        for e in (self.txt_desde, self.txt_hasta):
+            mala = bool(e.text().strip()) and periodo_de(e.text()) is None
+            if mala:
+                malas.append(e.text().strip())
+            if bool(e.property("error")) != mala:
+                e.setProperty("error", mala)
+                e.style().unpolish(e)
+                e.style().polish(e)
         if malas:
             self.lbl_aviso.setText(f"La fecha «{malas[0]}» no se entiende: escríbala como "
                                    "21/09/2025, 09/2025 o 2025.")

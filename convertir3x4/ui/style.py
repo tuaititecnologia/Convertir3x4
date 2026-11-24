@@ -432,6 +432,13 @@ QLineEdit:focus {{ border: 2px solid {T.accent_text}; padding: 6px 9px; }}
 QLineEdit:disabled {{ background-color: {T.panel}; color: {T.text_disabled}; border-color: {T.border_strong}; }}
 QLineEdit#search_field {{ padding-left: 4px; font-size: 14px; }}
 QLineEdit#search_field:focus {{ padding-left: 3px; }}
+/* lo escrito no se entiende (p. ej. una fecha mal escrita): no se busca */
+QLineEdit[error="true"], QLineEdit[error="true"]:hover {{
+    border: 2px solid {T.danger}; padding: 6px 9px;
+}}
+QLineEdit[error="true"]:focus {{ border-color: {T.danger}; }}
+QLineEdit#search_field[error="true"] {{ padding-left: 3px; }}
+QLabel#aviso_error {{ color: {T.danger}; }}
 
 QComboBox {{
     background-color: {T.raised}; color: {T.text}; border: 1px solid {T.field_border};
@@ -441,10 +448,12 @@ QComboBox:hover {{ border-color: {T.text_3}; }}
 QComboBox:focus {{ border-color: {T.accent_text}; }}
 QComboBox::drop-down {{ border: none; width: 24px; }}
 QComboBox::down-arrow {{ {f"image: url({flecha});" if flecha else ""} width: 14px; height: 14px; }}
-QComboBox QAbstractItemView {{
+QComboBox QAbstractItemView, QListView#sugerencias {{
     background-color: {T.raised}; color: {T.text}; border: 1px solid {T.border_strong};
     selection-background-color: {T.accent_soft}; selection-color: {T.text}; outline: none;
 }}
+QListView#sugerencias {{ padding: 4px; font-size: 13px; }}
+QListView#sugerencias::item {{ padding: 5px 8px; border-radius: 4px; }}
 
 QCheckBox {{ color: {T.text_2}; spacing: 8px; background: transparent; }}
 QCheckBox::indicator {{

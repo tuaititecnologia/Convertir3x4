@@ -29,10 +29,9 @@ import unicodedata
 from dataclasses import dataclass, field
 
 # Clave escrita -> clave que se usa. `tag` porque es como lo escribe cualquiera
-# que conoce Gmail; `persona` porque las personas reconocidas son etiquetas.
+# que conoce Gmail.
 CLAVES = {
     "etiqueta": "etiqueta", "etiquetas": "etiqueta", "tag": "etiqueta",
-    "persona": "etiqueta",
     "tipo": "tipo",
     "carpeta": "carpeta",
     "nombre": "nombre", "archivo": "nombre",
@@ -204,3 +203,56 @@ def sin_tipo(texto: str) -> str:
 def terminos(palabra: str) -> str:
     """Una palabra o «frase» de la consulta, sin las comillas."""
     return _sin_comillas(palabra)
+
+
+# ---------------------------------------------------------------- sugerencias
+# Las claves que se sugieren al escribir (las otras formas, como tag:, se
+# entienden igual pero no se ofrecen).
+SUGERIR = ("etiqueta", "tipo", "carpeta", "nombre", "texto", "notas",
+           "desde", "hasta", "fecha", "tiene", "sin")
+_MAX_SUGERENCIAS = 12
+
+
+def sugerencias(texto: str, cursor: int, etiquetas: list[str]) -> tuple[int, list[str]]:
+    """Qué ofrecer mientras se escribe la palabra que termina en `cursor`.
+
+    Devuelve (desde dónde se reemplaza, opciones); cada opción reemplaza
+    `texto[desde:cursor]`. Sin opciones: ([], no se muestra nada).
+      «ca»            → carpeta:
+      «etiqueta:pl»   → etiqueta:placa, etiqueta:"placa grande"…
+      «tipo:»         → tipo:foto, tipo:video
+    """
+    inicio = cursor
+    while inicio > 0 and not texto[inicio - 1].isspace():
+        inicio -= 1
+    if cursor < len(texto) and not texto[cursor].isspace():
+        return inicio, []                     # en el medio de una palabra: nada
+    escrito = texto[inicio:cursor]
+    if '"' in escrito.split(":", 1)[0]:
+        return inicio, []
+    neg = "-" if escrito.startswith("-") else ""
+    escrito = escrito[len(neg):]
+    if ":" not in escrito:
+        p = _simple(escrito)
+        if len(p) < 2:
+            return inicio, []
+        return inicio, [f"{neg}{k}:" for k in SUGERIR if k.startswith(p) and k != p] + \
+            [f"{neg}{k}:" for k in SUGERIR if k == p]
+    clave, valor = escrito.split(":", 1)
+    canon = CLAVES.get(_simple(clave))
+    v = _simple(valor.lstrip('"'))
+    if canon == "etiqueta":
+        empiezan = [e for e in etiquetas if _simple(e).startswith(v)]
+        contienen = [e for e in etiquetas if v in _simple(e) and e not in empiezan]
+        valores = [_valor(e) for e in empiezan + contienen]
+    elif canon == "tipo":
+        valores = [t for t in ("foto", "video") if t.startswith(v)]
+    elif canon in ("tiene", "sin"):
+        valores = [t for t in ("texto", "notas", "etiquetas", "fecha", "lugar")
+                   if t.startswith(v)]
+    else:
+        return inicio, []
+    opciones = [f"{neg}{clave}:{x}" for x in valores[:_MAX_SUGERENCIAS]]
+    if opciones == [neg + escrito]:
+        return inicio, []                     # ya está escrito entero
+    return inicio, opciones

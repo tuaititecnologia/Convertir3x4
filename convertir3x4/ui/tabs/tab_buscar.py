@@ -12,10 +12,12 @@ import re
 import socket
 import threading
 
-from PyQt6.QtCore import Qt, QElapsedTimer, QPoint, QSettings, QSize, QTimer, pyqtSignal
+from PyQt6.QtCore import (
+    QElapsedTimer, QPoint, QSettings, QSize, QStringListModel, Qt, QTimer, pyqtSignal,
+)
 from PyQt6.QtGui import QIcon, QPixmap
 from PyQt6.QtWidgets import (
-    QAbstractItemView, QApplication, QComboBox, QProgressBar, QSizePolicy, QSplitter,
+    QAbstractItemView, QApplication, QComboBox, QCompleter, QProgressBar, QSizePolicy, QSplitter,
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QListWidgetItem, QFrame, QPushButton, QButtonGroup, QMessageBox,
 )
@@ -153,6 +155,17 @@ class BuscarTab(QWidget):
         row.addWidget(self.txt_query, 1)
         self.formulario = FormularioBusqueda(self)
         self.formulario.buscar.connect(self.txt_query.setText)
+        # Mientras se escribe se sugieren los filtros y las etiquetas (como Gmail)
+        self._etiquetas_conocidas: list[str] = []
+        self._sugerencias = QStringListModel(self)
+        self.completar = QCompleter(self._sugerencias, self)
+        self.completar.setWidget(self.txt_query)
+        self.completar.setCompletionMode(QCompleter.CompletionMode.UnfilteredPopupCompletion)
+        self.completar.setMaxVisibleItems(12)
+        self.completar.popup().setObjectName("sugerencias")
+        self.completar.activated[str].connect(self._usar_sugerencia)
+        self._desde_sugerencia = 0
+        self.txt_query.textEdited.connect(self._sugerir)
 
         seg = QFrame()
         seg.setObjectName("segmented")
@@ -218,7 +231,7 @@ class BuscarTab(QWidget):
 
         # Lo escrito que no se entiende (una fecha mal escrita…): se dice por qué
         self.lbl_aviso_busqueda = QLabel("")
-        self.lbl_aviso_busqueda.setObjectName("detalle_aviso_texto")
+        self.lbl_aviso_busqueda.setObjectName("aviso_error")
         self.lbl_aviso_busqueda.setWordWrap(True)
         self.lbl_aviso_busqueda.setVisible(False)
         layout.addWidget(self.lbl_aviso_busqueda)
@@ -461,6 +474,10 @@ class BuscarTab(QWidget):
             g.verticalScrollBar().setValue(vista["scroll"])
 
     def _do_search(self, conservar: bool = False):
+        if self._marcar_error(analizar(self.txt_query.text()).avisos):
+            # Una fecha mal escrita no busca: la grilla queda como estaba
+            self._fin_carga()
+            return
         self._busqueda += 1
         n = self._busqueda
         query, pend, kind = self.txt_query.text(), self.chk_pending.isChecked(), self._kind()
@@ -493,16 +510,54 @@ class BuscarTab(QWidget):
         self.formulario.abrir_debajo_de(self.txt_query, self.txt_query.text())
 
     def _revisar_consulta(self, *_):
-        """Con cada letra: el aviso de lo que no se entiende y los botones
-        Todo / Fotos / Videos, que siguen al «tipo:» escrito."""
+        """Con cada letra: los botones Todo / Fotos / Videos siguen al «tipo:»
+        escrito, y si ya se corrigió lo que no se entendía, se saca el rojo. El
+        rojo se pone recién al buscar (no mientras se escribe la fecha)."""
         c = analizar(self.txt_query.text())
-        self.lbl_aviso_busqueda.setText(" ".join(c.avisos))
-        self.lbl_aviso_busqueda.setVisible(bool(c.avisos))
+        if not c.avisos:
+            self._marcar_error([])
         tipo = c.tipo
         if tipo is not None and tipo != self._kind():
             for b in self._kind_group.buttons():
                 if b.property("kind") == tipo:
                     b.setChecked(True)
+
+    def _sugerir(self, *_):
+        """Lo que se ofrece para la palabra que se está escribiendo."""
+        cursor = self.txt_query.cursorPosition()
+        desde, opciones = consulta.sugerencias(self.txt_query.text(), cursor,
+                                               self._etiquetas_conocidas)
+        if not opciones:
+            self.completar.popup().hide()
+            return
+        self._desde_sugerencia = desde
+        self._sugerencias.setStringList(opciones)
+        caja = self.txt_query.cursorRect()
+        ancho = self.txt_query.fontMetrics().horizontalAdvance(max(opciones, key=len))
+        caja.setWidth(max(280, ancho + 48))
+        self.completar.complete(caja)
+        self.completar.popup().setCurrentIndex(self._sugerencias.index(0))
+
+    def _usar_sugerencia(self, opcion: str):
+        texto, cursor = self.txt_query.text(), self.txt_query.cursorPosition()
+        resto = texto[cursor:]
+        nuevo = texto[:self._desde_sugerencia] + opcion
+        if not opcion.endswith(":") and not resto.startswith(" "):
+            nuevo += " "
+        self.txt_query.setText(nuevo + resto)
+        self.txt_query.setCursorPosition(len(nuevo))
+        if opcion.endswith(":"):                  # «etiqueta:» → ahora, las etiquetas
+            QTimer.singleShot(0, self._sugerir)
+
+    def _marcar_error(self, avisos: list[str]) -> bool:
+        """Campo en rojo y la explicación debajo. True si hay algo mal."""
+        self.lbl_aviso_busqueda.setText(" ".join(avisos))
+        self.lbl_aviso_busqueda.setVisible(bool(avisos))
+        if bool(self.txt_query.property("error")) != bool(avisos):
+            self.txt_query.setProperty("error", bool(avisos))
+            self.txt_query.style().unpolish(self.txt_query)
+            self.txt_query.style().polish(self.txt_query)
+        return bool(avisos)
 
     def _eligio_tipo(self, _boton):
         """Un botón Todo / Fotos / Videos manda: se saca el «tipo:» del texto."""
@@ -532,6 +587,8 @@ class BuscarTab(QWidget):
         traidos = len(getattr(self, "_results", []))
         if (self._trayendo_mas or self._total is None or traidos >= self._total
                 or sb.maximum() - sb.value() > _FALTA_PARA_EL_FINAL):
+            return
+        if self.txt_query.property("error"):
             return
         self._trayendo_mas = True
         n = self._busqueda
@@ -1022,6 +1079,7 @@ class BuscarTab(QWidget):
         def ok(nombres):
             self.tag_bar.set_known_tags(nombres)
             self.formulario.set_etiquetas(nombres)
+            self._etiquetas_conocidas = sorted(nombres)
         self._srv.pedir(lambda repo: repo.all_tag_names(), ok=ok)
 
 

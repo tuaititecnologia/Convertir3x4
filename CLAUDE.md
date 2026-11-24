@@ -151,10 +151,12 @@ convertir3x4/
                          mover() keeps tags. tomar_carpeta(): advisory lock per folder
                          buscar(): one paged query for Buscar (two-layer search, missing last, kind filter, total,
                          tags per item, no search_doc); Buscar loads 120 at a time as you scroll.
-                         Gmail-like operators (etiqueta:/tag:/persona:, tipo:, carpeta:, nombre:, texto:, notas:,
+                         Gmail-like operators (etiqueta:/tag:, tipo:, carpeta:, nombre:, texto:, notas:,
                          desde:/hasta:/fecha:, tiene:/sin:, leading - excludes) -> one WHERE per filter (_filtro_sql)
     consulta.py          Qt-free parser of those operators: analizar() -> Consulta, armar() back to text; unknown
                          clave:valor stays a plain word (10:30, C:\...). Form: ui/widgets/busqueda_avanzada.py
+                         sugerencias(): what to offer while typing (QCompleter on the field). Something not understood
+                         (bad date, tipo:pdf) -> field in red, explanation below, and NO search until fixed
     rutas.py             a_relativa / a_completa (UNC, drive letters, posix)
     referencias.py       do a person's reference photos work? Judges each one (no face, several faces of similar
                          size, small/unclear face, and cosine vs the person's other photos: an outlier may be someone

@@ -26,11 +26,13 @@ class TestAnalizar:
         assert c.tipo == "video" and not c.avisos
 
     def test_alias_comillas_y_exclusiones(self):
-        c = analizar('tag:"santa  cena" persona:Ramírez -etiqueta:retiro -ensayo santa-cena')
+        c = analizar('tag:"santa  cena" etiqueta:Ramírez -etiqueta:retiro -ensayo santa-cena')
         assert [(f.clave, f.valor, f.negado) for f in c.filtros] == [
             ("etiqueta", "santa cena", False), ("etiqueta", "Ramírez", False),
             ("etiqueta", "retiro", True)]
         assert c.palabras == ["santa-cena"] and c.excluidas == ["ensayo"]
+        # persona: no es un operador (se quitó): queda como palabra
+        assert analizar("persona:Ramírez").palabras == ["persona:Ramírez"]
 
     def test_lo_que_no_es_operador_queda_entero(self):
         # Nombres con hora y rutas pegadas se siguen buscando como siempre
@@ -70,6 +72,33 @@ class TestAnalizar:
         assert consulta.sin_tipo("culto tipo:video desde:99 -etiqueta:x") == \
             "culto desde:99 -etiqueta:x"
         assert consulta.sin_tipo("culto") == "culto"
+
+
+class TestSugerencias:
+    E = ["alabanza", "placa", "placa grande", "santa cena"]
+
+    def _s(self, texto, cursor=None):
+        return consulta.sugerencias(texto, len(texto) if cursor is None else cursor, self.E)
+
+    def test_claves(self):
+        assert self._s("ca") == (0, ["carpeta:"])
+        assert self._s("culto et") == (6, ["etiqueta:"])
+        assert self._s("-et") == (0, ["-etiqueta:"])
+        assert self._s("c") == (0, [])                       # una letra: nada
+        assert self._s("culto") == (0, [])
+        assert self._s("tag") == (0, [])                     # tag: se entiende, no se ofrece
+
+    def test_valores(self):
+        assert self._s("etiqueta:pl")[1] == ["etiqueta:placa", 'etiqueta:"placa grande"']
+        assert self._s("tag:cena")[1] == ['tag:"santa cena"']          # también «contiene»
+        assert self._s("tipo:")[1] == ["tipo:foto", "tipo:video"]
+        assert self._s("sin:et")[1] == ["sin:etiquetas"]
+        assert self._s("etiqueta:alabanza")[1] == []                  # ya está completa
+        assert self._s("carpeta:x")[1] == [] and self._s("foo:bar")[1] == []
+
+    def test_en_el_medio_de_una_palabra_no(self):
+        assert self._s("etiqueta:pl culto", 11)[1][0] == "etiqueta:placa"
+        assert self._s("cuxlto", 2)[1] == []
 
 
 # ---------------------------------------------------------------- en la base
@@ -120,7 +149,7 @@ class TestBuscarConFiltros:
         assert _ids(nas, "etiqueta:placa") == [d["placa"]]
         assert _ids(nas, "tag:PLACA") == [d["placa"]]                 # como Gmail
         assert _ids(nas, 'etiqueta:"santa cena"') == sorted([d["placa"], d["video"]])
-        assert _ids(nas, "persona:ramirez") == [d["retiro"]]          # sin tildes
+        assert _ids(nas, "etiqueta:ramirez") == [d["retiro"]]         # sin tildes
         assert _ids(nas, "etiqueta:plac") == []                       # la etiqueta entera
         assert _ids(nas, '-etiqueta:"santa cena"') == sorted([d["retiro"], d["sin"]])
 
@@ -224,8 +253,14 @@ class TestFormulario:
         f.txt_desde.setText("32/13/2025")
         assert f.texto() == 'etiqueta:placa etiqueta:"santa cena"'
         assert not f.btn_buscar.isEnabled() and "32/13/2025" in f.lbl_aviso.text()
+        assert f.txt_desde.property("error") is True                  # en rojo
         f.txt_desde.setText("09/2025")
         assert f.btn_buscar.isEnabled() and f.texto().endswith("desde:09/2025")
+        assert not f.txt_desde.property("error")
+        # Una fecha mal escrita en el campo va a su cuadro, en rojo
+        f.cargar("culto hasta:13/13 tipo:pdf")
+        assert f.txt_hasta.text() == "13/13" and f.txt_hasta.property("error") is True
+        assert f.txt_palabras.text() == "culto tipo:pdf" and not f.btn_buscar.isEnabled()
 
     def test_buscar_escribe_en_el_campo(self, app, sin_catalogo):
         from convertir3x4.ui.tabs.tab_buscar import BuscarTab
@@ -246,16 +281,47 @@ class TestFormulario:
         assert tab.txt_query.text() == "culto etiqueta:placa" and tab._kind() == "image"
         tab.deleteLater()
 
+    def test_sugerencias_mientras_escribe(self, app, sin_catalogo):
+        from PyQt6.QtTest import QTest
+        from convertir3x4.ui.tabs.tab_buscar import BuscarTab
+        tab = BuscarTab(srv=sin_catalogo)
+        tab._etiquetas_conocidas = ["placa", "santa cena"]
+        tab.show()
+        tab.txt_query.setFocus()
+        QTest.keyClicks(tab.txt_query, "culto et")
+        pop = tab.completar.popup()
+        assert pop.isVisible() and tab._sugerencias.stringList() == ["etiqueta:"]
+        tab.completar.activated[str].emit("etiqueta:")
+        assert tab.txt_query.text() == "culto etiqueta:"
+        app.processEvents()
+        assert tab._sugerencias.stringList() == ["etiqueta:placa", 'etiqueta:"santa cena"']
+        tab.completar.activated[str].emit('etiqueta:"santa cena"')
+        assert tab.txt_query.text() == 'culto etiqueta:"santa cena" '
+        QTest.keyClicks(tab.txt_query, "zz")
+        assert not pop.isVisible()
+        tab.close()
+        tab.deleteLater()
+
     def test_aviso_y_orden_con_filtros(self, app, sin_catalogo):
         from convertir3x4.ui.tabs.tab_buscar import BuscarTab
+        pedidos = []
+        sin_catalogo.pedir = lambda *a, **k: pedidos.append(a)
         tab = BuscarTab(srv=sin_catalogo)
         tab.txt_query.setText("etiqueta:placa")
         assert tab.cmb_orden.itemText(0) == "Por nombre"      # sin palabras sueltas
+        # Mientras se escribe la fecha no se pone rojo; al buscar, sí, y no se busca
         tab.txt_query.setText("etiqueta:placa desde:32/13/2025")
-        tab._revisar_consulta()
+        assert not tab.lbl_aviso_busqueda.isVisibleTo(tab)
+        antes = len(pedidos)
+        tab._do_search()
+        assert len(pedidos) == antes                          # no se pidió nada al NAS
+        assert tab.txt_query.property("error") is True
         assert tab.lbl_aviso_busqueda.isVisibleTo(tab)
         assert "32/13/2025" in tab.lbl_aviso_busqueda.text()
-        tab.txt_query.setText("etiqueta:placa")
-        tab._revisar_consulta()
+        # Corregida, se saca el rojo en el momento y se vuelve a buscar
+        tab.txt_query.setText("etiqueta:placa desde:09/2025")
+        assert not tab.txt_query.property("error")
         assert not tab.lbl_aviso_busqueda.isVisibleTo(tab)
+        tab._do_search()
+        assert len(pedidos) == antes + 1
         tab.deleteLater()
