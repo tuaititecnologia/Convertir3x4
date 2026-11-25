@@ -376,12 +376,17 @@ class TestCatalogarPorPartes:
         d = cp.CatalogarPorPartes(carpetas=("Entrada", "Publicar"), raiz="/nas")
         d.rb_una.setChecked(True)
         assert not d.btn_ok.isEnabled()                 # falta elegir la carpeta
-        monkeypatch.setattr(cp.QFileDialog, "getExistingDirectory",
-                            staticmethod(lambda *a, **k: "/otro/lado"))
-        d._elegir_carpeta()
-        assert "no está entre" in d.lbl_carpeta.text() and d.carpeta_elegida() is None
-        monkeypatch.setattr(cp.QFileDialog, "getExistingDirectory",
-                            staticmethod(lambda *a, **k: "/nas/Entrada/Retiro"))
+
+        class Arbol:                                    # el árbol del NAS (tests_carpetas.py)
+            carpeta = "Entrada/Retiro"
+
+            def __init__(self, *a, **k):
+                pass
+
+            def exec(self):
+                return True
+        from convertir3x4.ui.widgets import arbol_carpetas
+        monkeypatch.setattr(arbol_carpetas, "ElegirUnaCarpeta", Arbol)
         d._elegir_carpeta()
         assert d.carpeta_elegida() == "Entrada/Retiro" and d.btn_ok.isEnabled()
         assert "Sin marcar" in d.lbl_tiempo.text()
@@ -484,6 +489,8 @@ class TestCarpetas:
             assert r.count_media() == 1
 
     def test_ventana_de_opciones(self, qapp, pg_cfg, tmp_path, monkeypatch):
+        """El ⚙ muestra qué se cataloga; las carpetas se eligen en el árbol
+        (tests_carpetas.py)."""
         import time
         from convertir3x4.catalog.db import conectar
         from convertir3x4.ui.servicio_catalogo import ServicioCatalogo
@@ -498,34 +505,14 @@ class TestCarpetas:
                 qapp.processEvents()
                 time.sleep(0.01)
             return cond()
-        with abrir() as r:
-            mid = _medio(r, "Historial/2014/a.jpg")
-        monkeypatch.setattr(ca, "catalog_thumb_dir", lambda: str(tmp_path / "cache"))
         srv = ServicioCatalogo(abrir=abrir)
         d = ca.CatalogoAvanzado(raiz=str(tmp_path), srv=srv)
         try:
-            assert "Todavía no hay ninguna" in d.lbl_carpetas.text()
-            assert not d.btn_quitar_carpeta.isEnabled()
-            d.agregar_carpeta("/otro/lado")
-            assert "no está dentro" in d.lbl_carpetas.text()
-            d.agregar_carpeta(str(tmp_path / "Historial"))
-            assert esperar(lambda: d.lst_carpetas.count() == 1)
-            assert "Se agregó «Historial»" in d.lbl_carpetas.text()
-            d.agregar_carpeta(str(tmp_path / "Historial" / "2014"))
-            assert esperar(lambda: "se superpone" in d.lbl_carpetas.text())
-            # Quitar con sus fotos (lo que elige en la confirmación)
-            d.lst_carpetas.item(0).setSelected(True)
-            assert d.btn_quitar_carpeta.isEnabled()
-            confirmado = []
-            monkeypatch.setattr(d, "_confirmar_quitar_carpeta",
-                                lambda ruta, n: confirmado.append((ruta, n))
-                                or d.quitar_carpeta(ruta, con_sus_medios=True))
-            d._quitar_carpeta()
-            assert esperar(lambda: d.lst_carpetas.count() == 0)
-            assert confirmado == [("Historial", 1)]
-            assert "y 1 foto o video del catálogo" in d.lbl_carpetas.text()
+            assert esperar(lambda: "Todavía no se cataloga" in d.lbl_carpetas.text())
             with abrir() as r:
-                assert r.get_media(mid) is None
+                r.guardar_marcas({"Historial": True, "Historial/2014": False})
+            d._carpetas_guardadas()
+            assert esperar(lambda: "Historial (excepto Historial/2014)" in d.lbl_carpetas.text())
         finally:
             d.deleteLater()
             srv.cerrar()

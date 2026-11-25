@@ -21,7 +21,7 @@ python -m venv venv && source venv/bin/activate && pip install -r requirements.t
 ./venv/bin/python Convertir3x4.py      # shim entry point (also: python -m convertir3x4)
 
 # Tests — pass both files explicitly (pytest's default discovery skips the tests.py name)
-./venv/bin/python -m pytest tests.py tests_catalog.py tests_ai.py tests_clips.py tests_ui.py tests_convertir.py tests_discos.py tests_catalogador.py tests_v08.py tests_actualizacion.py tests_ocr.py tests_buscar.py -v
+./venv/bin/python -m pytest tests.py tests_catalog.py tests_ai.py tests_clips.py tests_ui.py tests_convertir.py tests_discos.py tests_catalogador.py tests_v08.py tests_actualizacion.py tests_ocr.py tests_buscar.py tests_carpetas.py -v
 # tests_discos.py also runs the real panel-copias.py (fake lsblk/systemctl) when ~/Documents/Agents/CDLM-Freenas is present
 # tests_ai.py also runs real-model tests when CDLM_MODELS points to a folder with the downloaded models
 # Catalog tests (tests_catalog/tests_ai/tests_ui) need the dev PostgreSQL; fixtures in conftest.py create a
@@ -133,7 +133,12 @@ convertir3x4/
                          Dockerfile.catalogador): nightly pass + requests from the PCs via catalogado_pedido/
                          catalogado_estado (+ NOTIFY), heartbeat thread, waits while a recorder disk is copied.
                          Config from env (CDLM_CATALOGO_*, CDLM_MODELOS, CDLM_HORA…). See docs/catalogado-en-el-nas.md
-                         The folder list is in the DB (carpeta_catalogada, managed from Catalogar's ⚙), not env.
+                         What is cataloged is in the DB as marks (carpeta_catalogada: ruta + incluir, "" = root,
+                         schema 10), not env. catalog/alcance.py: Alcance (raíces, excluded, a folder with no mark
+                         takes its parent's) + Arbol (the folder tree window). The catalogador also reads the NAS
+                         folder list into carpeta_nas (LectorDeCarpetas thread: at start, after each pass and on
+                         NOTIFY carpetas_nas; answers NOTIFY carpetas_nas_leidas, a channel apart from `catalogo`).
+                         See docs/carpetas-y-conexion.md
                          Pedidos carry pasos (archivos/miniaturas/escenas/personas/texto) + rehacer; the AI honors the folder.
                          NEVER run it on a Mac against real data: macOS SMB returns accented names as NFD, they
                          don't match the NAS's NFC paths and get "moved" (main() refuses on darwin)
@@ -198,7 +203,14 @@ convertir3x4/
                          The app is client-server: the NAS pushes changes, PCs never poll the catalog for them
   ui/servicio_catalogo.py  ServicioCatalogo: ONE thread + connection for the UI; pedir(fn(repo), ok, error);
                          reconnects alone; estado_cambiado("conectando"/"ok"/"error", text). servicio() = app-wide
-  ui/widgets/caja_conexion.py  connection banner (same look as Grabadora); catalogo_avanzado.py = ⚙ of Catalogar
+  ui/widgets/arbol_carpetas.py  the NAS folders as a tree, built from carpeta_nas (never the PC's disk): ElegirCarpetas
+                         (checkbox per folder = that folder's own state; ticking changes what is inside; with the filter,
+                         only what is shown; «Guardar» summary asks whether to remove what leaves) and ElegirUnaCarpeta
+  ui/widgets/conexion_catalogo.py  «Conexión al catálogo»: edits catalogo.ini from the app (appdata.guardar_config_catalogo:
+                         same file it was read from, else next to the .exe, else the data dir; never with CDLM_CATALOGO_*).
+                         «Probar» = catalog/conexion.py, connects with preparar=False (never migrates). Saving calls
+                         servicio().reconectar(). Opens alone at start when there is no config (MainWindow.revisar_configuracion)
+  ui/widgets/caja_conexion.py  connection banner (same look as Grabadora, «Conexión…» on error); catalogo_avanzado.py = ⚙ of Catalogar
                          (catalog one subfolder, remove missing)
 ```
 

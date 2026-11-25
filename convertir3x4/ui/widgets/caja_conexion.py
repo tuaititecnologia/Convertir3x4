@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton
 
 class CajaConexion(QFrame):
     reintentar = pyqtSignal()
+    configurar = pyqtSignal()          # abrir «Conexión al catálogo»
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -23,6 +24,10 @@ class CajaConexion(QFrame):
         self.btn_retry = QPushButton("Reintentar")
         self.btn_retry.clicked.connect(self.reintentar.emit)
         lay.addWidget(self.btn_retry, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.btn_conexion = QPushButton("Conexión…")
+        self.btn_conexion.setToolTip("Servidor, clave y carpeta multimedia de esta PC")
+        self.btn_conexion.clicked.connect(self.configurar.emit)
+        lay.addWidget(self.btn_conexion, 0, Qt.AlignmentFlag.AlignVCenter)
         self._puntos = 0
         self._anim = QTimer(self)
         self._anim.setInterval(450)
@@ -37,6 +42,7 @@ class CajaConexion(QFrame):
             w.style().unpolish(w)
             w.style().polish(w)
         self.btn_retry.setVisible(estado == "error")
+        self.btn_conexion.setVisible(estado == "error")
         self.setVisible(estado != "ok")
         if estado == "conectando":
             self._puntos = 0

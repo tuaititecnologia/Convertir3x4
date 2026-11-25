@@ -18,6 +18,8 @@ Ideas y tareas que van surgiendo mientras se prueba la app. Se anotan acá para 
 
 ## Hecho
 
+- 24/11/2026 (rama `carpetas-del-nas`, sin publicar; ver `docs/carpetas-y-conexion.md`): las carpetas a catalogar se eligen en un árbol que arma el NAS, con casillas que permiten excluir subcarpetas y un filtro por nombre; pantalla «Conexión al catálogo» para editar `catalogo.ini` desde la app (se abre sola en una PC sin configurar). Lleva migración (esquema 10): el catalogador del NAS y las PCs se actualizan juntos.
+
 - 23/11/2026 (rama `v0.8.1`): **texto en las fotos (OCR)** en el catalogador, paso «Texto en las fotos» de «Catalogar ▾». Se busca con el resto y se ve al dejar el puntero sobre la foto en Buscar. Medido en el NAS: 1,5 s por foto, 400 MB; las 4.053 fotos, una hora y tres cuartos la primera vez.
 - 22/11/2026 (rama `v0.8`, sin publicar todavía; ver `docs/plan-v0.8.md`): detalle de la persona con barra de carga y fotos guardadas en la PC; texto legible en los desplegables del tema claro; «Catalogar ▾» por partes (la IA respeta la carpeta); fecha de toma y GPS; vista previa de videos en Buscar (tira armada en el NAS); fotos de referencia de Buscar leídas por el NAS; misma etiqueta a las fotos hermanas; carpetas que se catalogan manejadas desde la app (⚙), con opción de sacar sus fotos al quitarlas; pantallas guardadas compartidas; aviso de versión nueva que se actualiza sola en Windows (23/11). El aviso de NAS desconectado en Buscar ya estaba (revisa la raíz cada 5 s).
 

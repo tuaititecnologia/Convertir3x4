@@ -23,7 +23,8 @@ import psycopg
 import psycopg.types.json
 
 from . import consulta, rutas
-from .db import CANAL_CAMBIOS, LLAVE_CATALOGAR
+from .alcance import Alcance
+from .db import CANAL_CAMBIOS, CANAL_CARPETAS_LEIDAS, CANAL_PEDIR_CARPETAS, LLAVE_CATALOGAR
 from .models import Media
 
 _MEDIA_COLS = (
@@ -81,6 +82,24 @@ class NombreEnUso(ValueError):
 
 class NoSePuedeConvertir(ValueError):
     """Cambiar el tipo de una etiqueta no se puede (mensaje para el operador)."""
+
+
+def _en_carpetas(carpetas, col: str = "m.rel_path") -> tuple[str, list]:
+    """Condición SQL «está dentro de alguna de estas carpetas» (relativas).
+    "" es la raíz: contiene todo."""
+    conds, params = [], []
+    for c in carpetas:
+        c = c.strip("/")
+        if not c:
+            return "TRUE", []
+        conds.append(f"({col} = %s OR starts_with({col}, %s))")
+        params += [c, c + "/"]
+    return ("(" + " OR ".join(conds) + ")") if conds else "FALSE", params
+
+
+# Carpeta (relativa) de un rel_path, en SQL: 'a/b/c.jpg' -> 'a/b', 'c.jpg' -> ''.
+_CARPETA_SQL = ("CASE WHEN strpos(rel_path, '/') > 0 "
+                "THEN regexp_replace(rel_path, '/[^/]*$', '') ELSE '' END")
 
 
 # Las fechas de toma se comparan por día en la hora de la iglesia.
@@ -383,10 +402,103 @@ class Repo:
         return pid
 
     # ------------------------------------------------- carpetas que se catalogan
+    def marcas_carpetas(self) -> dict[str, bool]:
+        """Las marcas del árbol de carpetas ("" = la raíz)."""
+        return {r["ruta"]: r["incluir"] for r in self._q(
+            "SELECT ruta, incluir FROM carpeta_catalogada")}
+
+    def alcance(self) -> Alcance:
+        """Qué se cataloga (ver catalog/alcance.py)."""
+        return Alcance(self.marcas_carpetas())
+
     def carpetas_catalogadas(self) -> tuple[str, ...]:
-        """La lista de carpetas que recorre el NAS (relativas a la raíz)."""
-        return tuple(r["ruta"] for r in self._q(
-            "SELECT ruta FROM carpeta_catalogada ORDER BY lower(ruta)"))
+        """Desde dónde recorre el NAS: las raíces del alcance (relativas)."""
+        return self.alcance().raices()
+
+    def medios_que_salen(self, marcas: dict[str, bool]) -> dict[str, tuple[int, int]]:
+        """Lo catalogado que deja de estar en el alcance con estas marcas:
+        {carpeta: (fotos, videos)}, agrupado por la carpeta que se destildó."""
+        antes, despues = self.alcance(), Alcance(marcas)
+        out: dict[str, list[int]] = {}
+        for r in self._q("SELECT rel_path, kind FROM media"):
+            rel = r["rel_path"]
+            if not antes.incluye_archivo(rel) or despues.incluye_archivo(rel):
+                continue
+            c = rutas.carpeta_de(rel)
+            clave = _marca_que_corta(despues, c)
+            if clave is None:
+                clave = antes.raiz_de(c) or ""
+            n = out.setdefault(clave, [0, 0])
+            n[0 if r["kind"] == "image" else 1] += 1
+        return {k: (v[0], v[1]) for k, v in out.items()}
+
+    def guardar_marcas(self, marcas: dict[str, bool], eliminar_medios: bool = False,
+                       por: str = "") -> list[int]:
+        """Reemplaza las marcas del árbol. Con `eliminar_medios`, saca del
+        catálogo lo que deja de estar en el alcance (con sus etiquetas).
+        Devuelve los ids quitados."""
+        nuevas = Alcance(marcas).marcas
+        with self.conn.transaction():
+            self._q("LOCK TABLE carpeta_catalogada IN EXCLUSIVE MODE")
+            ids: list[int] = []
+            if eliminar_medios:
+                antes, despues = self.alcance(), Alcance(nuevas)
+                ids = [r["id"] for r in self._q("SELECT id, rel_path FROM media")
+                       if antes.incluye_archivo(r["rel_path"])
+                       and not despues.incluye_archivo(r["rel_path"])]
+                self.delete_media(ids)
+            actuales = self.marcas_carpetas()
+            # Borrar y volver a insertar lo que cambia: el aviso a las PCs
+            # (trigger de la migración 7) es de INSERT y DELETE.
+            for ruta, valor in actuales.items():
+                if nuevas.get(ruta) != valor:
+                    self._q("DELETE FROM carpeta_catalogada WHERE ruta = %s", (ruta,))
+            for ruta, valor in nuevas.items():
+                if actuales.get(ruta) != valor:
+                    self._q("INSERT INTO carpeta_catalogada (ruta, incluir, agregada_por)"
+                            " VALUES (%s, %s, %s)", (ruta, valor, por or None))
+        return ids
+
+    # ------------------------------------------------- carpetas del NAS (árbol)
+    def pedir_carpetas_nas(self):
+        """Pide al catalogador que relea las carpetas del NAS. Si no está
+        corriendo, el pedido se pierde (queda la lectura anterior)."""
+        self._q(f"NOTIFY {CANAL_PEDIR_CARPETAS}")
+
+    def reemplazar_carpetas_nas(self, carpetas) -> tuple[int, int]:
+        """Lo que leyó el catalogador. Cambia solo la diferencia, anota la hora
+        y avisa siempre (aunque no cambie nada: la PC que pidió espera la
+        respuesta). Devuelve (agregadas, borradas)."""
+        nuevas = {c.strip("/") for c in carpetas if c.strip("/")}
+        with self.conn.transaction():
+            actuales = {r["ruta"] for r in self._q("SELECT ruta FROM carpeta_nas")}
+            borrar, agregar = sorted(actuales - nuevas), sorted(nuevas - actuales)
+            if borrar:
+                self._q("DELETE FROM carpeta_nas WHERE ruta = ANY(%s)", (borrar,))
+            if agregar:
+                with self.conn.cursor() as cur:
+                    # ON CONFLICT: la relectura del hilo y la del final de una
+                    # pasada pueden coincidir
+                    cur.executemany("INSERT INTO carpeta_nas (ruta) VALUES (%s)"
+                                    " ON CONFLICT DO NOTHING",
+                                    [(c,) for c in agregar])
+            self._q("UPDATE catalogado_estado SET carpetas_leidas = now()")
+            self._q(f"NOTIFY {CANAL_CARPETAS_LEIDAS}")
+        return len(agregar), len(borrar)
+
+    def arbol_carpetas(self) -> dict:
+        """Todo lo que necesita la ventana de carpetas, en una vuelta:
+        carpetas del NAS, cuándo se leyeron, las marcas y {carpeta: (fotos,
+        videos)} catalogados directamente en cada una (los que están)."""
+        carpetas = [r["ruta"] for r in self._q("SELECT ruta FROM carpeta_nas")]
+        leidas = self._q("SELECT carpetas_leidas FROM catalogado_estado").fetchone()
+        conteos = {r["carpeta"]: (r["fotos"], r["videos"]) for r in self._q(
+            f"SELECT {_CARPETA_SQL} AS carpeta, "
+            "count(*) FILTER (WHERE kind = 'image') AS fotos, "
+            "count(*) FILTER (WHERE kind = 'video') AS videos "
+            "FROM media WHERE missing_since IS NULL GROUP BY 1")}
+        return {"carpetas": carpetas, "leidas": leidas["carpetas_leidas"] if leidas else None,
+                "marcas": self.marcas_carpetas(), "conteos": conteos}
 
     def agregar_carpeta(self, ruta: str, por: str = "") -> str:
         """Agrega una carpeta a la lista. Devuelve cómo quedó escrita. Lanza
@@ -408,9 +520,8 @@ class Repo:
         return nueva
 
     def medios_en_carpeta(self, ruta: str) -> list[int]:
-        return [r["id"] for r in self._q(
-            "SELECT id FROM media WHERE rel_path = %s OR starts_with(rel_path, %s)",
-            (ruta, ruta.rstrip("/") + "/"))]
+        cond, params = _en_carpetas([ruta], "rel_path")
+        return [r["id"] for r in self._q(f"SELECT id FROM media WHERE {cond}", params)]
 
     def quitar_carpeta(self, ruta: str, con_sus_medios: bool = False) -> list[int]:
         """Saca una carpeta de la lista. Con `con_sus_medios`, también saca del
@@ -483,7 +594,7 @@ class Repo:
             "SELECT *, EXTRACT(EPOCH FROM now() - latido)::integer AS segundos_sin_latido,"
             " now() AS ahora FROM catalogado_estado").fetchone()
 
-    _CAMPOS_ESTADO = {"version_app", "carpetas", "fase", "detalle", "hechos", "total",
+    _CAMPOS_ESTADO = {"version_app", "carpetas", "carpetas_leidas", "fase", "detalle", "hechos", "total",
                       "pedido_id", "ultima_inicio", "ultima_fin", "ultima_resumen",
                       "ultima_error", "ultima_programada"}
 
@@ -943,11 +1054,9 @@ class Repo:
         if carpetas is not None:
             if not carpetas:
                 return []
-            conds = []
-            for c in carpetas:
-                conds.append("(m.rel_path = %s OR starts_with(m.rel_path, %s))")
-                params += [c, c.rstrip("/") + "/"]
-            where.append("(" + " OR ".join(conds) + ")")
+            cond, p = _en_carpetas(carpetas)
+            where.append(cond)
+            params += p
         if not rehacer:
             falta = []
             if escenas:
@@ -979,11 +1088,9 @@ class Repo:
         where = ["m.kind = 'image'", "m.missing_since IS NULL"]
         params: list = []
         if carpetas:
-            conds = []
-            for c in carpetas:
-                conds.append("(m.rel_path = %s OR starts_with(m.rel_path, %s))")
-                params += [c, c.rstrip("/") + "/"]
-            where.append("(" + " OR ".join(conds) + ")")
+            cond, p = _en_carpetas(carpetas)
+            where.append(cond)
+            params += p
         # Lo que corrigió una persona no se vuelve a leer nunca
         where.append("NOT COALESCE(f.editado, false)")
         if not rehacer:
@@ -1336,3 +1443,14 @@ def _to_tsquery(query: str) -> str | None:
 def _escape_like(term: str) -> str:
     """Escapa los comodines de LIKE (\\, %, _) para tratarlos como literales."""
     return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _marca_que_corta(alcance: Alcance, carpeta: str) -> str | None:
+    """La carpeta destildada más cercana hacia arriba (o la misma), o None."""
+    c = carpeta
+    while True:
+        if alcance.marcas.get(c) is False:
+            return c
+        if not c:
+            return None
+        c = rutas.carpeta_de(c)

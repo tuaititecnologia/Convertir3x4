@@ -390,7 +390,7 @@ class TestPipeline:
         _img(os.path.join(temp_dir, "Entrada", "x.jpg"), 800, 600)
         catalogar(nas, ["Entrada"])
 
-        def scan_cortado(root, errores=None):
+        def scan_cortado(root, errores=None, entrar=None):
             errores.append(OSError("el NAS no responde"))
             return []
         monkeypatch.setattr(inventory, "scan", scan_cortado)

@@ -260,6 +260,7 @@ class BuscarTab(QWidget):
         # Estado de la conexión con el catálogo (no se ve si está todo bien)
         self.conn_box = CajaConexion()
         self.conn_box.reintentar.connect(self.refresh)
+        self.conn_box.configurar.connect(self._abrir_conexion)
         self.conn_box.set_estado(self._srv.estado if self._srv.estado != "ok" else "conectando",
                                  self._srv.texto)
         layout.addWidget(self.conn_box)
@@ -395,6 +396,10 @@ class BuscarTab(QWidget):
                 barra.set_enabled(False)
             self._actualizar_seleccion()
         self.detalles.set_editable(estado == "ok")
+
+    def _abrir_conexion(self):
+        from ..widgets.conexion_catalogo import abrir_conexion
+        abrir_conexion(self)
 
     def _reintentar_si_hace_falta(self):
         if self._srv.estado == "error" and self.isVisible():

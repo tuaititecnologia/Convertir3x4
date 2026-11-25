@@ -80,14 +80,26 @@ class Opciones:
     rehacer_miniaturas: bool = False
 
 
+def _recorrido_desde(alcance, rel: str, carpeta: str) -> bool:
+    """¿Este archivo se tuvo que ver al recorrer `carpeta`? Tiene que estar en
+    el alcance y su raíz tiene que contener a `carpeta`: una carpeta tildada
+    dentro de una excluida es otra raíz y se recorre aparte, así que lo suyo no
+    se marca como faltante al recorrer la de arriba."""
+    if not alcance.incluye_archivo(rel):
+        return False
+    return rutas.dentro_de(carpeta, alcance.raiz_de(rutas.carpeta_de(rel)))
+
+
 def catalogar(repo: Repo, carpetas: list[str], status: str = "library",
               progress_cb=None, bloqueo: str | None = None,
-              opciones: Opciones | None = None) -> Stage0Stats:
+              opciones: Opciones | None = None, alcance=None) -> Stage0Stats:
     """Cataloga `carpetas` (relativas a `repo.raiz`). `progress_cb(hechos, total, ruta)`.
 
     `bloqueo`: carpeta cuyo bloqueo se toma en lugar de cada una (para catalogar
     a mano una subcarpeta de una carpeta de la lista sin chocar con la pasada
-    nocturna de esa carpeta)."""
+    nocturna de esa carpeta).
+    `alcance` (catalog/alcance.py): no entra en las carpetas excluidas y no
+    marca como faltante lo que quedó de ellas en el catálogo."""
     opciones = opciones or Opciones()
     stats = Stage0Stats()
     tomadas: list[str] = []
@@ -109,7 +121,12 @@ def catalogar(repo: Repo, carpetas: list[str], status: str = "library",
                 stats.inexistentes.append(c)
                 continue
             errores: list = []
-            paths = inventory.scan(raiz_c, errores)
+            entrar = None
+            if alcance is not None:
+                def entrar(ruta, _a=alcance):
+                    rel = repo.rel(ruta)
+                    return rel is not None and _a.estado(rel)
+            paths = inventory.scan(raiz_c, errores, entrar)
             existentes = repo.estado_carpeta(c)
             if errores:
                 stats.incompletas.append(c)
@@ -117,7 +134,8 @@ def catalogar(repo: Repo, carpetas: list[str], status: str = "library",
                 vistos = {repo.rel(p) for p in paths}
                 marcados += repo.marcar_faltantes(
                     [r["id"] for rel, r in existentes.items()
-                     if rel not in vistos and r["missing_since"] is None])
+                     if rel not in vistos and r["missing_since"] is None
+                     and (alcance is None or _recorrido_desde(alcance, rel, c))])
             trabajos.append((c, paths, existentes))
 
         total = sum(len(p) for _, p, _ in trabajos)

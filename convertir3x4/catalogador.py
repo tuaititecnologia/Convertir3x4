@@ -13,6 +13,9 @@ Diseño: docs/catalogado-en-el-nas.md. Lo esencial:
 - No arranca una pasada mientras se copia un disco de la grabadora.
 - Calcula las firmas de las fotos de referencia de las personas que sube una PC
   (`Repo.subir_fotos_de_referencia`), apenas llegan, incluso en medio de una pasada.
+- Lee las carpetas de la raíz para el árbol de las PCs (`carpeta_nas`) al
+  arrancar, después de cada pasada y cuando una PC lo pide (`NOTIFY
+  carpetas_nas`), desde otro hilo: no espera a la pasada en curso.
 - Si el NAS (la base) se cae, se reconecta solo. Si el catálogo es de una
   versión más nueva, no lo toca y lo informa.
 
@@ -35,7 +38,7 @@ import psycopg
 
 from .catalog import rutas
 from .catalog.db import (
-    CatalogoIncompatible, CatalogoNoConfigurado, CatalogoNoDisponible,
+    CANAL_PEDIR_CARPETAS, CatalogoIncompatible, CatalogoNoConfigurado, CatalogoNoDisponible,
     ConfigCatalogo, conectar,
 )
 from .catalog.repo import Repo
@@ -133,6 +136,66 @@ def copia_en_curso(directorio: str | None, ahora: float | None = None) -> str | 
 def carpeta_madre(rel: str, carpetas) -> str | None:
     """La carpeta de la lista que contiene `rel` (o None)."""
     return next((c for c in carpetas if rutas.dentro_de(rel, c)), None)
+
+
+def leer_carpetas_del_nas(repo: Repo) -> tuple[int, int] | None:
+    """Lee las carpetas de la raíz y las deja en la base para el árbol de las
+    PCs. Devuelve (agregadas, borradas), o None si la raíz no se pudo leer
+    (no se toca lo anterior)."""
+    from .engine.inventory import leer_carpetas
+    errores: list = []
+    if not os.path.isdir(repo.raiz):
+        log.warning("carpetas: no se encuentra la raíz %s", repo.raiz)
+        return None
+    carpetas = leer_carpetas(repo.raiz, errores)
+    for e in errores[:5]:
+        log.warning("carpetas: no se pudo leer %s", e)
+    cambios = repo.reemplazar_carpetas_nas(carpetas)
+    if any(cambios):
+        log.info("carpetas del NAS: %s nuevas, %s que ya no están", *cambios)
+    return cambios
+
+
+class LectorDeCarpetas(threading.Thread):
+    """Relee las carpetas del NAS cuando una PC abre el árbol (`NOTIFY
+    carpetas_nas`), con su propia conexión. Leer carpetas no choca con una
+    pasada ni con la copia de un disco, así que no espera a nadie."""
+
+    ESPERA = 1.0        # segundos entre vueltas (y para juntar pedidos seguidos)
+
+    def __init__(self, cfg: ConfigCatalogo):
+        super().__init__(name="carpetas", daemon=True)
+        self._cfg = cfg
+        self._parar = threading.Event()
+
+    def run(self):
+        primera = True
+        while not self._parar.is_set():
+            repo = None
+            try:
+                repo = Repo(conectar(self._cfg, preparar=False), self._cfg.raiz)
+                repo.conn.execute(f"LISTEN {CANAL_PEDIR_CARPETAS}")
+                if primera:
+                    leer_carpetas_del_nas(repo)
+                    primera = False
+                while not self._parar.is_set():
+                    pedidos = list(repo.conn.notifies(timeout=self.ESPERA, stop_after=1))
+                    if pedidos:
+                        # Varios pedidos seguidos (dos PCs, «Actualizar»): una sola lectura
+                        list(repo.conn.notifies(timeout=0.2))
+                        leer_carpetas_del_nas(repo)
+            except (psycopg.Error, CatalogoNoDisponible, OSError) as e:
+                log.warning("carpetas: %s", e)
+            finally:
+                if repo is not None:
+                    try:
+                        repo.close()
+                    except psycopg.Error:
+                        pass
+            self._parar.wait(ESPERA_RECONEXION)
+
+    def parar(self):
+        self._parar.set()
 
 
 # ---------------------------------------------------------------- latido
@@ -287,12 +350,12 @@ def pasada(repo: Repo, cfg: ConfigCatalogador, carpeta: str | None = None,
     from .engine.pipeline import Opciones, catalogar
     todos = pasos is None
     pedidos = set(PASOS) if todos else set(pasos) | {ARCHIVOS}
-    carpetas = repo.carpetas_catalogadas()      # se manejan desde la app (⚙ de Catalogar)
+    marcas = repo.alcance()                     # se manejan desde la app (⚙ de Catalogar)
     if carpeta is None:
-        lista, bloqueo, alcance = list(carpetas), None, None
+        lista, bloqueo, alcance = list(marcas.raices()), None, None
     else:
         rel = carpeta.replace("\\", "/").strip("/")
-        madre = carpeta_madre(rel, carpetas)
+        madre = marcas.raiz_de(rel)
         if madre is None:
             raise ValueError(f"«{rel}» no está dentro de las carpetas que se catalogan")
         lista, bloqueo, alcance = [rel], madre, [rel]
@@ -304,7 +367,7 @@ def pasada(repo: Repo, cfg: ConfigCatalogador, carpeta: str | None = None,
         rehacer_miniaturas=rehacer and miniaturas,
     )
     stats = catalogar(repo, lista, progress_cb=_Avance(repo, "catalogando", parar, cfg),
-                      bloqueo=bloqueo, opciones=opciones)
+                      bloqueo=bloqueo, opciones=opciones, alcance=marcas)
     resumen = {"catalogado": asdict(stats)}
     escenas, personas = ESCENAS in pedidos, PERSONAS in pedidos
     if cfg.ia and (escenas or personas):
@@ -351,6 +414,12 @@ def atender(repo: Repo, cfg: ConfigCatalogador, pedido: dict | None,
     except Exception as e:  # noqa: BLE001 — cualquier otra falla se informa y se sigue
         log.exception("falló %s", quien)
         error = f"{e.__class__.__name__}: {e}"[:500]
+    try:
+        leer_carpetas_del_nas(repo)     # el árbol de las PCs queda al día
+    except (OSError, psycopg.Error) as e:
+        if isinstance(e, psycopg.OperationalError):
+            raise
+        log.warning("carpetas: %s", e)
     fin = dict(fase="esperando", hechos=None, total=None, detalle=None, pedido_id=None,
                ultima_fin=datetime.datetime.now().astimezone(), ultima_resumen=resumen, ultima_error=error)
     if pedido is None:
@@ -429,6 +498,7 @@ def servir(cfg: ConfigCatalogador, parar: threading.Event | None = None):
             parar.wait(300)
             continue
         latido = Latido(cfg.catalogo)
+        lector = LectorDeCarpetas(cfg.catalogo)
         try:
             repo = Repo(conn, cfg.catalogo.raiz)
             n = repo.soltar_pedidos_colgados()
@@ -438,6 +508,7 @@ def servir(cfg: ConfigCatalogador, parar: threading.Event | None = None):
                                    hechos=None, total=None, pedido_id=None)
             conn.execute("LISTEN catalogado")
             latido.start()
+            lector.start()
             log.info("listo: %s, carpetas %s, nocturna %s", cfg.catalogo.raiz,
                      ", ".join(repo.carpetas_catalogadas()) or "(ninguna todavía)",
                      cfg.hora.strftime("%H:%M"))
@@ -451,6 +522,7 @@ def servir(cfg: ConfigCatalogador, parar: threading.Event | None = None):
             parar.wait(ESPERA_RECONEXION)
         finally:
             latido.parar()
+            lector.parar()
             try:
                 conn.close()
             except psycopg.Error:

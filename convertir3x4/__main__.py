@@ -21,6 +21,8 @@ def main():
     window.discos_tab.start_background()
     # Buscar muestra sola lo que cataloga el NAS o etiqueta la otra PC
     window.iniciar_avisos()
+    # Sin catalogo.ini (PC nueva): se abre la pantalla «Conexión al catálogo»
+    window.revisar_configuracion()
     # Revisar (y si hace falta ofrecer preparar) el programa para bajar videos
     window.convert_tab.revisar_herramientas()
     # ¿Hay una versión nueva publicada? (solo el .exe numerado, no en desarrollo)

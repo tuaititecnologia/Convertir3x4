@@ -56,6 +56,65 @@ def config_catalogo():
     raise CatalogoNoConfigurado("no hay catalogo.ini")
 
 
+def origen_config_catalogo() -> tuple[str, str | None]:
+    """De dónde sale la configuración del catálogo de esta PC: ("entorno",
+    None) con las variables de desarrollo, ("archivo", ruta) o ("ninguno", None)."""
+    if os.environ.get("CDLM_CATALOGO_SERVIDOR"):
+        return "entorno", None
+    for ruta in rutas_config_catalogo():
+        if os.path.isfile(ruta):
+            return "archivo", ruta
+    return "ninguno", None
+
+
+def ruta_para_guardar_config() -> str | None:
+    """Dónde escribe la pantalla «Conexión al catálogo»: el mismo archivo de
+    donde se leyó; si no había, junto al .exe (la app queda portable) o, si ahí
+    no se puede escribir (Program Files), en la carpeta de datos del usuario.
+    None con las variables de desarrollo: ahí no se guarda nada."""
+    origen, ruta = origen_config_catalogo()
+    if origen == "entorno":
+        return None
+    if ruta:
+        return ruta
+    junto, datos = rutas_config_catalogo()
+    carpeta = os.path.dirname(junto)
+    return junto if os.access(carpeta, os.W_OK) else datos
+
+
+def guardar_config_catalogo(cfg) -> str:
+    """Escribe `catalogo.ini` (completo: primero a un temporal y después lo
+    reemplaza, así un corte no lo deja a medias). Devuelve dónde quedó."""
+    ruta = ruta_para_guardar_config()
+    if ruta is None:
+        raise PermissionError("con las variables CDLM_CATALOGO_* no se guarda la configuración")
+    try:
+        _escribir(ruta, cfg.a_ini())
+    except PermissionError:
+        # En Windows, os.access no sabe si Program Files deja escribir: se prueba
+        junto, datos = rutas_config_catalogo()
+        if ruta != junto or origen_config_catalogo()[0] == "archivo":
+            raise
+        ruta = datos
+        _escribir(ruta, cfg.a_ini())
+    return ruta
+
+
+def _escribir(ruta: str, texto: str):
+    os.makedirs(os.path.dirname(ruta), exist_ok=True)
+    tmp = ruta + ".nuevo"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(texto)
+        os.replace(tmp, ruta)
+    except OSError:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def abrir_repo():
     """Abre el catálogo (conexión nueva). Quien lo abre lo cierra: `repo.close()`
     o `with abrir_repo() as repo:`. Nunca desde el hilo de la interfaz: puede

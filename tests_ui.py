@@ -286,7 +286,7 @@ class TestKeyboard:
         window.buscar_tab.txt_query.setFocus()
         app.processEvents()
         seen = []
-        for _ in range(7):          # + el botón «Detalles»
+        for _ in range(8):          # + «Detalles» y «Conexión…» del aviso (sin catálogo)
             seen.append(type(app.focusWidget()).__name__)
             window.focusNextChild()
             app.processEvents()
@@ -872,7 +872,7 @@ class TestCatalogarEnElNas:
             assert tab.btn_run.isEnabled() and not tab.progress.isVisibleTo(tab)
             assert cambios == []      # primera pasada vista: no había una anterior
             # una subcarpeta fuera de la lista no se pide
-            tab.catalogar_una_carpeta(str(tmp_path / "Historial"))
+            tab.catalogar_una_carpeta("Historial")
             assert "no está entre las que se catalogan" in tab.lbl_status.text()
         finally:
             tab.deleteLater()

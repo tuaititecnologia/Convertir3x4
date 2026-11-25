@@ -23,7 +23,7 @@ from PyQt6.QtWidgets import (
 )
 
 from ...appdata import abrir_repo, catalog_ref_dir, config_catalogo
-from ...catalog import rutas
+from ...catalog.alcance import Alcance
 from ...catalog.db import CatalogoNoConfigurado
 from ...catalog import referencias
 from ...catalog.thumbs import foto_de_referencia
@@ -183,6 +183,7 @@ class MotorTab(QWidget):
         self._on_done_cb = None
         self._srv = srv or servicio()
         self._carpetas: tuple[str, ...] = ()
+        self._alcance = Alcance()
         self._raiz = ""
         self._ultima_fin = None
         self._trabajando = False
@@ -244,6 +245,7 @@ class MotorTab(QWidget):
         layout.addLayout(cab)
         self.conn_box = CajaConexion()
         self.conn_box.reintentar.connect(self._reintentar)
+        self.conn_box.configurar.connect(self._abrir_conexion)
         self.conn_box.set_estado(self._srv.estado if self._srv.estado != "ok" else "conectando",
                                  self._srv.texto)
         layout.addWidget(self.conn_box)
@@ -702,6 +704,10 @@ class MotorTab(QWidget):
             self.progress.setVisible(False)
         self._update_buttons()
 
+    def _abrir_conexion(self):
+        from ..widgets.conexion_catalogo import abrir_conexion
+        abrir_conexion(self)
+
     def _reintentar(self):
         self.refresh()
         self._refresh_people()
@@ -722,7 +728,7 @@ class MotorTab(QWidget):
         def leer(repo):
             return (repo.estado_catalogado(), repo.pedidos_abiertos(), repo.count_media(),
                     repo.count_pending_tags(), len(repo.faltantes()),
-                    repo.carpetas_catalogadas())
+                    repo.alcance())
 
         def listo(_r=None):
             self._consultando = False
@@ -733,20 +739,20 @@ class MotorTab(QWidget):
 
         self._srv.pedir(leer, ok=mostrar, error=listo)
 
-    def _mostrar(self, est, pedidos, n, pend, faltan, carpetas=()):
+    def _mostrar(self, est, pedidos, n, pend, faltan, alcance=None):
         self._pedidos = pedidos
-        self._carpetas = tuple(carpetas)
+        self._alcance = alcance if alcance is not None else Alcance()
+        self._carpetas = self._alcance.raices()
         try:
             self._raiz = config_catalogo().raiz
         except CatalogoNoConfigurado:
             self._raiz = ""
-        if self._carpetas:
-            sep = "\\" if self._raiz.startswith("\\") or self._raiz[1:2] == ":" else "/"
-            nombres = [c.replace("/", sep) for c in self._carpetas]
-            self.lbl_carpetas.setText("Carpetas del NAS que se catalogan: " + ", ".join(nombres)
-                                      + ". Se agregan o quitan en las opciones avanzadas (⚙).")
+        lineas = self._alcance.describir()
+        if lineas:
+            self.lbl_carpetas.setText("Carpetas del NAS que se catalogan: " + "; ".join(lineas)
+                                      + ". Se eligen en las opciones avanzadas (⚙).")
         else:
-            self.lbl_carpetas.setText("Todavía no hay carpetas para catalogar. Agréguelas en las "
+            self.lbl_carpetas.setText("Todavía no hay carpetas para catalogar. Elíjalas en las "
                                       "opciones avanzadas (⚙, arriba a la derecha).")
         texto, self._trabajando = texto_estado(est, pedidos)
         self._set_status(texto)
@@ -833,19 +839,17 @@ class MotorTab(QWidget):
     def _abrir_partes(self):
         """La flecha de «Catalogar»: qué hacer, dónde y si se rehace."""
         from ..widgets.catalogar_por_partes import CatalogarPorPartes
-        dlg = CatalogarPorPartes(self, carpetas=self._carpetas, raiz=self._raiz or "")
+        dlg = CatalogarPorPartes(self, carpetas=self._carpetas, raiz=self._raiz or "",
+                                 srv=self._srv)
         if dlg.exec():
             self._pedir(dlg.carpeta_elegida(), dlg.pasos, dlg.rehacer)
 
-    def catalogar_una_carpeta(self, ruta: str, pasos=None, rehacer: bool = False):
-        """Una subcarpeta (p. ej. un evento recién copiado). Tiene que estar dentro
-        de alguna de la lista; el NAS toma el bloqueo de esa carpeta."""
-        rel = rutas.a_relativa(ruta, self._raiz) if self._raiz else None
-        madre = next((c for c in self._carpetas if rel is not None and rutas.dentro_de(rel, c)),
-                     None)
-        if madre is None:
-            self._set_status("Esa carpeta no está entre las que se catalogan. Elija una "
-                             "carpeta dentro de: " + _lista(self._carpetas) + ".")
+    def catalogar_una_carpeta(self, rel: str, pasos=None, rehacer: bool = False):
+        """Una subcarpeta (relativa; p. ej. un evento recién copiado). Tiene que
+        catalogarse; el NAS toma el bloqueo de la carpeta que la contiene."""
+        if self._alcance.raiz_de(rel) is None:
+            self._set_status("Esa carpeta no está entre las que se catalogan. Tíldela antes "
+                             "en las opciones avanzadas (⚙).")
             return
         self._pedir(rel, pasos, rehacer)
 
