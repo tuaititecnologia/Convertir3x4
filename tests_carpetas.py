@@ -391,11 +391,42 @@ def _abrir(pg_cfg, tmp_path):
 
 
 class TestVentanaDeCarpetas:
+    @pytest.fixture(autouse=True)
+    def nas_que_no_contesta_rapido(self, monkeypatch):
+        """En las pruebas no corre el catalogador: el pedido de relectura no se
+        contesta y la ventana se libera al vencer la espera (corta)."""
+        from convertir3x4.ui.widgets import arbol_carpetas as ac
+        monkeypatch.setattr(ac, "SIN_RESPUESTA_MS", 300)
+
+    def test_mientras_espera_al_nas_no_se_toca(self, app, srv, pg_cfg, tmp_path):
+        from convertir3x4.ui.avisos_catalogo import hub
+        from convertir3x4.ui.widgets import arbol_carpetas as ac
+        with _abrir(pg_cfg, tmp_path) as r:
+            r.reemplazar_carpetas_nas(CARPETAS)
+        d = ac.ElegirCarpetas(srv=srv)
+        d.show()
+        try:
+            assert _esperar(app, lambda: "Fotos" in d._items)
+            assert not d.tree.isEnabled() and not d.txt_filtro.isEnabled()
+            assert not d.btn_actualizar.isEnabled()
+            assert "Pidiendo las carpetas" in d.lbl_lectura.text()
+            hub().carpetas.emit()                         # el NAS contestó
+            assert _esperar(app, lambda: d.tree.isEnabled(), 2)
+            assert d.btn_actualizar.isEnabled() and "leídas hoy" in d.lbl_lectura.text()
+            d.tildar("Fotos", True)
+            assert d.btn_guardar.isEnabled()
+            d.actualizar()                                # «Actualizar»: otra vez quieto
+            assert not d.tree.isEnabled() and not d.btn_guardar.isEnabled()
+            assert _esperar(app, lambda: "no respondió" in d.lbl_lectura.text(), 3)
+            assert d.tree.isEnabled() and d.btn_guardar.isEnabled()
+            assert d._arbol.estados["Fotos"]              # lo cambiado sigue
+        finally:
+            d.deleteLater()
+
     def test_tildar_filtrar_y_guardar(self, app, srv, pg_cfg, tmp_path, monkeypatch):
         from PyQt6.QtCore import Qt
         from convertir3x4.ui.avisos_catalogo import hub
         from convertir3x4.ui.widgets import arbol_carpetas as ac
-        monkeypatch.setattr(ac, "SIN_RESPUESTA_MS", 300)
         with _abrir(pg_cfg, tmp_path) as r:
             r.reemplazar_carpetas_nas(CARPETAS)
             r.guardar_marcas({"Videos": True})
@@ -415,7 +446,6 @@ class TestVentanaDeCarpetas:
             d._items["Videos/Terminados"].setCheckState(0, Qt.CheckState.Unchecked)
             assert d._arbol.estados["Videos"]
             assert "1 excluida adentro" in d._items["Videos"].text(1)
-            assert "Videos (excepto Videos/Terminados)" in d.lbl_resumen.text()
             assert d.btn_guardar.isEnabled()
             # con el filtro, tildar Fotos no toca Día 1 (no se ve)
             d.txt_filtro.setText("temp")
@@ -435,7 +465,7 @@ class TestVentanaDeCarpetas:
             assert "leídas hoy" in d.lbl_lectura.text()
             # guardar: Terminados queda afuera con lo que tiene; se elige dejarlo
             pedidos = []
-            monkeypatch.setattr(d, "confirmar", lambda a, salen: pedidos.append(salen) or "dejar")
+            monkeypatch.setattr(d, "confirmar", lambda salen: pedidos.append(salen) or "dejar")
             guardado = []
             d.guardado.connect(lambda: guardado.append(1))
             d.guardar()
@@ -460,7 +490,7 @@ class TestVentanaDeCarpetas:
         try:
             assert _esperar(app, lambda: "Videos/Terminados" in d._items)
             d.tildar("Videos/Terminados", False)
-            monkeypatch.setattr(d, "confirmar", lambda a, salen: "eliminar")
+            monkeypatch.setattr(d, "confirmar", lambda salen: "eliminar")
             guardado = []
             d.guardado.connect(lambda: guardado.append(1))
             d.guardar()
@@ -470,22 +500,36 @@ class TestVentanaDeCarpetas:
         finally:
             d.deleteLater()
 
-    def test_cancelar_en_el_resumen_no_guarda(self, app, srv, pg_cfg, tmp_path, monkeypatch):
+    def test_solo_pregunta_si_algo_queda_afuera(self, app, srv, pg_cfg, tmp_path, monkeypatch):
         from convertir3x4.ui.widgets import arbol_carpetas as ac
         with _abrir(pg_cfg, tmp_path) as r:
             r.reemplazar_carpetas_nas(CARPETAS)
+            r.guardar_marcas({"Videos": True})
+            _medio(r, "Videos/a.jpg")
         d = ac.ElegirCarpetas(srv=srv)
         d.show()
         try:
-            assert _esperar(app, lambda: "Fotos" in d._items)
-            d.tildar("", True)
+            assert _esperar(app, lambda: "Fotos" in d._items and d.tree.isEnabled(), 3)
             preguntado = []
-            monkeypatch.setattr(d, "confirmar", lambda a, salen: preguntado.append(1))
+            monkeypatch.setattr(d, "confirmar", lambda salen: preguntado.append(salen))
+            # Destildar Videos: su foto queda afuera; se pregunta y se cancela
+            d.tildar("Videos", False)
             d.guardar()
             assert _esperar(app, lambda: preguntado)
+            assert preguntado == [{"Videos": (1, 0)}]
             assert _esperar(app, lambda: d.btn_guardar.isEnabled())
             with _abrir(pg_cfg, tmp_path) as r:
-                assert r.marcas_carpetas() == {}
+                assert r.marcas_carpetas() == {"Videos": True}
+            # Agregar Fotos (nada queda afuera): se guarda sin preguntar
+            d.tildar("Videos", True)
+            d.tildar("Fotos", True)
+            guardado = []
+            d.guardado.connect(lambda: guardado.append(1))
+            d.guardar()
+            assert _esperar(app, lambda: guardado)
+            assert len(preguntado) == 1
+            with _abrir(pg_cfg, tmp_path) as r:
+                assert r.marcas_carpetas() == {"Videos": True, "Fotos": True}
         finally:
             d.deleteLater()
 
@@ -498,6 +542,7 @@ class TestVentanaDeCarpetas:
         d.show()
         try:
             assert _esperar(app, lambda: "Fotos/Día 2" in d._items)
+            assert _esperar(app, lambda: d.tree.isEnabled(), 3)
             assert not d.elegir("Videos") and not d.btn_ok.isEnabled()
             assert not d.elegir("Fotos/Día 1")
             assert d.elegir("Fotos/Día 2") and d.btn_ok.isEnabled()

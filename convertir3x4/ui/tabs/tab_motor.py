@@ -747,13 +747,11 @@ class MotorTab(QWidget):
             self._raiz = config_catalogo().raiz
         except CatalogoNoConfigurado:
             self._raiz = ""
-        lineas = self._alcance.describir()
-        if lineas:
-            self.lbl_carpetas.setText("Carpetas del NAS que se catalogan: " + "; ".join(lineas)
-                                      + ". Se eligen en las opciones avanzadas (⚙).")
-        else:
-            self.lbl_carpetas.setText("Todavía no hay carpetas para catalogar. Elíjalas en las "
-                                      "opciones avanzadas (⚙, arriba a la derecha).")
+        # Qué se cataloga lo muestra el árbol (⚙); acá solo se avisa si no hay nada
+        self.lbl_carpetas.setText("" if self._alcance else
+                                  "Todavía no hay carpetas para catalogar. Elíjalas en las "
+                                  "opciones avanzadas (⚙, arriba a la derecha).")
+        self.lbl_carpetas.setVisible(not self._alcance)
         texto, self._trabajando = texto_estado(est, pedidos)
         self._set_status(texto)
         total = est.get("total")

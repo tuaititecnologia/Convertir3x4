@@ -512,7 +512,8 @@ class TestCarpetas:
             with abrir() as r:
                 r.guardar_marcas({"Historial": True, "Historial/2014": False})
             d._carpetas_guardadas()
-            assert esperar(lambda: "Historial (excepto Historial/2014)" in d.lbl_carpetas.text())
+            assert esperar(lambda: d.lbl_carpetas.text() == "")   # la lista está en el árbol
+            assert not d.lbl_carpetas.isVisibleTo(d)
         finally:
             d.deleteLater()
             srv.cerrar()

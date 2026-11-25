@@ -849,7 +849,7 @@ class TestCatalogarEnElNas:
         tab = MotorTab(srv=srv)
         try:
             assert _esperar(app, lambda: tab.btn_run.isEnabled())
-            assert "Publicar" in tab.lbl_carpetas.text()
+            assert tab.lbl_carpetas.text() == ""      # lo que se cataloga se ve en el árbol (⚙)
             assert "todavía no catalogó" in tab.lbl_status.text()
             tab.btn_run.click()
             assert not tab.btn_run.isEnabled()

@@ -31,7 +31,7 @@ La raíz, a su vez, solo se puede cambiar editando `catalogo.ini` a mano, en el 
 | No se vigila el disco en tiempo real (inotify) | Necesita un vigilante por carpeta (miles en `Historial`) y tiene casos raros con lo que llega por SMB. Releer al abrir resuelve lo mismo |
 | Una casilla de dos estados por carpeta, en todos los niveles, sin marcas calculadas hacia arriba | Ver «Por qué dos estados». Lo que se ve tildado es lo que se cataloga |
 | Una carpeta sin marca propia toma la de su madre | Una carpeta nueva dentro de una tildada entra sola, sin abrir el árbol |
-| Los cambios se aplican con «Guardar», después de un resumen | Con exclusiones y filtro se hacen varios clics seguidos, y destildar `/` por error dejaría todo afuera |
+| Los cambios se aplican con «Guardar», y solo se pregunta si algo catalogado queda afuera | Con exclusiones y filtro se hacen varios clics seguidos, y destildar `/` por error dejaría todo afuera |
 | Al excluir una carpeta con medios catalogados, se pregunta si se eliminan del catálogo. Si no, quedan con sus etiquetas | Si la carpeta vuelve a tildarse, se reutilizan sin procesarlas de nuevo |
 | Junto a cada carpeta, cuántas fotos y videos catalogados tiene | Muestra qué falta catalogar |
 | Se muestran las carpetas vacías | La carpeta de un evento recién creada todavía está vacía, y el filtro tiene que encontrarla |
@@ -77,16 +77,13 @@ Hay un campo para buscar por nombre. Al escribir «temp», el árbol muestra `Te
 
 ### Guardar
 
-El botón «Guardar» muestra antes un resumen de lo que cambia, por ejemplo:
-
-> Se agrega Fotos (excepto Fotos/Día 1).
-> Se excluye Videos/Terminados. Tiene 340 fotos y 12 videos catalogados. ¿Los elimina del catálogo, con sus etiquetas, o los deja?
+Los cambios se aplican con «Guardar». Si con el cambio no queda afuera nada de lo ya catalogado, se guarda sin preguntar. Si quedan fotos o videos catalogados fuera de las carpetas elegidas, se pregunta solo eso, con cuántos son y de qué carpetas, y si se eliminan del catálogo o se dejan.
 
 Si los deja, quedan en el catálogo y en Buscar con sus etiquetas. Mientras la carpeta esté excluida, el catalogador no la recorre. Si en ese tiempo se borra o se mueve un archivo, no se marca como faltante, y al abrirlo desde Buscar da error. Se pone al día cuando la carpeta vuelve a tildarse.
 
-Cerrar sin guardar descarta los cambios.
+Cerrar con cambios sin guardar pide confirmación.
 
-Debajo del árbol hay además un resumen fijo de lo que se cataloga, en el mismo formato: «/ (excepto Videos/Terminados)».
+No hay una frase ni una lista de lo que se cataloga debajo del árbol, en el ⚙ ni en la pestaña Catalogar (decisión del 25/11/2026): el árbol ya lo muestra, y una frase crece con cada excepción. Solo se avisa cuando no se cataloga ninguna carpeta.
 
 ### Otras cosas del árbol
 
@@ -94,6 +91,7 @@ Debajo del árbol hay además un resumen fijo de lo que se cataloga, en el mismo
 - Se puede desplegar y plegar todo.
 - Debajo del árbol se indica de cuándo es la lectura, por ejemplo «Carpetas del NAS leídas hoy a las 10:42». Si a los 10 segundos del pedido no llegó el aviso del NAS, dice: «El NAS no respondió. Se muestran las carpetas leídas el 24/11 a las 02:10».
 - Un botón «Actualizar» vuelve a pedir la lectura.
+- Mientras se espera al NAS (al abrir y con «Actualizar»), el árbol, el filtro y «Guardar» quedan deshabilitados: el árbol puede cambiar debajo del operador. Se habilitan cuando llega la lectura, si vencen los 10 segundos o si falla la conexión. Lo cambiado y todavía sin guardar se conserva.
 
 ### Elegir una subcarpeta para catalogar (`tab_motor`, «Catalogar ▾»)
 

@@ -122,8 +122,11 @@ class _ArbolBase(QDialog):
 
     # ------------------------------------------------------------- datos
     def actualizar(self):
-        """Pide al NAS que relea las carpetas y dibuja lo que ya hay mientras tanto."""
+        """Pide al NAS que relea las carpetas y dibuja lo que ya hay mientras
+        tanto, sin dejar tocarlo hasta que llegue la lectura nueva (o se vea que
+        el NAS no responde): el árbol puede cambiar debajo del operador."""
         self._esperando = True
+        self._bloquear()
         self._sin_respuesta.start()
         self._srv.pedir(lambda repo: repo.pedir_carpetas_nas(), ok=lambda _: None,
                         error=self._error)
@@ -138,17 +141,35 @@ class _ArbolBase(QDialog):
                 return
         except RuntimeError:
             return              # la ventana ya se cerró
-        self._esperando = False
         self._sin_respuesta.stop()
-        self._consultar()
+        self._srv.pedir(lambda repo: repo.arbol_carpetas(), ok=self._cargar_lectura_nueva,
+                        error=self._error)
+
+    def _cargar_lectura_nueva(self, datos: dict):
+        self._esperando = False
+        self._cargar(datos)
 
     def _nas_no_respondio(self):
         self._esperando = False
+        self._bloquear()
         self._mostrar_lectura(no_respondio=True)
 
     def _error(self, e):
         self._sin_respuesta.stop()
+        self._esperando = False
+        self._bloquear()
         self.lbl_lectura.setText(texto_para(e))
+
+    def _bloquear(self):
+        """Mientras se espera al NAS no se puede tocar nada del árbol."""
+        libre = not self._esperando and self._arbol is not None
+        for w in (self.tree, self.txt_filtro, self.btn_desplegar, self.btn_plegar):
+            w.setEnabled(libre)
+        self.btn_actualizar.setEnabled(not self._esperando)
+        self._botones()
+
+    def _botones(self):
+        """Para las subclases: Guardar / Elegir."""
 
     def _marcas_actuales(self, datos) -> dict[str, bool]:
         return datos["marcas"]
@@ -179,6 +200,7 @@ class _ArbolBase(QDialog):
         self._filtrar(self.txt_filtro.text())
         self._mostrar_lectura()
         self._cargado()
+        self._bloquear()
 
     def _cargado(self):
         """Para las subclases: después de cada carga."""
@@ -290,10 +312,11 @@ class ElegirCarpetas(_ArbolBase):
         self._originales: dict[str, bool] | None = None
         self.tree.itemChanged.connect(self._al_tildar)
 
-        self.lbl_resumen = QLabel("")
-        self.lbl_resumen.setWordWrap(True)
-        self.lbl_resumen.setTextFormat(Qt.TextFormat.PlainText)
-        self._lay.addWidget(self.lbl_resumen)
+        # Solo para avisar si no se pudo guardar: lo que se cataloga ya lo dice el árbol
+        self.lbl_aviso = QLabel("")
+        self.lbl_aviso.setWordWrap(True)
+        self.lbl_aviso.setVisible(False)
+        self._lay.addWidget(self.lbl_aviso)
 
         botones = QDialogButtonBox()
         botones.addButton("Cancelar", QDialogButtonBox.ButtonRole.RejectRole).clicked.connect(
@@ -332,7 +355,7 @@ class ElegirCarpetas(_ArbolBase):
         self._pintando = False
 
     def _cargado(self):
-        self._resumir()
+        self._botones()
 
     def _al_tildar(self, it: QTreeWidgetItem, columna: int):
         if self._pintando or columna != 0 or self._arbol is None:
@@ -343,17 +366,12 @@ class ElegirCarpetas(_ArbolBase):
         """Lo que hace la casilla (con el filtro, solo lo que se ve)."""
         self._arbol.cambiar(carpeta, valor, self._visibles)
         self._pintar()
-        self._resumir()
+        self._botones()
 
-    def _resumir(self):
-        alcance = self._arbol.alcance()
-        lineas = alcance.describir()
-        if lineas:
-            texto = "Se cataloga: " + "; ".join(lineas) + "."
-        else:
-            texto = "No se cataloga ninguna carpeta."
-        self.lbl_resumen.setText(texto)
-        self.btn_guardar.setEnabled(alcance.marcas != self._originales)
+    def _botones(self):
+        if hasattr(self, "btn_guardar"):
+            self.btn_guardar.setEnabled(not self._esperando and self._arbol is not None
+                                        and self._arbol.marcas() != self._originales)
 
     # ------------------------------------------------------------- guardar
     def guardar(self):
@@ -369,9 +387,10 @@ class ElegirCarpetas(_ArbolBase):
                         error=self._fallo_al_guardar)
 
     def _confirmar_y_guardar(self, marcas, salen):
-        eleccion = self.confirmar(Alcance(marcas), salen)
+        # Solo se pregunta si algo ya catalogado queda afuera; si no, se guarda
+        eleccion = self.confirmar(salen) if salen else "dejar"
         if eleccion is None:
-            self._resumir()
+            self._botones()
             return
         quien = socket.gethostname()
         eliminar = eleccion == "eliminar"
@@ -391,38 +410,30 @@ class ElegirCarpetas(_ArbolBase):
         self.accept()
 
     def _fallo_al_guardar(self, e):
-        self.lbl_resumen.setText(texto_para(e))
-        self._resumir_boton()
+        self.lbl_aviso.setText(texto_para(e))
+        self.lbl_aviso.setVisible(True)
+        self._botones()
 
-    def _resumir_boton(self):
-        if self._arbol is not None:
-            self.btn_guardar.setEnabled(self._arbol.marcas() != self._originales)
-
-    def confirmar(self, alcance: Alcance, salen: dict) -> str | None:
-        """El resumen antes de guardar. Devuelve "dejar", "eliminar" o None
-        (cancelar). Si nada catalogado queda afuera, "dejar" es simplemente
-        guardar."""
-        lineas = alcance.describir()
+    def confirmar(self, salen: dict) -> str | None:
+        """Algo ya catalogado queda afuera: ¿se elimina del catálogo o se deja?
+        Devuelve "dejar", "eliminar" o None (cancelar)."""
+        fotos = sum(f for f, _ in salen.values())
+        videos = sum(v for _, v in salen.values())
         msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Icon.Warning)
         msg.setWindowTitle("Guardar las carpetas")
-        msg.setText("Se catalogará: " + ("; ".join(lineas) if lineas else "ninguna carpeta") + ".")
-        if salen:
-            fotos = sum(f for f, _ in salen.values())
-            videos = sum(v for _, v in salen.values())
-            detalle = "\n".join(f"  • {c or RAIZ}: {_cantidad(*n)}"
-                                for c, n in sorted(salen.items()))
-            msg.setIcon(QMessageBox.Icon.Warning)
-            msg.setInformativeText(
-                f"Quedan afuera {_cantidad(fotos, videos)} que ya están en el catálogo:\n"
-                f"{detalle}\n\n¿Los elimina del catálogo, con sus etiquetas, o los deja? Si los "
-                "deja, siguen en Buscar y se aprovechan si la carpeta vuelve a tildarse. Los "
-                "archivos del NAS no se tocan.")
-            dejar = msg.addButton("Dejarlos", QMessageBox.ButtonRole.AcceptRole)
-            eliminar = msg.addButton("Eliminarlos del catálogo",
-                                     QMessageBox.ButtonRole.DestructiveRole)
-        else:
-            dejar = msg.addButton("Guardar", QMessageBox.ButtonRole.AcceptRole)
-            eliminar = None
+        msg.setText(f"{_cantidad(fotos, videos).capitalize()} del catálogo quedan fuera de las "
+                    "carpetas elegidas. ¿Los elimina del catálogo o los deja?")
+        detalle = "\n".join(f"  • {c or RAIZ}: {_cantidad(*n)}"
+                            for c, n in sorted(salen.items())[:8])
+        if len(salen) > 8:
+            detalle += f"\n  … y {len(salen) - 8} carpetas más"
+        msg.setInformativeText(
+            f"{detalle}\n\nSi los elimina, se pierden sus etiquetas. Si los deja, siguen en "
+            "Buscar y se aprovechan si la carpeta vuelve a elegirse. Los archivos del NAS no "
+            "se tocan.")
+        dejar = msg.addButton("Dejarlos", QMessageBox.ButtonRole.AcceptRole)
+        eliminar = msg.addButton("Eliminarlos del catálogo", QMessageBox.ButtonRole.DestructiveRole)
         cancelar = msg.addButton("Cancelar", QMessageBox.ButtonRole.RejectRole)
         msg.setDefaultButton(dejar)
         msg.setEscapeButton(cancelar)
@@ -430,7 +441,7 @@ class ElegirCarpetas(_ArbolBase):
         elegido = msg.clickedButton()
         if elegido is dejar:
             return "dejar"
-        if eliminar is not None and elegido is eliminar:
+        if elegido is eliminar:
             return "eliminar"
         return None
 
@@ -476,7 +487,8 @@ class ElegirUnaCarpeta(_ArbolBase):
         return c if self._arbol.estados.get(c) else None
 
     def _botones(self):
-        self.btn_ok.setEnabled(self._elegible() is not None)
+        if hasattr(self, "btn_ok"):
+            self.btn_ok.setEnabled(not self._esperando and self._elegible() is not None)
 
     def elegir(self, carpeta: str) -> bool:
         """Deja elegida una carpeta (para las pruebas y el doble clic)."""

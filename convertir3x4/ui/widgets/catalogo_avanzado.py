@@ -1,7 +1,8 @@
 """Opciones avanzadas del catálogo: escondidas detrás del ⚙ de Catalogar.
 
-- Carpetas que se catalogan: el resumen y «Elegir carpetas…», que abre el
-  árbol de carpetas del NAS (widgets/arbol_carpetas.py).
+- Carpetas que se catalogan: «Elegir carpetas…», que abre el árbol de
+  carpetas del NAS (widgets/arbol_carpetas.py). Sin lista acá (decisión del
+  25/11/2026): el árbol ya muestra qué se cataloga.
 
 - Conexión al catálogo (widgets/conexion_catalogo.py).
 
@@ -12,7 +13,7 @@
   que un NAS caído nunca vacía el catálogo.
 """
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
     QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QMessageBox,
     QProgressBar, QPushButton, QVBoxLayout,
@@ -22,6 +23,7 @@ from ...appdata import abrir_repo, catalog_thumb_dir
 from ...catalog.cache_miniaturas import CacheMiniaturas
 from ...workers import EngineWorker
 from ..servicio_catalogo import servicio, texto_para
+from .dialogos import crecer
 
 
 class CatalogoAvanzado(QDialog):
@@ -54,7 +56,7 @@ class CatalogoAvanzado(QDialog):
         lay.addWidget(ayuda)
         self.lbl_carpetas = QLabel("")
         self.lbl_carpetas.setWordWrap(True)
-        self.lbl_carpetas.setTextFormat(Qt.TextFormat.PlainText)
+        self.lbl_carpetas.setVisible(False)
         lay.addWidget(self.lbl_carpetas)
         fila = QHBoxLayout()
         self.btn_elegir_carpetas = QPushButton("Elegir carpetas…")
@@ -129,13 +131,17 @@ class CatalogoAvanzado(QDialog):
     # ------------------------------------------------------------- carpetas
     def _releer_carpetas(self):
         def ok(alcance):
-            lineas = alcance.describir()
-            self.lbl_carpetas.setText(
-                "\n".join("• " + x for x in lineas) if lineas else
-                "Todavía no se cataloga ninguna carpeta. Elija las carpetas del NAS que quiere "
-                "encontrar en Buscar.")
-        self._srv.pedir(lambda repo: repo.alcance(), ok=ok,
-                        error=lambda e: self.lbl_carpetas.setText(texto_para(e)))
+            # Qué se cataloga lo muestra el árbol; acá solo se avisa si no hay nada
+            texto = "" if alcance else ("Todavía no se cataloga ninguna carpeta. Elija las "
+                                        "carpetas del NAS que quiere encontrar en Buscar.")
+            self.lbl_carpetas.setText(texto)
+            self.lbl_carpetas.setVisible(bool(texto))
+            crecer(self)
+        def error(e):
+            self.lbl_carpetas.setText(texto_para(e))
+            self.lbl_carpetas.setVisible(True)
+            crecer(self)
+        self._srv.pedir(lambda repo: repo.alcance(), ok=ok, error=error)
 
     def elegir_carpetas(self):
         from .arbol_carpetas import ElegirCarpetas
@@ -169,6 +175,7 @@ class CatalogoAvanzado(QDialog):
             f"Hay {n} fotos y videos cuyo archivo ya no está en su carpeta.")
         self.btn_quitar.setText("Quitar 1 del catálogo…" if n == 1 else f"Quitar {n} del catálogo…")
         self.btn_quitar.setVisible(n > 0)
+        crecer(self)
 
     # ------------------------------------------------------------- quitar
     def _confirmar_quitar(self):
@@ -247,3 +254,4 @@ class CatalogoAvanzado(QDialog):
     def _resultado(self, texto):
         self.lbl_resultado.setText(texto)
         self.lbl_resultado.setVisible(bool(texto))
+        crecer(self)

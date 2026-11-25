@@ -22,6 +22,7 @@ from ... import appdata
 from ...catalog import conexion
 from ...catalog.db import CatalogoNoConfigurado, ConfigCatalogo
 from ...workers import EngineWorker
+from .dialogos import crecer
 
 RAIZ_PREDETERMINADA = r"\\truenas\multimedia"
 
@@ -161,10 +162,7 @@ class ConexionCatalogo(QDialog):
         self._ajustar()
 
     def _ajustar(self):
-        """La ventana crece con el texto del resultado (que ocupa más o menos
-        renglones) en lugar de aplastar los campos."""
-        self.layout().activate()
-        self.resize(self.width(), max(self.height(), self.layout().totalHeightForWidth(self.width())))
+        crecer(self)
 
     # ------------------------------------------------------------- probar
     def probar(self):
