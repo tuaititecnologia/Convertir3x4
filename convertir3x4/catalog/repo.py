@@ -22,8 +22,9 @@ import re
 import psycopg
 import psycopg.types.json
 
-from . import rutas
-from .db import LLAVE_CATALOGAR
+from . import consulta, rutas
+from .alcance import Alcance
+from .db import CANAL_CAMBIOS, CANAL_CARPETAS_LEIDAS, CANAL_PEDIR_CARPETAS, LLAVE_CATALOGAR
 from .models import Media
 
 _MEDIA_COLS = (
@@ -49,6 +50,56 @@ UPDATE media m SET search_doc =
         (SELECT f.texto FROM texto_foto f WHERE f.media_id = m.id), ''))), 'B')
 WHERE m.id = ANY(%s)
 """
+
+
+# Etiquetas de un tipo especial (pedido del 24/11/2026): se ponen desde sus
+# propios campos en Buscar y se buscan con lugar: / evento:. Un medio tiene un
+# solo lugar y cualquier cantidad de eventos. Un nombre es de un solo tipo: si
+# «campamento» es un evento, no puede ser también una etiqueta común.
+LUGAR, EVENTO = "lugar", "evento"
+ESPECIALES = (LUGAR, EVENTO)
+# Solo las comunes (escritas a mano) pasan a lugar o evento: las de personas
+# las pone el reconocimiento de caras y las de la IA las vuelve a proponer el
+# NAS por nombre.
+_CONVERTIBLES = ("descriptivo",) + ESPECIALES
+_NOMBRE_TIPO = {LUGAR: "un lugar", EVENTO: "un evento", "persona": "una persona",
+                "ia-sugerido": "una etiqueta de la IA", "descriptivo": "una etiqueta común"}
+_CAMPO_TIPO = {LUGAR: "el campo Lugar", EVENTO: "el campo Eventos",
+               "descriptivo": "la barra de etiquetas"}
+
+
+class NombreEnUso(ValueError):
+    """El nombre ya es de otro tipo (p. ej. se quiere poner como evento un
+    nombre que es una etiqueta común). El mensaje es para el operador."""
+
+    def __init__(self, nombre: str, tipo: str, quiere: str):
+        self.nombre, self.tipo, self.quiere = nombre, tipo, quiere
+        donde = _CAMPO_TIPO.get(tipo)
+        texto = f"«{nombre}» ya es {_NOMBRE_TIPO.get(tipo, 'otra cosa')}"
+        texto += f": póngalo desde {donde}." if donde else "."
+        super().__init__(texto)
+
+
+class NoSePuedeConvertir(ValueError):
+    """Cambiar el tipo de una etiqueta no se puede (mensaje para el operador)."""
+
+
+def _en_carpetas(carpetas, col: str = "m.rel_path") -> tuple[str, list]:
+    """Condición SQL «está dentro de alguna de estas carpetas» (relativas).
+    "" es la raíz: contiene todo."""
+    conds, params = [], []
+    for c in carpetas:
+        c = c.strip("/")
+        if not c:
+            return "TRUE", []
+        conds.append(f"({col} = %s OR starts_with({col}, %s))")
+        params += [c, c + "/"]
+    return ("(" + " OR ".join(conds) + ")") if conds else "FALSE", params
+
+
+# Carpeta (relativa) de un rel_path, en SQL: 'a/b/c.jpg' -> 'a/b', 'c.jpg' -> ''.
+_CARPETA_SQL = ("CASE WHEN strpos(rel_path, '/') > 0 "
+                "THEN regexp_replace(rel_path, '/[^/]*$', '') ELSE '' END")
 
 
 # Las fechas de toma se comparan por día en la hora de la iglesia.
@@ -351,10 +402,103 @@ class Repo:
         return pid
 
     # ------------------------------------------------- carpetas que se catalogan
+    def marcas_carpetas(self) -> dict[str, bool]:
+        """Las marcas del árbol de carpetas ("" = la raíz)."""
+        return {r["ruta"]: r["incluir"] for r in self._q(
+            "SELECT ruta, incluir FROM carpeta_catalogada")}
+
+    def alcance(self) -> Alcance:
+        """Qué se cataloga (ver catalog/alcance.py)."""
+        return Alcance(self.marcas_carpetas())
+
     def carpetas_catalogadas(self) -> tuple[str, ...]:
-        """La lista de carpetas que recorre el NAS (relativas a la raíz)."""
-        return tuple(r["ruta"] for r in self._q(
-            "SELECT ruta FROM carpeta_catalogada ORDER BY lower(ruta)"))
+        """Desde dónde recorre el NAS: las raíces del alcance (relativas)."""
+        return self.alcance().raices()
+
+    def medios_que_salen(self, marcas: dict[str, bool]) -> dict[str, tuple[int, int]]:
+        """Lo catalogado que deja de estar en el alcance con estas marcas:
+        {carpeta: (fotos, videos)}, agrupado por la carpeta que se destildó."""
+        antes, despues = self.alcance(), Alcance(marcas)
+        out: dict[str, list[int]] = {}
+        for r in self._q("SELECT rel_path, kind FROM media"):
+            rel = r["rel_path"]
+            if not antes.incluye_archivo(rel) or despues.incluye_archivo(rel):
+                continue
+            c = rutas.carpeta_de(rel)
+            clave = _marca_que_corta(despues, c)
+            if clave is None:
+                clave = antes.raiz_de(c) or ""
+            n = out.setdefault(clave, [0, 0])
+            n[0 if r["kind"] == "image" else 1] += 1
+        return {k: (v[0], v[1]) for k, v in out.items()}
+
+    def guardar_marcas(self, marcas: dict[str, bool], eliminar_medios: bool = False,
+                       por: str = "") -> list[int]:
+        """Reemplaza las marcas del árbol. Con `eliminar_medios`, saca del
+        catálogo lo que deja de estar en el alcance (con sus etiquetas).
+        Devuelve los ids quitados."""
+        nuevas = Alcance(marcas).marcas
+        with self.conn.transaction():
+            self._q("LOCK TABLE carpeta_catalogada IN EXCLUSIVE MODE")
+            ids: list[int] = []
+            if eliminar_medios:
+                antes, despues = self.alcance(), Alcance(nuevas)
+                ids = [r["id"] for r in self._q("SELECT id, rel_path FROM media")
+                       if antes.incluye_archivo(r["rel_path"])
+                       and not despues.incluye_archivo(r["rel_path"])]
+                self.delete_media(ids)
+            actuales = self.marcas_carpetas()
+            # Borrar y volver a insertar lo que cambia: el aviso a las PCs
+            # (trigger de la migración 7) es de INSERT y DELETE.
+            for ruta, valor in actuales.items():
+                if nuevas.get(ruta) != valor:
+                    self._q("DELETE FROM carpeta_catalogada WHERE ruta = %s", (ruta,))
+            for ruta, valor in nuevas.items():
+                if actuales.get(ruta) != valor:
+                    self._q("INSERT INTO carpeta_catalogada (ruta, incluir, agregada_por)"
+                            " VALUES (%s, %s, %s)", (ruta, valor, por or None))
+        return ids
+
+    # ------------------------------------------------- carpetas del NAS (árbol)
+    def pedir_carpetas_nas(self):
+        """Pide al catalogador que relea las carpetas del NAS. Si no está
+        corriendo, el pedido se pierde (queda la lectura anterior)."""
+        self._q(f"NOTIFY {CANAL_PEDIR_CARPETAS}")
+
+    def reemplazar_carpetas_nas(self, carpetas) -> tuple[int, int]:
+        """Lo que leyó el catalogador. Cambia solo la diferencia, anota la hora
+        y avisa siempre (aunque no cambie nada: la PC que pidió espera la
+        respuesta). Devuelve (agregadas, borradas)."""
+        nuevas = {c.strip("/") for c in carpetas if c.strip("/")}
+        with self.conn.transaction():
+            actuales = {r["ruta"] for r in self._q("SELECT ruta FROM carpeta_nas")}
+            borrar, agregar = sorted(actuales - nuevas), sorted(nuevas - actuales)
+            if borrar:
+                self._q("DELETE FROM carpeta_nas WHERE ruta = ANY(%s)", (borrar,))
+            if agregar:
+                with self.conn.cursor() as cur:
+                    # ON CONFLICT: la relectura del hilo y la del final de una
+                    # pasada pueden coincidir
+                    cur.executemany("INSERT INTO carpeta_nas (ruta) VALUES (%s)"
+                                    " ON CONFLICT DO NOTHING",
+                                    [(c,) for c in agregar])
+            self._q("UPDATE catalogado_estado SET carpetas_leidas = now()")
+            self._q(f"NOTIFY {CANAL_CARPETAS_LEIDAS}")
+        return len(agregar), len(borrar)
+
+    def arbol_carpetas(self) -> dict:
+        """Todo lo que necesita la ventana de carpetas, en una vuelta:
+        carpetas del NAS, cuándo se leyeron, las marcas y {carpeta: (fotos,
+        videos)} catalogados directamente en cada una (los que están)."""
+        carpetas = [r["ruta"] for r in self._q("SELECT ruta FROM carpeta_nas")]
+        leidas = self._q("SELECT carpetas_leidas FROM catalogado_estado").fetchone()
+        conteos = {r["carpeta"]: (r["fotos"], r["videos"]) for r in self._q(
+            f"SELECT {_CARPETA_SQL} AS carpeta, "
+            "count(*) FILTER (WHERE kind = 'image') AS fotos, "
+            "count(*) FILTER (WHERE kind = 'video') AS videos "
+            "FROM media WHERE missing_since IS NULL GROUP BY 1")}
+        return {"carpetas": carpetas, "leidas": leidas["carpetas_leidas"] if leidas else None,
+                "marcas": self.marcas_carpetas(), "conteos": conteos}
 
     def agregar_carpeta(self, ruta: str, por: str = "") -> str:
         """Agrega una carpeta a la lista. Devuelve cómo quedó escrita. Lanza
@@ -376,9 +520,8 @@ class Repo:
         return nueva
 
     def medios_en_carpeta(self, ruta: str) -> list[int]:
-        return [r["id"] for r in self._q(
-            "SELECT id FROM media WHERE rel_path = %s OR starts_with(rel_path, %s)",
-            (ruta, ruta.rstrip("/") + "/"))]
+        cond, params = _en_carpetas([ruta], "rel_path")
+        return [r["id"] for r in self._q(f"SELECT id FROM media WHERE {cond}", params)]
 
     def quitar_carpeta(self, ruta: str, con_sus_medios: bool = False) -> list[int]:
         """Saca una carpeta de la lista. Con `con_sus_medios`, también saca del
@@ -451,7 +594,7 @@ class Repo:
             "SELECT *, EXTRACT(EPOCH FROM now() - latido)::integer AS segundos_sin_latido,"
             " now() AS ahora FROM catalogado_estado").fetchone()
 
-    _CAMPOS_ESTADO = {"version_app", "carpetas", "fase", "detalle", "hechos", "total",
+    _CAMPOS_ESTADO = {"version_app", "carpetas", "carpetas_leidas", "fase", "detalle", "hechos", "total",
                       "pedido_id", "ultima_inicio", "ultima_fin", "ultima_resumen",
                       "ultima_error", "ultima_programada"}
 
@@ -477,20 +620,133 @@ class Repo:
     def normalize_tag(self, name: str) -> str:
         return " ".join(name.strip().lower().split())
 
+    def _tag_por_nombre(self, norm: str):
+        """La etiqueta con ese nombre, con o sin tildes (pedido del 24/11/2026:
+        «predicacion» es la misma que «predicación»). Primero la exacta."""
+        return self._q("SELECT id, kind, name FROM tag WHERE sin_acentos(name) = sin_acentos(%s) "
+                       "ORDER BY name = %s DESC, id LIMIT 1", (norm, norm)).fetchone()
+
     def get_or_create_tag(self, name: str, kind: str = "descriptivo") -> int:
         norm = self.normalize_tag(name)
-        self._q("INSERT INTO tag (name, kind) VALUES (%s, %s) ON CONFLICT (name) DO NOTHING",
-                (norm, kind))
-        return self._q("SELECT id FROM tag WHERE name = %s", (norm,)).fetchone()["id"]
+        row = self._tag_por_nombre(norm)
+        if row is None:
+            self._q("INSERT INTO tag (name, kind) VALUES (%s, %s) ON CONFLICT (name) DO NOTHING",
+                    (norm, kind))
+            row = self._tag_por_nombre(norm)
+        return row["id"]
 
     def all_tag_names(self) -> list[str]:
         return [r["name"] for r in self._q("SELECT name FROM tag ORDER BY name")]
 
+    def nombres_por_tipo(self) -> dict[str, list[str]]:
+        """{'comunes': [...], 'lugar': [...], 'evento': [...]}: para que cada
+        campo ofrezca solo lo que acepta."""
+        out: dict[str, list[str]] = {"comunes": [], LUGAR: [], EVENTO: []}
+        for r in self._q("SELECT name, kind FROM tag ORDER BY name"):
+            out[r["kind"] if r["kind"] in ESPECIALES else "comunes"].append(r["name"])
+        return out
+
+    def _tag_de_tipo(self, name: str, kind: str) -> int:
+        """El id de la etiqueta `name`, creándola con ese tipo si no existe.
+        NombreEnUso si existe con otro tipo (lugar/evento vs. el resto)."""
+        norm = self.normalize_tag(name)
+        row = self._tag_por_nombre(norm)
+        if row is None:
+            self._q("INSERT INTO tag (name, kind) VALUES (%s, %s) ON CONFLICT (name) DO NOTHING",
+                    (norm, kind))
+            row = self._tag_por_nombre(norm)
+        especial = kind in ESPECIALES
+        if (row["kind"] != kind) if especial else (row["kind"] in ESPECIALES):
+            raise NombreEnUso(row["name"], row["kind"], kind)
+        return row["id"]
+
+    def poner_lugar(self, media_ids: list[int], name: str):
+        """El lugar de esos medios: reemplaza al que tuvieran."""
+        tag_id = self._tag_de_tipo(name, LUGAR)
+        ids = list(media_ids)
+        with self.conn.transaction():
+            self._q("DELETE FROM media_tag mt USING tag t WHERE t.id = mt.tag_id "
+                    "AND t.kind = %s AND mt.media_id = ANY(%s) AND t.id <> %s",
+                    (LUGAR, ids, tag_id))
+            self._q("INSERT INTO media_tag (media_id, tag_id, source, confirmed) "
+                    "SELECT unnest(%s::bigint[]), %s, 'humano', true "
+                    "ON CONFLICT (media_id, tag_id) DO UPDATE SET source = 'humano', "
+                    "confirmed = true", (ids, tag_id))
+            self._actualizar_busqueda(ids)
+
+    def poner_evento(self, media_ids: list[int], name: str):
+        """Suma un evento a esos medios (pueden tener varios)."""
+        tag_id = self._tag_de_tipo(name, EVENTO)
+        ids = list(media_ids)
+        with self.conn.transaction():
+            self._q("INSERT INTO media_tag (media_id, tag_id, source, confirmed) "
+                    "SELECT unnest(%s::bigint[]), %s, 'humano', true "
+                    "ON CONFLICT (media_id, tag_id) DO UPDATE SET source = 'humano', "
+                    "confirmed = true", (ids, tag_id))
+            self._actualizar_busqueda(ids)
+
+    def quitar_de(self, media_ids: list[int], name: str):
+        """Saca un lugar o un evento de esos medios (sin anotarlo como rechazado:
+        eso es para lo que propone la IA)."""
+        ids = list(media_ids)
+        with self.conn.transaction():
+            row = self._tag_por_nombre(self.normalize_tag(name))
+            if row is not None:
+                self._q("DELETE FROM media_tag WHERE tag_id = %s AND media_id = ANY(%s)",
+                        (row["id"], ids))
+            self._actualizar_busqueda(ids)
+
+    def especiales_de(self, media_ids: list[int]) -> dict[str, list[tuple[str, int]]]:
+        """{'lugar': [(nombre, en cuántos)], 'evento': [...]} de una selección."""
+        out: dict[str, list[tuple[str, int]]] = {LUGAR: [], EVENTO: []}
+        if media_ids:
+            for r in self._q(
+                    "SELECT t.name, t.kind, COUNT(*) AS n FROM tag t "
+                    "JOIN media_tag mt ON mt.tag_id = t.id "
+                    "WHERE mt.media_id = ANY(%s) AND t.kind IN ('lugar', 'evento') "
+                    "GROUP BY t.id ORDER BY n DESC, t.name", (list(media_ids),)):
+                out[r["kind"]].append((r["name"], r["n"]))
+        return out
+
+    def cambiar_tipo(self, name: str, kind: str):
+        """Una etiqueta común pasa a ser lugar o evento, o al revés, sin perder
+        a qué fotos y videos está puesta. NoSePuedeConvertir si no corresponde."""
+        norm = self.normalize_tag(name)
+        destino = kind if kind in ESPECIALES else "descriptivo"
+        with self.conn.transaction():
+            row = self._tag_por_nombre(norm)
+            if row is not None:
+                norm = row["name"]
+                self._q("SELECT 1 FROM tag WHERE id = %s FOR UPDATE", (row["id"],))
+            if row is None:
+                raise NoSePuedeConvertir(f"No existe la etiqueta «{norm}».")
+            if row["kind"] not in _CONVERTIBLES:
+                raise NoSePuedeConvertir(
+                    f"«{norm}» es {_NOMBRE_TIPO.get(row['kind'], 'otra cosa')}: no se "
+                    "puede convertir en lugar ni en evento.")
+            if row["kind"] == destino:
+                return
+            if destino == LUGAR:
+                dobles = self._q(
+                    "SELECT count(DISTINCT mt.media_id) AS n FROM media_tag mt "
+                    "JOIN media_tag otro ON otro.media_id = mt.media_id "
+                    "JOIN tag t ON t.id = otro.tag_id AND t.kind = %s "
+                    "WHERE mt.tag_id = %s", (LUGAR, row["id"])).fetchone()["n"]
+                if dobles:
+                    raise NoSePuedeConvertir(
+                        f"No se puede: {dobles} de los elementos con «{norm}» ya tienen "
+                        "un lugar, y cada uno puede tener uno solo. Quíteles ese lugar "
+                        "primero.")
+            self._q("UPDATE tag SET kind = %s WHERE id = %s", (destino, row["id"]))
+            # Cambiar el tipo no toca `media`: se avisa a las PCs a mano
+            self._q("SELECT pg_notify(%s, 'tag')", (CANAL_CAMBIOS,))
+
     def apply_tag(self, media_id: int, name: str, source: str = "humano",
                   confirmed: bool = True):
         """Pone (o confirma) un tag. Aplicarlo a mano sobre uno sugerido por la
-        IA lo pasa a humano/confirmado y borra un rechazo previo."""
-        tag_id = self.get_or_create_tag(name)
+        IA lo pasa a humano/confirmado y borra un rechazo previo. Un lugar o un
+        evento no se pone por acá (NombreEnUso): tienen sus propios campos."""
+        tag_id = self._tag_de_tipo(name, "descriptivo")
         with self.conn.transaction():
             self._q(
                 "INSERT INTO media_tag (media_id, tag_id, source, confirmed) "
@@ -508,6 +764,9 @@ class Repo:
         alguien sacó. Devuelve True si lo agregó.
         """
         tag_id = self.get_or_create_tag(name, kind=kind)
+        tipo = self._q("SELECT kind FROM tag WHERE id = %s", (tag_id,)).fetchone()["kind"]
+        if tipo in ESPECIALES:
+            return False                 # un lugar o un evento lo pone una persona
         with self.conn.transaction():
             rechazado = self._q(
                 "SELECT 1 FROM tag_rejection WHERE media_id = %s AND tag_id = %s",
@@ -524,8 +783,7 @@ class Repo:
 
     def remove_tag(self, media_id: int, name: str):
         """Saca un tag y lo anota como rechazado, para que la IA no lo reponga."""
-        row = self._q("SELECT id FROM tag WHERE name = %s",
-                      (self.normalize_tag(name),)).fetchone()
+        row = self._tag_por_nombre(self.normalize_tag(name))
         if not row:
             return
         with self.conn.transaction():
@@ -535,12 +793,13 @@ class Repo:
                     "ON CONFLICT DO NOTHING", (media_id, row["id"]))
             self._actualizar_busqueda([media_id])
 
-    def hermanas(self, ids: list[int], name: str) -> list[int]:
+    def hermanas(self, ids: list[int], name: str, sin_lugar: bool = False) -> list[int]:
         """Fotos y videos «hermanos» de los elegidos, para ofrecerles la misma
         etiqueta (decisión del 22/11/2026): la misma carpeta y, si el elegido
         tiene fecha de toma, el mismo día (en la hora de la iglesia). No incluye
         los elegidos, los que faltan, los que ya la tienen ni aquellos a los que
-        alguien se la quitó."""
+        alguien se la quitó. Con `sin_lugar`, tampoco los que ya tienen un lugar
+        (ponerles otro lo reemplazaría)."""
         if not ids:
             return []
         norm = self.normalize_tag(name)
@@ -554,7 +813,10 @@ class Repo:
             "                  WHERE mt.media_id = h.id AND t.name = %s) "
             "  AND NOT EXISTS (SELECT 1 FROM tag_rejection tr JOIN tag t ON t.id = tr.tag_id "
             "                  WHERE tr.media_id = h.id AND t.name = %s) "
-            "ORDER BY h.id",
+            + ("AND NOT EXISTS (SELECT 1 FROM media_tag mt JOIN tag t ON t.id = mt.tag_id "
+               "                WHERE mt.media_id = h.id AND t.kind = 'lugar') "
+               if sin_lugar else "")
+            + "ORDER BY h.id",
             (ZONA_IGLESIA, ZONA_IGLESIA, list(ids), list(ids), norm, norm))]
 
     def confirm_tag(self, media_id: int, name: str):
@@ -569,7 +831,8 @@ class Repo:
             return {}
         rows = self._q(
             "SELECT t.name, COUNT(*) AS n FROM tag t JOIN media_tag mt ON mt.tag_id = t.id "
-            "WHERE mt.media_id = ANY(%s) AND NOT mt.confirmed GROUP BY t.id",
+            "WHERE mt.media_id = ANY(%s) AND NOT mt.confirmed "
+            "AND t.kind NOT IN ('lugar', 'evento') GROUP BY t.id",
             (list(media_ids),))
         return {r["name"]: r["n"] for r in rows}
 
@@ -593,7 +856,8 @@ class Repo:
             return []
         rows = self._q(
             "SELECT t.name, COUNT(*) AS n FROM tag t JOIN media_tag mt ON mt.tag_id = t.id "
-            "WHERE mt.media_id = ANY(%s) GROUP BY t.id ORDER BY n DESC, t.name",
+            "WHERE mt.media_id = ANY(%s) AND t.kind NOT IN ('lugar', 'evento') "
+            "GROUP BY t.id ORDER BY n DESC, t.name",
             (list(media_ids),))
         return [(r["name"], r["n"]) for r in rows]
 
@@ -790,11 +1054,9 @@ class Repo:
         if carpetas is not None:
             if not carpetas:
                 return []
-            conds = []
-            for c in carpetas:
-                conds.append("(m.rel_path = %s OR starts_with(m.rel_path, %s))")
-                params += [c, c.rstrip("/") + "/"]
-            where.append("(" + " OR ".join(conds) + ")")
+            cond, p = _en_carpetas(carpetas)
+            where.append(cond)
+            params += p
         if not rehacer:
             falta = []
             if escenas:
@@ -826,11 +1088,9 @@ class Repo:
         where = ["m.kind = 'image'", "m.missing_since IS NULL"]
         params: list = []
         if carpetas:
-            conds = []
-            for c in carpetas:
-                conds.append("(m.rel_path = %s OR starts_with(m.rel_path, %s))")
-                params += [c, c.rstrip("/") + "/"]
-            where.append("(" + " OR ".join(conds) + ")")
+            cond, p = _en_carpetas(carpetas)
+            where.append(cond)
+            params += p
         # Lo que corrigió una persona no se vuelve a leer nunca
         where.append("NOT COALESCE(f.editado, false)")
         if not rehacer:
@@ -920,10 +1180,16 @@ class Repo:
 
         `orden`: "relevancia" (lo de arriba), "nuevas" o "viejas" (por fecha de
         toma; los que no la tienen, al final, por nombre).
+
+        `query` admite filtros como los de Gmail (`etiqueta:placa`, `tipo:video`,
+        `desde:09/2025`, `-etiqueta:retiro`…): ver `consulta.py`. La relevancia
+        se calcula solo con las palabras sueltas.
         """
         where, params = [], []
-        terms = [t for t in (query or "").split() if t]
-        tsq = _to_tsquery(query) if terms else None
+        c = consulta.analizar(query)
+        kind = c.tipo or kind               # «tipo:» escrito manda sobre los botones
+        terms = [consulta.terminos(t) for t in c.palabras]
+        tsq = _to_tsquery(" ".join(terms)) if terms else None
         if terms:
             conds = []
             if tsq:
@@ -934,6 +1200,21 @@ class Repo:
                 for _ in terms) + ")")
             params += [f"%{_escape_like(t)}%" for t in terms]
             where.append("(" + " OR ".join(conds) + ")")
+        for palabra in c.excluidas:
+            t = consulta.terminos(palabra)
+            q = _to_tsquery(t)
+            cond = "texto_nombre(m.filename, m.folder_origin) LIKE sin_acentos(lower(%s))"
+            p = [f"%{_escape_like(t)}%"]
+            if q:
+                cond = f"m.search_doc @@ to_tsquery('catalogo', %s) OR {cond}"
+                p.insert(0, q)
+            where.append(f"NOT COALESCE(({cond}), false)")
+            params += p
+        for f in c.filtros:
+            sql, p = _filtro_sql(f)
+            if sql:
+                where.append(f"NOT COALESCE(({sql}), false)" if f.negado else f"({sql})")
+                params += p
         if kind:
             where.append("m.kind = %s")
             params.append(kind)
@@ -1036,9 +1317,10 @@ _COLUMNAS_MEDIA = ", ".join("m." + c for c in (
     "id", "rel_path", "filename", "folder_origin", "kind", "width", "height", "aspect",
     "duration", "codec", "size_bytes", "file_mtime", "sha256", "phash", "status",
     "quality_flag", "missing_since", "tomada", "lat", "lon", "notas"))
-# Las etiquetas de cada medio, para la grilla: [[nombre, confirmada], ...]
+# Las etiquetas de cada medio, para la grilla: [[nombre, confirmada, tipo], ...]
+# (_row_to_media separa el lugar y los eventos de las demás)
 _ETIQUETAS_MEDIA = (
-    "(SELECT COALESCE(json_agg(json_build_array(t.name, mt.confirmed) "
+    "(SELECT COALESCE(json_agg(json_build_array(t.name, mt.confirmed, t.kind) "
     "ORDER BY mt.confirmed DESC, t.name), '[]') FROM media_tag mt "
     "JOIN tag t ON t.id = mt.tag_id WHERE mt.media_id = m.id) AS etiquetas")
 # El texto leído en la foto, para mostrarlo en Buscar (NULL si no tiene)
@@ -1066,7 +1348,12 @@ def _row_to_media(row, raiz: str) -> Media:
         status=row["status"],
         quality_flag=row["quality_flag"],
         missing_since=row["missing_since"],
-        etiquetas=[(n, c) for n, c in row["etiquetas"]] if "etiquetas" in row else None,
+        etiquetas=([(e[0], e[1]) for e in row["etiquetas"]
+                    if (e[2] if len(e) > 2 else None) not in ESPECIALES]
+                   if "etiquetas" in row else None),
+        lugar=next((e[0] for e in row.get("etiquetas") or [] if len(e) > 2 and e[2] == LUGAR),
+                   None),
+        eventos=sorted(e[0] for e in row.get("etiquetas") or [] if len(e) > 2 and e[2] == EVENTO),
         tomada=row.get("tomada"),
         lat=row.get("lat"),
         lon=row.get("lon"),
@@ -1087,6 +1374,62 @@ class PendienteIA:
     firma: str
 
 
+def _filtro_sql(f: "consulta.Filtro") -> tuple[str | None, list]:
+    """Un filtro de la búsqueda (`etiqueta:placa`, `desde:09/2025`…) como
+    condición sobre `media m`. (None, []) si no filtra nada (p. ej. `tipo:`,
+    que va por `kind`)."""
+    contiene = lambda: [f"%{_escape_like(f.valor.lower())}%"]   # noqa: E731
+    if f.clave == "tipo":                   # el pedido va por `kind`; aquí, el excluido
+        return ("m.kind = %s", [consulta.TIPOS[consulta._simple(f.valor)]]) if f.negado \
+            else (None, [])
+    if f.clave == "etiqueta":
+        return ("EXISTS (SELECT 1 FROM media_tag mt JOIN tag t ON t.id = mt.tag_id "
+                "WHERE mt.media_id = m.id AND sin_acentos(t.name) = sin_acentos(%s))",
+                [" ".join(f.valor.lower().split())])
+    if f.clave in ESPECIALES:
+        return ("EXISTS (SELECT 1 FROM media_tag mt JOIN tag t ON t.id = mt.tag_id "
+                "WHERE mt.media_id = m.id AND t.kind = %s "
+                "AND sin_acentos(t.name) = sin_acentos(%s))",
+                [f.clave, " ".join(f.valor.lower().split())])
+    if f.clave == "carpeta":
+        return ("sin_acentos(lower(COALESCE(m.folder_origin, ''))) LIKE sin_acentos(%s)",
+                contiene())
+    if f.clave == "nombre":
+        return "sin_acentos(lower(m.filename)) LIKE sin_acentos(%s)", contiene()
+    if f.clave == "texto":
+        return ("EXISTS (SELECT 1 FROM texto_foto tf WHERE tf.media_id = m.id "
+                "AND sin_acentos(lower(tf.texto)) LIKE sin_acentos(%s))", contiene())
+    if f.clave == "notas":
+        return "sin_acentos(lower(m.notas)) LIKE sin_acentos(%s)", contiene()
+    if f.clave in consulta.FECHAS:
+        dia = f"(m.tomada AT TIME ZONE '{ZONA_IGLESIA}')::date"
+        ini, fin = f.periodo
+        if f.clave == "desde":
+            return f"{dia} >= %s", [ini]
+        if f.clave == "hasta":
+            return f"{dia} <= %s", [fin]
+        if f.clave == "antes":                  # sin incluir esa fecha (como Gmail)
+            return f"{dia} < %s", [ini]
+        if f.clave == "después":
+            return f"{dia} > %s", [fin]
+        return f"{dia} BETWEEN %s AND %s", [ini, fin]
+    if f.clave in ("tiene", "sin"):
+        que = consulta.TIENE[consulta._simple(f.valor)]
+        sql = {"texto": "EXISTS (SELECT 1 FROM texto_foto tf WHERE tf.media_id = m.id "
+                        "AND tf.texto <> '')",
+               "notas": "m.notas <> ''",
+               "etiquetas": "EXISTS (SELECT 1 FROM media_tag mt JOIN tag t ON t.id = mt.tag_id "
+                            "WHERE mt.media_id = m.id AND t.kind NOT IN ('lugar', 'evento'))",
+               "fecha": "m.tomada IS NOT NULL",
+               "lugar": "EXISTS (SELECT 1 FROM media_tag mt JOIN tag t ON t.id = mt.tag_id "
+                        "WHERE mt.media_id = m.id AND t.kind = 'lugar')",
+               "evento": "EXISTS (SELECT 1 FROM media_tag mt JOIN tag t ON t.id = mt.tag_id "
+                         "WHERE mt.media_id = m.id AND t.kind = 'evento')",
+               "ubicacion": "m.lat IS NOT NULL"}[que]
+        return (sql if f.clave == "tiene" else f"NOT ({sql})"), []
+    return None, []
+
+
 def _to_tsquery(query: str) -> str | None:
     """Texto libre -> tsquery con prefijo por palabra ('foto:* & culto:*').
 
@@ -1100,3 +1443,14 @@ def _to_tsquery(query: str) -> str | None:
 def _escape_like(term: str) -> str:
     """Escapa los comodines de LIKE (\\, %, _) para tratarlos como literales."""
     return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _marca_que_corta(alcance: Alcance, carpeta: str) -> str | None:
+    """La carpeta destildada más cercana hacia arriba (o la misma), o None."""
+    c = carpeta
+    while True:
+        if alcance.marcas.get(c) is False:
+            return c
+        if not c:
+            return None
+        c = rutas.carpeta_de(c)

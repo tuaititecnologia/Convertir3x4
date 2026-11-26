@@ -9,11 +9,10 @@ una carpeta recién copiada. Lo atiende el catalogador del NAS
 
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
-    QButtonGroup, QCheckBox, QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout,
+    QButtonGroup, QCheckBox, QDialog, QDialogButtonBox, QHBoxLayout,
     QLabel, QPushButton, QRadioButton, QVBoxLayout, QWidget,
 )
 
-from ...catalog import rutas
 from .. import icons
 
 # Lo que se puede pedir, en palabras del operador, y cuánto tarda rehacerlo en
@@ -78,8 +77,9 @@ class CatalogarPorPartes(QDialog):
     """La ventana de la flecha. Al aceptar: `pasos` (None = todo), `carpeta`
     (relativa, None = todas) y `rehacer`."""
 
-    def __init__(self, parent=None, carpetas=(), raiz: str = ""):
+    def __init__(self, parent=None, carpetas=(), raiz: str = "", srv=None):
         super().__init__(parent)
+        self._srv = srv
         self.setWindowTitle("Catalogar")
         self.setMinimumWidth(520)
         self._carpetas = tuple(carpetas)
@@ -182,18 +182,12 @@ class CatalogarPorPartes(QDialog):
 
     # ------------------------------------------------------------- interacción
     def _elegir_carpeta(self):
-        ruta = QFileDialog.getExistingDirectory(self, "Elija la carpeta del NAS", self._raiz)
-        if not ruta:
-            return
-        rel = rutas.a_relativa(ruta, self._raiz) if self._raiz else None
-        if rel is None or not any(rutas.dentro_de(rel, c) for c in self._carpetas):
-            self.carpeta = None
-            self.lbl_carpeta.setText("Esa carpeta no está entre las que se catalogan. Elija una "
-                                     "carpeta dentro de: " + ", ".join(self._carpetas) + ".")
-            self.lbl_carpeta.setVisible(True)
-            self._actualizar()
-            return
-        self.elegir(rel)
+        """El árbol de carpetas del NAS: solo deja elegir las que se catalogan."""
+        from .arbol_carpetas import ElegirUnaCarpeta
+        dlg = ElegirUnaCarpeta(self, srv=self._srv)
+        if dlg.exec() and dlg.carpeta is not None:
+            # La raíz entera es lo mismo que «todas las carpetas que se catalogan»
+            self.elegir(dlg.carpeta or None)
 
     def _actualizar(self):
         todo = self.chk_todo.isChecked()

@@ -74,6 +74,7 @@ class _Trabajador(QObject):
 
 class ServicioCatalogo(QObject):
     estado_cambiado = pyqtSignal(str, str)     # "conectando" | "ok" | "error", texto
+    reconectado = pyqtSignal()                 # cambió la conexión: hay que volver a consultar
     _pedido = pyqtSignal(int, object)
     _cierre = pyqtSignal()
 
@@ -103,6 +104,13 @@ class ServicioCatalogo(QObject):
             self._set_estado("conectando", "")
         self._pedido.emit(pid, fn)
         return pid
+
+    def reconectar(self):
+        """Cambió la configuración (pantalla «Conexión al catálogo»): se cierra
+        la conexión y la próxima consulta abre otra con los datos nuevos."""
+        self._cierre.emit()
+        self._set_estado("conectando", "")
+        self.reconectado.emit()
 
     def cerrar(self):
         try:

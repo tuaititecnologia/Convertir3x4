@@ -42,6 +42,10 @@ class Media:
     texto: str | None = None
     # Notas que escribió una persona en los detalles de Buscar ('' si no hay).
     notas: str = ""
+    # Lugar y eventos (etiquetas de tipo 'lugar' / 'evento'): fuera de `etiquetas`.
+    # Solo los trae Repo.buscar.
+    lugar: str | None = None
+    eventos: list = field(default_factory=list)
 
     @property
     def is_video(self) -> bool:

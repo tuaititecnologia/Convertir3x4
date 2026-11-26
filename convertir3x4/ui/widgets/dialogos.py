@@ -24,3 +24,16 @@ def confirmar(parent, titulo: str, pregunta: str, detalle: str, accion: str,
     msg.setEscapeButton(no)
     msg.exec()
     return msg.clickedButton() is si
+
+
+def crecer(dialogo):
+    """Que la ventana crezca cuando aparece un texto (un resultado, un aviso)
+    en lugar de aplastar los textos de varios renglones que ya tenía. Qt no lo
+    hace solo con las etiquetas que cortan renglones (alto según el ancho)."""
+    lay = dialogo.layout()
+    if lay is None:
+        return
+    lay.activate()
+    alto = lay.totalHeightForWidth(dialogo.width())
+    if alto > dialogo.height():
+        dialogo.resize(dialogo.width(), alto)

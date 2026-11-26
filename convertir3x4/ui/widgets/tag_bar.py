@@ -16,11 +16,15 @@ El widget NO toca la base: emite `tagApplied(str)` / `tagRemoved(str)` /
 `tagConfirmed(str)` y la
 pestaña los aplica vía el repo. La pestaña le alimenta el vocabulario con
 `set_known_tags()` y los chips con `set_chips()`.
+
+La misma barra sirve para el Lugar y los Eventos (24/11/2026), con otro título
+y otro texto de ayuda. Con clic derecho en un chip, `acciones_chip` ofrece
+convertirla (p. ej. «Convertir en lugar») y emite `accionChip(clave, nombre)`.
 """
 
 from PyQt6.QtCore import Qt, QStringListModel, pyqtSignal
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QLabel,
+    QWidget, QHBoxLayout, QLineEdit, QLabel, QMenu,
     QPushButton, QCompleter, QScrollArea,
 )
 
@@ -32,10 +36,21 @@ class TagBar(QWidget):
     tagApplied = pyqtSignal(str)
     tagRemoved = pyqtSignal(str)
     tagConfirmed = pyqtSignal(str)
+    accionChip = pyqtSignal(str, str)       # (clave de la acción, nombre)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, titulo: str = "Etiquetas",
+                 placeholder: str = "Agregar etiqueta y presionar Enter…",
+                 ayuda: str = "Si la etiqueta no existe, se crea",
+                 accesible: str = "Agregar una etiqueta a la selección",
+                 vacio: str | None = "Seleccione fotos o videos para ver y asignar etiquetas",
+                 ancho_campo: tuple[int, int] = (260, 360),
+                 acciones_chip: list[tuple[str, str]] | None = None):
         super().__init__(parent)
         self._selection_total = 0
+        self._titulo, self._vacio = titulo, vacio
+        self._placeholder, self._ayuda, self._accesible = placeholder, ayuda, accesible
+        self._ancho_campo = ancho_campo
+        self.acciones_chip = acciones_chip or []
         self._build_ui()
 
     def _build_ui(self):
@@ -45,7 +60,7 @@ class TagBar(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
 
-        self.lbl = QLabel("Etiquetas")
+        self.lbl = QLabel(self._titulo)
         self.lbl.setObjectName("section_title")
         layout.addWidget(self.lbl)
 
@@ -70,11 +85,11 @@ class TagBar(QWidget):
 
         # Campo con autocompletado
         self.input = QLineEdit()
-        self.input.setPlaceholderText("Agregar etiqueta y presionar Enter…")
-        self.input.setAccessibleName("Agregar una etiqueta a la selección")
-        self.input.setToolTip("Si la etiqueta no existe, se crea")
-        self.input.setMinimumWidth(260)
-        self.input.setMaximumWidth(360)
+        self.input.setPlaceholderText(self._placeholder)
+        self.input.setAccessibleName(self._accesible)
+        self.input.setToolTip(self._ayuda)
+        self.input.setMinimumWidth(self._ancho_campo[0])
+        self.input.setMaximumWidth(self._ancho_campo[1])
         self._completer = QCompleter(self)
         self._completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         self._completer.setFilterMode(Qt.MatchFlag.MatchContains)
@@ -89,7 +104,10 @@ class TagBar(QWidget):
     # ------------------------------------------------------------- API
     def set_enabled(self, on: bool):
         self.input.setEnabled(on)
-        self.lbl.setText("Etiquetas de la selección" if on else "Seleccione fotos o videos para ver y asignar etiquetas")
+        if self._vacio is None:
+            self.lbl.setText(self._titulo)
+        else:
+            self.lbl.setText(f"{self._titulo} de la selección" if on else self._vacio)
 
     def set_known_tags(self, names: list[str]):
         self._completer_model.setStringList(names)
@@ -130,7 +148,18 @@ class TagBar(QWidget):
             if partial else "Haga clic para quitar la etiqueta"
         )
         chip.clicked.connect(lambda _=False, n=name: self.tagRemoved.emit(n))
+        if self.acciones_chip:
+            chip.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            chip.customContextMenuRequested.connect(
+                lambda pos, c=chip, n=name: self._menu_chip(c, n, pos))
         return chip
+
+    def _menu_chip(self, chip, name: str, pos):
+        menu = QMenu(self)
+        elegidas = {menu.addAction(texto): clave for texto, clave in self.acciones_chip}
+        elegida = menu.exec(chip.mapToGlobal(pos))
+        if elegida in elegidas:
+            self.accionChip.emit(elegidas[elegida], name)
 
     def _make_ia_chip(self, name: str, count: int, total: int) -> QWidget:
         box = QWidget()

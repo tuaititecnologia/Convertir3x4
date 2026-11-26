@@ -2,7 +2,7 @@
 lado, el módulo activo (Buscar, Catalogar, Convertir).
 """
 
-from PyQt6.QtCore import QSettings, QSize, Qt
+from PyQt6.QtCore import QSettings, QSize, Qt, QTimer
 from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QButtonGroup, QFrame, QHBoxLayout, QLabel, QMainWindow, QStackedWidget,
@@ -104,6 +104,8 @@ class MainWindow(QMainWindow):
         servicio().estado_cambiado.connect(
             lambda estado, texto: estado == "error" and texto == CatalogoIncompatible.MENSAJE
             and self.aviso_version.revisar())
+        # Se guardó otra conexión (pantalla «Conexión al catálogo»): todo se pone al día
+        servicio().reconectado.connect(self._conexion_cambiada)
         derecha.addWidget(self.aviso_version)
         derecha.addWidget(self.stack, 1)
         row.addLayout(derecha, 1)
@@ -260,6 +262,24 @@ class MainWindow(QMainWindow):
         self._avisos.cambio.connect(self.buscar_tab.cambio_en_el_catalogo)
         self._avisos.cambio.connect(self.motor_tab.cambio_en_el_catalogo)
         self._avisos.start()
+
+    def _conexion_cambiada(self):
+        if self._avisos is not None:
+            self._avisos.reconectar()
+        self.buscar_tab.refresh()
+        self.motor_tab.refresh()
+
+    def revisar_configuracion(self):
+        """Al arrancar: si esta PC no tiene configurado el catálogo (o el archivo
+        tiene un dato que no sirve), se abre la pantalla de conexión una vez.
+        Lo llama __main__, no las pruebas."""
+        from .appdata import config_catalogo
+        from .catalog.db import CatalogoNoConfigurado
+        try:
+            config_catalogo()
+        except CatalogoNoConfigurado:
+            from .ui.widgets.conexion_catalogo import abrir_conexion
+            QTimer.singleShot(0, lambda: abrir_conexion(self))
 
     def _cerrar_para_actualizar(self):
         """La versión nueva ya está descargada: al cerrar se instala y la

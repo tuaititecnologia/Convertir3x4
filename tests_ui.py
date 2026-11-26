@@ -60,7 +60,7 @@ SURFACE_KEYS = ("bg", "panel", "raised")
 @pytest.mark.parametrize("pal_name", list(PALETTES))
 class TestContrast:
     @pytest.mark.parametrize("name", ["text", "text_2", "text_3", "accent_text",
-                                      "ok", "warn", "danger"])
+                                      "ok", "warn", "danger", "evento"])
     @pytest.mark.parametrize("surface", SURFACE_KEYS)
     def test_readable_text_is_aa(self, pal_name, name, surface):
         pal = PALETTES[pal_name]
@@ -79,7 +79,7 @@ class TestContrast:
         assert contrast(pal["field_border"], pal[surface]) >= 3.0
 
     @pytest.mark.parametrize("fg, soft", [("warn", "warn_soft"), ("ia", "ia_soft"),
-                                          ("text", "accent_soft")])
+                                          ("evento", "evento_soft"), ("text", "accent_soft")])
     def test_chips_are_readable(self, pal_name, fg, soft):
         pal = PALETTES[pal_name]
         chip_bg = _blend(pal[soft], pal["panel"])
@@ -286,7 +286,7 @@ class TestKeyboard:
         window.buscar_tab.txt_query.setFocus()
         app.processEvents()
         seen = []
-        for _ in range(7):          # + el botón «Detalles»
+        for _ in range(8):          # + «Detalles» y «Conexión…» del aviso (sin catálogo)
             seen.append(type(app.focusWidget()).__name__)
             window.focusNextChild()
             app.processEvents()
@@ -849,7 +849,7 @@ class TestCatalogarEnElNas:
         tab = MotorTab(srv=srv)
         try:
             assert _esperar(app, lambda: tab.btn_run.isEnabled())
-            assert "Publicar" in tab.lbl_carpetas.text()
+            assert tab.lbl_carpetas.text() == ""      # lo que se cataloga se ve en el árbol (⚙)
             assert "todavía no catalogó" in tab.lbl_status.text()
             tab.btn_run.click()
             assert not tab.btn_run.isEnabled()
@@ -872,7 +872,7 @@ class TestCatalogarEnElNas:
             assert tab.btn_run.isEnabled() and not tab.progress.isVisibleTo(tab)
             assert cambios == []      # primera pasada vista: no había una anterior
             # una subcarpeta fuera de la lista no se pide
-            tab.catalogar_una_carpeta(str(tmp_path / "Historial"))
+            tab.catalogar_una_carpeta("Historial")
             assert "no está entre las que se catalogan" in tab.lbl_status.text()
         finally:
             tab.deleteLater()
@@ -1065,7 +1065,7 @@ def test_la_grilla_de_buscar_muestra_las_etiquetas(app, sin_catalogo):
     from convertir3x4.ui.tabs.tab_buscar import BuscarTab
     from convertir3x4.ui.widgets.media_grid import TAGS_ROLE
     t = BuscarTab(srv=sin_catalogo)
-    t.resize(700, 500)
+    t.resize(700, 760)       # la celda entera (con lugar y eventos)
     t.show()
     m = Media(path="/a.jpg", filename="a.jpg", kind="image", id=1,
               etiquetas=[("predicación", False)])
@@ -1190,6 +1190,9 @@ class TestDetalles:
         tab._results = fotos
         tab._populate(fotos)
         tab.show()
+        # Ventana activa, como en la app: si no, los atajos (Ctrl+I) no llegan
+        from PyQt6.QtWidgets import QApplication
+        QApplication.setActiveWindow(tab)
         return tab
 
     @staticmethod
@@ -1198,7 +1201,7 @@ class TestDetalles:
         return {g.itemAtPosition(i, 0).widget().text(): g.itemAtPosition(i, 1).widget().text()
                 for i in range(g.rowCount()) if g.itemAtPosition(i, 0)}
 
-    def test_la_i_abre_y_cierra_y_queda_como_se_dejo(self, app, sin_catalogo, tmp_path):
+    def test_ctrl_i_abre_y_cierra_y_queda_como_se_dejo(self, app, sin_catalogo, tmp_path):
         from PyQt6.QtCore import QSettings, Qt
         from PyQt6.QtTest import QTest
         tab = self._tab(sin_catalogo, tmp_path)
@@ -1206,10 +1209,10 @@ class TestDetalles:
         assert not d.isVisible()
         g.setFocus()
         g.setCurrentItem(g.item(0))
-        QTest.keyClick(g, Qt.Key.Key_I)
+        QTest.keyClick(g, Qt.Key.Key_I, Qt.KeyboardModifier.ControlModifier)
         assert d.isVisible() and tab.btn_detalles.isChecked()
         assert d.focusPolicy() == Qt.FocusPolicy.NoFocus or not d.hasFocus()
-        assert g.currentItem() is g.item(0)                  # la I no movió nada
+        assert g.currentItem() is g.item(0)                  # el atajo no movió nada
         assert QSettings().value("buscar/detalles") in (True, "true")
         app.processEvents()
         tab._actualizar_detalles()
@@ -1229,7 +1232,7 @@ class TestDetalles:
         otra = type(tab)(srv=sin_catalogo)
         assert otra.btn_detalles.isChecked()
         otra.deleteLater()
-        QTest.keyClick(g, Qt.Key.Key_I)
+        QTest.keyClick(g, Qt.Key.Key_I, Qt.KeyboardModifier.ControlModifier)
         assert not d.isVisible()
         assert QSettings().value("buscar/detalles") in (False, "false")
         tab.btn_detalles.click()
@@ -1266,14 +1269,36 @@ class TestDetalles:
         tab.close()
         tab.deleteLater()
 
-    def test_escribir_i_en_la_busqueda_no_abre_nada(self, app, sin_catalogo, tmp_path):
+    def test_lo_que_se_teclea_va_a_la_busqueda(self, app, sin_catalogo, tmp_path):
+        from PyQt6.QtCore import Qt
         from PyQt6.QtTest import QTest
         tab = self._tab(sin_catalogo, tmp_path)
-        tab.grid.setCurrentItem(tab.grid.item(1))
-        tab.txt_query.setFocus()
-        QTest.keyClicks(tab.txt_query, "iglesia")
+        g = tab.grid
+        g.setFocus()
+        g.setCurrentItem(g.item(1))
+        QTest.keyClicks(g, "igle")                            # desde la grilla
+        assert tab.txt_query.text() == "igle"
+        QTest.keyClicks(tab.txt_query, "sia")
         assert tab.txt_query.text() == "iglesia" and not tab.detalles.isVisible()
-        assert tab.grid.currentItem() is tab.grid.item(1)
+        assert g.currentItem() is g.item(1)                   # la grilla no saltó
+        # Borrar también; y las flechas y el atajo siguen siendo de la grilla
+        g.setFocus()
+        QTest.keyClick(g, Qt.Key.Key_Backspace)
+        assert tab.txt_query.text() == "iglesi"
+        g.setFocus()
+        QTest.keyClick(g, Qt.Key.Key_Right)
+        assert g.currentItem() is g.item(2) and tab.txt_query.text() == "iglesi"
+        # Desde un botón también
+        tab.btn_detalles.setFocus()
+        QTest.keyClicks(tab.btn_detalles, "a")
+        assert tab.txt_query.text() == "iglesia"
+        # Lo que se escribe en las notas se queda en las notas
+        tab.btn_detalles.setChecked(True)
+        tab._actualizar_detalles()
+        tab.detalles.txt_notas.setFocus()
+        QTest.keyClicks(tab.detalles.txt_notas, "hola")
+        assert tab.detalles.txt_notas.toPlainText() == "hola"
+        assert tab.txt_query.text() == "iglesia"
         tab.close()
         tab.deleteLater()
 

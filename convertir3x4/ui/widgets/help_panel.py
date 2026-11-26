@@ -23,7 +23,32 @@ HELP = [
         ("Buscar", "Escriba parte del nombre, de la carpeta o una etiqueta. Con «Fotos» o "
                    "«Videos» se muestra solo ese tipo. El orden puede ser por fecha de la "
                    "toma (si la foto o el video la tiene)."),
-        ("Detalles", "Presione I (o el botón «Detalles») para abrir o cerrar, al costado "
+        ("Lugar y eventos", "Debajo de las etiquetas, elija el lugar donde se tomó lo "
+                            "seleccionado (uno por elemento: elegir otro reemplaza al "
+                            "anterior) y agregue los eventos (campamento, bautismo…; puede "
+                            "tener varios). Se buscan con lugar:blessedland y "
+                            "evento:campamento. Con el botón derecho sobre una etiqueta "
+                            "puede convertirla en lugar o en evento, en todo el catálogo. "
+                            "Un mismo nombre no puede ser a la vez etiqueta y lugar o "
+                            "evento."),
+        ("Búsqueda avanzada", "El botón a la derecha del campo (o la flecha abajo) abre "
+                              "un formulario para buscar por etiqueta, tipo, carpeta, "
+                              "texto de la foto, notas o fecha de la toma. También puede "
+                              "escribirlo directamente: etiqueta:placa, tipo:video, "
+                              "carpeta:Reuniones, desde:01/09/2025, hasta:09/2025 (las dos "
+                              "incluyen esa fecha), antes:2025, después:09/2025 (sin "
+                              "incluirla), "
+                              "tiene:notas, sin:etiquetas, sin:lugar, tiene:ubicación (coordenadas "
+                              "del archivo). Con un guion adelante se "
+                              "excluye: -etiqueta:retiro. Para varias palabras, use "
+                              "comillas: etiqueta:\"santa cena\". Desde la tercera letra, se "
+                              "sugieren los filtros y las etiquetas. Si algo no se "
+                              "entiende (una fecha mal escrita), el campo queda en rojo "
+                              "y no se busca hasta corregirlo."),
+        ("Escribir para buscar", "En Buscar, lo que teclee va directo al campo de "
+                                 "búsqueda, aunque esté mirando la grilla: no hace "
+                                 "falta hacer clic en el campo."),
+        ("Detalles", f"Presione {_MOD}+I (o el botón «Detalles») para abrir o cerrar, al costado "
                      "de la grilla, los detalles de lo seleccionado: fecha de la toma, "
                      "medidas, etiquetas, el texto que aparece en la foto y dónde está "
                      "guardado el archivo. Si elige varios, muestra un resumen y la lista. "
@@ -31,7 +56,7 @@ HELP = [
                      "como lo deje. El ancho se cambia arrastrando la división."),
         ("Texto en las fotos", "También se encuentran las fotos por el texto que aparece "
                                "en ellas (carteles, flyers, pantallas). Ese texto se ve "
-                               "en los detalles (tecla I)."),
+                               f"en los detalles ({_MOD}+I)."),
         ("Vista previa de videos", "Deje el puntero sobre un video para ver cuadros de "
                                    "todo el video, sin abrirlo."),
         ("Usar en ProPresenter", "Arrastre la foto o el video directamente a ProPresenter. "
@@ -114,7 +139,8 @@ HELP = [
 ]
 SHORTCUTS = [(f"{_MOD}+1 a 4", "Cambiar de módulo"), ("F1", "Abrir o cerrar la ayuda"),
              ("Supr", "Quitar de Convertir"),
-             (f"{_MOD}+Enter", "Enviar a Convertir (en Buscar)")]
+             (f"{_MOD}+Enter", "Enviar a Convertir (en Buscar)"),
+             (f"{_MOD}+I", "Abrir o cerrar los detalles (en Buscar)")]
 
 
 class _Parrafo(QLabel):

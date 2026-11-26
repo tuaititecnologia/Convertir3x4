@@ -66,7 +66,7 @@ def _cartel(path=None, lineas=("CATEDRAL DE LOS MILAGROS",
 # ---------------------------------------------------------------- la base
 
 def test_migracion_8_y_9(pg_conn):
-    assert catdb.version_esquema(pg_conn) == 9
+    assert catdb.version_esquema(pg_conn) >= 9
     cols = {r["column_name"] for r in pg_conn.execute(
         "SELECT column_name FROM information_schema.columns WHERE table_name = 'texto_foto'")}
     assert {"media_id", "texto", "version", "leida", "editado", "editado_por"} <= cols

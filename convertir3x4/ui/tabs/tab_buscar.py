@@ -12,10 +12,12 @@ import re
 import socket
 import threading
 
-from PyQt6.QtCore import Qt, QElapsedTimer, QPoint, QSettings, QSize, QTimer, pyqtSignal
-from PyQt6.QtGui import QIcon, QPixmap
+from PyQt6.QtCore import (
+    QElapsedTimer, QPoint, QSettings, QSize, QStringListModel, Qt, QTimer, pyqtSignal,
+)
+from PyQt6.QtGui import QIcon, QKeyEvent, QKeySequence, QPixmap, QShortcut
 from PyQt6.QtWidgets import (
-    QAbstractItemView, QApplication, QComboBox, QProgressBar, QSizePolicy, QSplitter,
+    QAbstractItemView, QApplication, QComboBox, QCompleter, QProgressBar, QSizePolicy, QSplitter,
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QListWidgetItem, QFrame, QPushButton, QButtonGroup, QMessageBox,
 )
@@ -27,8 +29,11 @@ from ..servicio_catalogo import servicio, texto_para
 from ..widgets.caja_conexion import CajaConexion
 from ..widgets.media_grid import (
     DragOutListWidget, PATH_ROLE, MEDIA_ID_ROLE, KIND_ROLE, DURATION_ROLE, STATE_ROLE,
-    STORYBOARD_ROLE, TAGS_ROLE,
+    STORYBOARD_ROLE, TAGS_ROLE, LUGAR_ROLE, EVENTOS_ROLE, FECHA_ROLE, es_para_escribir,
 )
+from ...catalog import consulta
+from ...catalog.consulta import analizar
+from ..widgets.busqueda_avanzada import FormularioBusqueda
 from ..widgets.detalle_medio import ANCHO as _ANCHO_DETALLES, PanelDetalles, estado_de_item
 from ..widgets.dialogos import confirmar
 from ..widgets.tag_bar import TagBar
@@ -37,6 +42,7 @@ from .. import icons
 from ..style import T
 
 _GRID_THUMB = 150
+_ATAJO_DETALLES = QKeySequence("Ctrl+I").toString(QKeySequence.SequenceFormat.NativeText)
 # Cambios que avisa el NAS: se juntan y se muestran a lo sumo cada 20 s. Durante
 # una pasada llega un aviso por archivo; cada puesta al día rehace la búsqueda y
 # revisa los archivos en el NAS, y las etiquetas que se pongan esperan detrás.
@@ -61,7 +67,9 @@ def _existe(raiz: str) -> bool:
 
 
 class SearchLineEdit(QLineEdit):
-    """Campo de búsqueda: botón X para limpiar + ESC vacía el campo."""
+    """Campo de búsqueda: botón X para limpiar + ESC vacía el campo. El botón
+    de la derecha (o la flecha abajo) abre la búsqueda avanzada."""
+    avanzada = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -69,10 +77,18 @@ class SearchLineEdit(QLineEdit):
         self.setClearButtonEnabled(True)
         lupa = self.addAction(QIcon(), QLineEdit.ActionPosition.LeadingPosition)
         icons.set_icon(lupa, "search", 16, "text_3")
+        self.accion_avanzada = self.addAction(QIcon(), QLineEdit.ActionPosition.TrailingPosition)
+        icons.set_icon(self.accion_avanzada, "sliders-horizontal", 16, "text_2")
+        self.accion_avanzada.setToolTip("Búsqueda avanzada: por etiqueta, tipo, carpeta, "
+                                        "fecha… (flecha abajo)")
+        self.accion_avanzada.triggered.connect(self.avanzada)
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Escape and self.text():
             self.clear()
+            return
+        if event.key() == Qt.Key.Key_Down and not event.modifiers():
+            self.avanzada.emit()
             return
         super().keyPressEvent(event)
 
@@ -131,10 +147,28 @@ class BuscarTab(QWidget):
         row = QHBoxLayout()
         row.setSpacing(12)
         self.txt_query = SearchLineEdit()
-        self.txt_query.setPlaceholderText("Buscar por nombre, carpeta o etiqueta…")
+        self.txt_query.setPlaceholderText("Buscar por nombre, carpeta o etiqueta…  "
+                                          "(también etiqueta:placa, tipo:video, desde:09/2025)")
         self.txt_query.setAccessibleName("Buscar en el catálogo")
         self.txt_query.textChanged.connect(lambda _: self._debounce.start())
+        self.txt_query.textChanged.connect(self._revisar_consulta)
+        self.txt_query.avanzada.connect(self._abrir_formulario)
         row.addWidget(self.txt_query, 1)
+        self.formulario = FormularioBusqueda(self)
+        self.formulario.buscar.connect(self.txt_query.setText)
+        # Mientras se escribe se sugieren los filtros y las etiquetas (como Gmail)
+        self._etiquetas_conocidas: list[str] = []
+        self._lugares: list[str] = []
+        self._eventos: list[str] = []
+        self._sugerencias = QStringListModel(self)
+        self.completar = QCompleter(self._sugerencias, self)
+        self.completar.setWidget(self.txt_query)
+        self.completar.setCompletionMode(QCompleter.CompletionMode.UnfilteredPopupCompletion)
+        self.completar.setMaxVisibleItems(12)
+        self.completar.popup().setObjectName("sugerencias")
+        self.completar.activated[str].connect(self._usar_sugerencia)
+        self._desde_sugerencia = 0
+        self.txt_query.textEdited.connect(self._sugerir)
 
         seg = QFrame()
         seg.setObjectName("segmented")
@@ -156,7 +190,7 @@ class BuscarTab(QWidget):
             if kind is None:
                 b.setChecked(True)
         # Filtra en la base: con páginas, filtrar lo ya traído dejaría casi vacío «Videos»
-        self._kind_group.buttonClicked.connect(lambda _: self._do_search())
+        self._kind_group.buttonClicked.connect(self._eligio_tipo)
         row.addWidget(seg)
 
         self.cmb_orden = QComboBox()
@@ -167,6 +201,12 @@ class BuscarTab(QWidget):
                              ("nuevas", "Más recientes primero"),
                              ("viejas", "Más antiguos primero")):
             self.cmb_orden.addItem(texto, clave)
+        # Por defecto, lo más reciente primero (pedido del 24/11/2026); queda el
+        # último orden elegido, también al volver a abrir la aplicación.
+        guardado = _ajuste("buscar/orden", "nuevas")
+        self.cmb_orden.setCurrentIndex(max(0, self.cmb_orden.findData(guardado)))
+        self.cmb_orden.currentIndexChanged.connect(
+            lambda _: _guardar_ajuste("buscar/orden", self.cmb_orden.currentData()))
         self.cmb_orden.currentIndexChanged.connect(lambda _: self._do_search())
         self.txt_query.textChanged.connect(self._nombrar_orden)
         self._nombrar_orden()
@@ -187,7 +227,7 @@ class BuscarTab(QWidget):
         self.btn_detalles.setCursor(Qt.CursorShape.PointingHandCursor)
         icons.set_icon(self.btn_detalles, "panel-right", 15, "text_2", active="text")
         self.btn_detalles.setToolTip("Muestra u oculta, al costado, los detalles de lo "
-                                     "seleccionado (tecla I)")
+                                     f"seleccionado ({_ATAJO_DETALLES})")
         self.btn_detalles.toggled.connect(self._ver_detalles)
         row.addWidget(self.btn_detalles)
 
@@ -197,6 +237,13 @@ class BuscarTab(QWidget):
         self.lbl_count.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         row.addWidget(self.lbl_count)
         layout.addLayout(row)
+
+        # Lo escrito que no se entiende (una fecha mal escrita…): se dice por qué
+        self.lbl_aviso_busqueda = QLabel("")
+        self.lbl_aviso_busqueda.setObjectName("aviso_error")
+        self.lbl_aviso_busqueda.setWordWrap(True)
+        self.lbl_aviso_busqueda.setVisible(False)
+        layout.addWidget(self.lbl_aviso_busqueda)
 
         # Se está trayendo la búsqueda del NAS. Su lugar queda reservado aunque
         # no se vea, para que la grilla no salte cada vez que aparece.
@@ -213,6 +260,7 @@ class BuscarTab(QWidget):
         # Estado de la conexión con el catálogo (no se ve si está todo bien)
         self.conn_box = CajaConexion()
         self.conn_box.reintentar.connect(self.refresh)
+        self.conn_box.configurar.connect(self._abrir_conexion)
         self.conn_box.set_estado(self._srv.estado if self._srv.estado != "ok" else "conectando",
                                  self._srv.texto)
         layout.addWidget(self.conn_box)
@@ -238,12 +286,16 @@ class BuscarTab(QWidget):
         self.grid.setAccessibleName("Resultados")
         self.grid.itemSelectionChanged.connect(self._on_selection_changed)
         self.grid.itemDoubleClicked.connect(self._open_item)
-        self.grid.detalles.connect(self.btn_detalles.toggle)
+        self.grid.escribir.connect(self._escribir_en_busqueda)
+        # Los detalles: Ctrl+I (⌘I en Mac, como «Obtener información»). Las letras
+        # sueltas van a la búsqueda.
+        atajo = QShortcut(QKeySequence("Ctrl+I"), self, self.btn_detalles.toggle)
+        atajo.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         self.grid.currentItemChanged.connect(lambda *_: self._seguir_detalle())
         self.grid.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.grid.customContextMenuRequested.connect(self._menu_grilla)
 
-        # Detalles de lo elegido, al costado de la grilla (tecla I). Queda
+        # Detalles de lo elegido, al costado de la grilla (Ctrl+I). Queda
         # abierto o cerrado como lo deje el operador, con el ancho que le dio.
         self.detalles = PanelDetalles()
         self.detalles.cerrar.connect(lambda: self.btn_detalles.setChecked(False))
@@ -290,11 +342,38 @@ class BuscarTab(QWidget):
         self.btn_convertir.clicked.connect(self._mandar_a_convertir)
         acciones.addWidget(self.btn_convertir)
         p_lay.addLayout(acciones)
-        self.tag_bar = TagBar()
+        self.tag_bar = TagBar(acciones_chip=[("Convertir en lugar", "lugar"),
+                                             ("Convertir en evento", "evento")])
         self.tag_bar.tagApplied.connect(self._apply_tag_to_selection)
         self.tag_bar.tagRemoved.connect(self._remove_tag_from_selection)
         self.tag_bar.tagConfirmed.connect(self._confirm_tag_on_selection)
+        self.tag_bar.accionChip.connect(self._convertir_etiqueta)
         p_lay.addWidget(self.tag_bar)
+        # Lugar (uno por elemento) y eventos (varios): etiquetas de tipo especial
+        especiales = QHBoxLayout()
+        especiales.setSpacing(24)
+        comun = [("Convertir en etiqueta común", "descriptivo")]
+        self.lugar_bar = TagBar(
+            titulo="Lugar", placeholder="Elegir el lugar…", vacio=None,
+            ayuda="Dónde se tomó. Cada elemento tiene un solo lugar: elegir otro "
+                  "reemplaza al anterior. Si el lugar no existe, se crea.",
+            accesible="Poner el lugar de la selección", ancho_campo=(170, 240),
+            acciones_chip=comun)
+        self.lugar_bar.tagApplied.connect(lambda n: self._cambiar_especial("poner_lugar", n))
+        self.lugar_bar.tagRemoved.connect(lambda n: self._cambiar_especial("quitar_de", n))
+        self.lugar_bar.accionChip.connect(self._convertir_etiqueta)
+        especiales.addWidget(self.lugar_bar, 1)
+        self.evento_bar = TagBar(
+            titulo="Eventos", placeholder="Agregar evento…", vacio=None,
+            ayuda="De qué evento es (campamento, bautismo…). Puede tener varios. Si el "
+                  "evento no existe, se crea.",
+            accesible="Agregar un evento a la selección", ancho_campo=(170, 240),
+            acciones_chip=comun)
+        self.evento_bar.tagApplied.connect(lambda n: self._cambiar_especial("poner_evento", n))
+        self.evento_bar.tagRemoved.connect(lambda n: self._cambiar_especial("quitar_de", n))
+        self.evento_bar.accionChip.connect(self._convertir_etiqueta)
+        especiales.addWidget(self.evento_bar, 1)
+        p_lay.addLayout(especiales)
         layout.addWidget(panel)
 
     # ------------------------------------------------------------- datos
@@ -313,9 +392,14 @@ class BuscarTab(QWidget):
             self.offline_box.setVisible(False)
             self.grid.set_empty_text("Mientras tanto, los archivos pueden abrirse desde la "
                                      "carpeta del NAS en el Explorador.")
-            self.tag_bar.set_enabled(False)
+            for barra in (self.tag_bar, self.lugar_bar, self.evento_bar):
+                barra.set_enabled(False)
             self._actualizar_seleccion()
         self.detalles.set_editable(estado == "ok")
+
+    def _abrir_conexion(self):
+        from ..widgets.conexion_catalogo import abrir_conexion
+        abrir_conexion(self)
 
     def _reintentar_si_hace_falta(self):
         if self._srv.estado == "error" and self.isVisible():
@@ -436,6 +520,10 @@ class BuscarTab(QWidget):
             g.verticalScrollBar().setValue(vista["scroll"])
 
     def _do_search(self, conservar: bool = False):
+        if self._marcar_error(analizar(self.txt_query.text()).avisos):
+            # Una fecha mal escrita no busca: la grilla queda como estaba
+            self._fin_carga()
+            return
         self._busqueda += 1
         n = self._busqueda
         query, pend, kind = self.txt_query.text(), self.chk_pending.isChecked(), self._kind()
@@ -457,9 +545,74 @@ class BuscarTab(QWidget):
                         error=lambda _e: self._fin_carga() if n == self._busqueda else None)
 
     def _nombrar_orden(self, *_):
-        """Sin texto buscado, «parecidos» no dice nada: el orden es por nombre."""
-        self.cmb_orden.setItemText(0, "Más parecidos primero" if self.txt_query.text().strip()
+        """Sin palabras sueltas, «parecidos» no dice nada: el orden es por nombre
+        (los filtros como etiqueta:placa no ordenan)."""
+        self.cmb_orden.setItemText(0, "Más parecidos primero"
+                                   if analizar(self.txt_query.text()).palabras
                                    else "Por nombre")
+
+    # ------------------------------------------------------------- búsqueda avanzada
+    def _abrir_formulario(self):
+        self.formulario.abrir_debajo_de(self.txt_query, self.txt_query.text())
+
+    def _revisar_consulta(self, *_):
+        """Con cada letra: los botones Todo / Fotos / Videos siguen al «tipo:»
+        escrito, y si ya se corrigió lo que no se entendía, se saca el rojo. El
+        rojo se pone recién al buscar (no mientras se escribe la fecha)."""
+        c = analizar(self.txt_query.text())
+        if not c.avisos:
+            self._marcar_error([])
+        tipo = c.tipo
+        if tipo is not None and tipo != self._kind():
+            for b in self._kind_group.buttons():
+                if b.property("kind") == tipo:
+                    b.setChecked(True)
+
+    def _sugerir(self, *_):
+        """Lo que se ofrece para la palabra que se está escribiendo."""
+        cursor = self.txt_query.cursorPosition()
+        desde, opciones = consulta.sugerencias(self.txt_query.text(), cursor,
+                                               self._etiquetas_conocidas, self._lugares,
+                                               self._eventos)
+        if not opciones:
+            self.completar.popup().hide()
+            return
+        self._desde_sugerencia = desde
+        self._sugerencias.setStringList(opciones)
+        caja = self.txt_query.cursorRect()
+        ancho = self.txt_query.fontMetrics().horizontalAdvance(max(opciones, key=len))
+        caja.setWidth(max(280, ancho + 48))
+        self.completar.complete(caja)
+        self.completar.popup().setCurrentIndex(self._sugerencias.index(0))
+
+    def _usar_sugerencia(self, opcion: str):
+        texto, cursor = self.txt_query.text(), self.txt_query.cursorPosition()
+        resto = texto[cursor:]
+        nuevo = texto[:self._desde_sugerencia] + opcion
+        if not opcion.endswith(":") and not resto.startswith(" "):
+            nuevo += " "
+        self.txt_query.setText(nuevo + resto)
+        self.txt_query.setCursorPosition(len(nuevo))
+        if opcion.endswith(":"):                  # «etiqueta:» → ahora, las etiquetas
+            QTimer.singleShot(0, self._sugerir)
+
+    def _marcar_error(self, avisos: list[str]) -> bool:
+        """Campo en rojo y la explicación debajo. True si hay algo mal."""
+        self.lbl_aviso_busqueda.setText(" ".join(avisos))
+        self.lbl_aviso_busqueda.setVisible(bool(avisos))
+        if bool(self.txt_query.property("error")) != bool(avisos):
+            self.txt_query.setProperty("error", bool(avisos))
+            self.txt_query.style().unpolish(self.txt_query)
+            self.txt_query.style().polish(self.txt_query)
+        return bool(avisos)
+
+    def _eligio_tipo(self, _boton):
+        """Un botón Todo / Fotos / Videos manda: se saca el «tipo:» del texto."""
+        texto = self.txt_query.text()
+        sin = consulta.sin_tipo(texto)
+        if sin != texto:
+            self.txt_query.setText(sin)
+        self._do_search()
 
     def _mostrar_cargando(self):
         self.barra_cargando.setVisible(True)
@@ -481,6 +634,8 @@ class BuscarTab(QWidget):
         traidos = len(getattr(self, "_results", []))
         if (self._trayendo_mas or self._total is None or traidos >= self._total
                 or sb.maximum() - sb.value() > _FALTA_PARA_EL_FINAL):
+            return
+        if self.txt_query.property("error"):
             return
         self._trayendo_mas = True
         n = self._busqueda
@@ -540,6 +695,7 @@ class BuscarTab(QWidget):
             # texto de una foto o las notas): se pasa a lo ya cargado
             for antes, ahora in zip(self._results, results):
                 antes.texto, antes.notas = ahora.texto, ahora.notas
+                antes.lugar, antes.eventos = ahora.lugar, ahora.eventos
             self._contar()
             self._on_selection_changed()
             return
@@ -590,7 +746,7 @@ class BuscarTab(QWidget):
         item.setData(MEDIA_ID_ROLE, m.id)
         item.setData(KIND_ROLE, m.kind)
         item.setData(DURATION_ROLE, m.duration)
-        item.setData(TAGS_ROLE, m.etiquetas or [])
+        _datos_de_ficha(item, m)
         if self._tiras.get(m.id):
             item.setData(STORYBOARD_ROLE, self._tiras[m.id])
         disponible = present[m.path] and not m.missing
@@ -605,7 +761,7 @@ class BuscarTab(QWidget):
             item.setIcon(icon)
         elif disponible and m.id in (bajando or ()):
             item.setData(STATE_ROLE, "loading")     # se está bajando de la base
-        # Sin cartel al pasar el puntero: los detalles se ven con la tecla I.
+        # Sin cartel al pasar el puntero: los detalles se ven con Ctrl+I.
         return item
 
     def _populate(self, results, minis: dict | None = None, present: dict | None = None,
@@ -666,7 +822,7 @@ class BuscarTab(QWidget):
         else:
             verbo = "ya no está" if n == 1 else "ya no están"
             text = (f"{cuantos} {verbo} en su carpeta: pueden haberse movido o borrado. "
-                    "Elija uno y abra los detalles (tecla I) para ver su ubicación anterior.")
+                    f"Elija uno y abra los detalles ({_ATAJO_DETALLES}) para ver su ubicación anterior.")
         self.lbl_offline.setText(text)
         self.offline_box.setVisible(True)
 
@@ -772,9 +928,24 @@ class BuscarTab(QWidget):
                 and event.modifiers() & Qt.KeyboardModifier.ControlModifier):
             self._mandar_a_convertir()
             return
+        # Una tecla que nadie usó (el foco en un botón, en la grilla vacía…):
+        # se escribe en la búsqueda. Los cuadros de texto se quedan con lo suyo.
+        if es_para_escribir(event):
+            self._escribir_en_busqueda(event)
+            return
         super().keyPressEvent(event)
 
-    # ------------------------------------------------------------- detalles (I)
+    def _escribir_en_busqueda(self, event):
+        """Lleva el foco al campo de búsqueda y le pasa la tecla, al final de lo
+        escrito. Las siguientes ya van directo al campo."""
+        q = self.txt_query
+        q.setFocus(Qt.FocusReason.ShortcutFocusReason)
+        q.deselect()
+        q.end(False)
+        QApplication.sendEvent(q, QKeyEvent(event.type(), event.key(), event.modifiers(),
+                                            event.text(), event.isAutoRepeat(), event.count()))
+
+    # ------------------------------------------------------------- detalles (Ctrl+I)
     def _ver_detalles(self, abierto: bool):
         self.detalles.setVisible(abierto)
         if abierto:
@@ -855,11 +1026,13 @@ class BuscarTab(QWidget):
         self._seguir_detalle()
         self._actualizar_seleccion()
         ids = self._selected_ids()
-        self.tag_bar.set_enabled(bool(ids) and self._srv.estado == "ok")
+        for barra in (self.tag_bar, self.lugar_bar, self.evento_bar):
+            barra.set_enabled(bool(ids) and self._srv.estado == "ok")
         self._seleccion += 1
         n = self._seleccion
         if not ids:
-            self.tag_bar.set_chips([], 0)
+            for barra in (self.tag_bar, self.lugar_bar, self.evento_bar):
+                barra.set_chips([], 0)
             return
         # Buscar ya trajo las etiquetas de cada uno: se muestran al instante,
         # sin esperar al NAS (la consulta hacía fila detrás de las miniaturas).
@@ -867,8 +1040,12 @@ class BuscarTab(QWidget):
         locales = _etiquetas_de(medios) if len(medios) == len(ids) else None
         if locales is not None:
             self.tag_bar.set_chips(locales[0], len(ids), locales[1])
+            lugares, eventos = _especiales_de(medios)
+            self.lugar_bar.set_chips(lugares, len(ids))
+            self.evento_bar.set_chips(eventos, len(ids))
             return
-        self._srv.pedir(lambda repo: (repo.tag_counts(ids), repo.pending_tag_counts(ids)),
+        self._srv.pedir(lambda repo: (repo.tag_counts(ids), repo.pending_tag_counts(ids),
+                                      repo.especiales_de(ids)),
                         ok=lambda r: self._mostrar_tags(n, len(ids), *r))
 
     def _por_id(self, ids: list[int]) -> list:
@@ -876,9 +1053,12 @@ class BuscarTab(QWidget):
         cargados = {m.id: m for m in getattr(self, "_results", [])}
         return [cargados[i] for i in ids if i in cargados]
 
-    def _mostrar_tags(self, n, cuantos, counts, pendientes):
+    def _mostrar_tags(self, n, cuantos, counts, pendientes, especiales=None):
         if n == self._seleccion:
             self.tag_bar.set_chips(counts, cuantos, pendientes)
+            especiales = especiales or {}
+            self.lugar_bar.set_chips(especiales.get("lugar", []), cuantos)
+            self.evento_bar.set_chips(especiales.get("evento", []), cuantos)
 
     def _cambiar_tags(self, accion, name: str):
         """Pone, saca o confirma un tag en toda la selección. Si no se puede
@@ -893,22 +1073,80 @@ class BuscarTab(QWidget):
 
         def listo(_):
             _cambiar_locales(self._por_id(ids), accion, name)   # la barra, ya
+            self._refrescar_celdas(ids)
             self._reload_known_tags()
             self._on_selection_changed()
             self._do_search(conservar=True)     # que la grilla muestre la etiqueta ya
 
         def fallo(e):
-            self.lbl_seleccion.setText("No se pudo guardar la etiqueta. " + texto_para(e))
+            self.lbl_seleccion.setText(_motivo(e, "No se pudo guardar la etiqueta. "))
 
         self._srv.pedir(hacer, ok=listo, error=fallo)
 
+    def _refrescar_celdas(self, ids: list[int]):
+        """Las celdas de esos elementos, con lo que ya se cambió en lo cargado (la
+        nueva búsqueda puede volver igual y no rearmar la grilla)."""
+        por_id = {m.id: m for m in self._por_id(ids)}
+        for i in range(self.grid.count()):
+            it = self.grid.item(i)
+            m = por_id.get(it.data(MEDIA_ID_ROLE))
+            if m is not None:
+                _datos_de_ficha(it, m)
+
+    def _cambiar_especial(self, accion: str, name: str):
+        """Pone el lugar, suma un evento o saca uno de los dos, en toda la selección."""
+        ids = self._selected_ids()
+        if not ids:
+            return
+        name = _ya_existe(name, self._lugares + self._eventos) or name   # con sus tildes
+
+        def listo(_):
+            _cambiar_especiales_locales(self._por_id(ids), accion, name)
+            self._refrescar_celdas(ids)
+            self._reload_known_tags()
+            self._on_selection_changed()
+            self._seguir_detalle()
+            self._do_search(conservar=True)
+            if accion != "quitar_de":
+                self._ofrecer_a_hermanas(ids, name, accion)
+
+        self._srv.pedir(lambda repo: getattr(repo, accion)(ids, name), ok=listo,
+                        error=lambda e: self.lbl_seleccion.setText(
+                            _motivo(e, "No se pudo guardar. ")))
+
+    def _convertir_etiqueta(self, kind: str, name: str):
+        """Clic derecho en un chip: la etiqueta pasa a lugar, a evento o a común,
+        en todo el catálogo (no solo en lo elegido)."""
+        que = {"lugar": "un lugar", "evento": "un evento",
+               "descriptivo": "una etiqueta común"}[kind]
+        if not confirmar(self, "Cambiar el tipo", f"¿Convertir «{name}» en {que}?",
+                         "Se cambia en todos los elementos del catálogo que la tienen, "
+                         "no solo en los seleccionados. Se puede volver atrás de la "
+                         "misma forma.", "Convertir"):
+            return
+
+        def listo(_):
+            self._reload_known_tags()
+            self._do_search(conservar=True)
+
+        self._srv.pedir(lambda repo: repo.cambiar_tipo(name, kind), ok=listo,
+                        error=lambda e: self.lbl_seleccion.setText(
+                            _motivo(e, "No se pudo convertir. ")))
+
     def _apply_tag_to_selection(self, name: str):
         ids = self._selected_ids()
+        for lista, que, campo in ((self._lugares, "un lugar", "el campo Lugar"),
+                                  (self._eventos, "un evento", "el campo Eventos")):
+            ya = _ya_existe(name, lista)
+            if ya:
+                self.lbl_seleccion.setText(f"«{ya}» ya es {que}: póngalo desde {campo}.")
+                return
+        name = _ya_existe(name, self._etiquetas_conocidas) or name   # con sus tildes
         self._cambiar_tags("apply_tag", name)
         if ids:
             self._ofrecer_a_hermanas(ids, name)
 
-    def _ofrecer_a_hermanas(self, ids: list[int], name: str):
+    def _ofrecer_a_hermanas(self, ids: list[int], name: str, accion: str = "apply_tag"):
         """Después de etiquetar: si hay fotos y videos de la misma carpeta y del
         mismo día de toma sin esa etiqueta, se ofrece ponérsela (p. ej. el nombre
         de un evento). Se pregunta siempre: nunca se agrega sola."""
@@ -917,7 +1155,10 @@ class BuscarTab(QWidget):
                 return
             n = len(hermanas)
             cuales = "la otra foto o video" if n == 1 else f"las otras {n} fotos y videos"
-            if not confirmar(self, "Misma etiqueta", f"¿Agregar «{name}» también a {cuales} "
+            que = {"apply_tag": f"¿Agregar «{name}»",
+                   "poner_lugar": f"¿Poner el lugar «{name}»",
+                   "poner_evento": f"¿Agregar el evento «{name}»"}[accion]
+            if not confirmar(self, "Lo mismo a los demás", f"{que} también a {cuales} "
                              "de esta carpeta?",
                              "Son de la misma carpeta y, si se sabe la fecha de la toma, del "
                              "mismo día. No se agrega a los que alguien se la quitó.",
@@ -926,8 +1167,11 @@ class BuscarTab(QWidget):
                 return
 
             def hacer(repo):
-                for mid in hermanas:
-                    repo.apply_tag(mid, name)
+                if accion == "apply_tag":
+                    for mid in hermanas:
+                        repo.apply_tag(mid, name)
+                else:
+                    getattr(repo, accion)(hermanas, name)
 
             def listo(_):
                 self.lbl_seleccion.setText(f"Se agregó «{name}» a {n} más." if n > 1 else
@@ -935,8 +1179,9 @@ class BuscarTab(QWidget):
                 self._do_search(conservar=True)
 
             self._srv.pedir(hacer, ok=listo, error=lambda e: self.lbl_seleccion.setText(
-                "No se pudo guardar la etiqueta. " + texto_para(e)))
-        self._srv.pedir(lambda repo: repo.hermanas(ids, name), ok=ok)
+                _motivo(e, "No se pudo guardar. ")))
+        sin_lugar = accion == "poner_lugar"
+        self._srv.pedir(lambda repo: repo.hermanas(ids, name, sin_lugar), ok=ok)
 
     def _remove_tag_from_selection(self, name: str):
         self._cambiar_tags("remove_tag", name)
@@ -968,7 +1213,15 @@ class BuscarTab(QWidget):
                         error=lambda _e: self._tiras.pop(mid, None))
 
     def _reload_known_tags(self):
-        self._srv.pedir(lambda repo: repo.all_tag_names(), ok=self.tag_bar.set_known_tags)
+        def ok(nombres):
+            comunes = nombres["comunes"]
+            self.tag_bar.set_known_tags(comunes)
+            self.lugar_bar.set_known_tags(nombres["lugar"])
+            self.evento_bar.set_known_tags(nombres["evento"])
+            self.formulario.set_etiquetas(comunes, nombres["lugar"], nombres["evento"])
+            self._etiquetas_conocidas = comunes
+            self._lugares, self._eventos = nombres["lugar"], nombres["evento"]
+        self._srv.pedir(lambda repo: repo.nombres_por_tipo(), ok=ok)
 
 
 def _preparar(repo, cache, results) -> tuple:
@@ -1000,6 +1253,57 @@ def _etiquetas_de(medios: list):
     return sorted(cuantos.items(), key=lambda t: (-t[1], t[0])), pendientes
 
 
+def _ya_existe(nombre: str, conocidos: list[str]) -> str | None:
+    """El nombre ya existente que es el mismo con o sin tildes y mayúsculas
+    («predicacion» → «predicación»), o None."""
+    clave = consulta._simple(" ".join(nombre.split()))
+    return next((c for c in conocidos if consulta._simple(c) == clave), None)
+
+
+def _datos_de_ficha(item, m):
+    """Lo que la celda muestra debajo de la miniatura (ver ThumbDelegate)."""
+    item.setData(TAGS_ROLE, m.etiquetas or [])
+    item.setData(LUGAR_ROLE, m.lugar)
+    item.setData(EVENTOS_ROLE, list(m.eventos or []))
+    f = m.tomada
+    item.setData(FECHA_ROLE, f"{(f.astimezone() if f.tzinfo else f):%d/%m/%Y}" if f else None)
+
+
+def _especiales_de(medios: list) -> tuple[list, list]:
+    """([(lugar, en cuántos)], [(evento, en cuántos)]) de lo que trajo Buscar."""
+    lugares, eventos = {}, {}
+    for m in medios:
+        if m.lugar:
+            lugares[m.lugar] = lugares.get(m.lugar, 0) + 1
+        for e in m.eventos or []:
+            eventos[e] = eventos.get(e, 0) + 1
+    orden = lambda d: sorted(d.items(), key=lambda t: (-t[1], t[0]))  # noqa: E731
+    return orden(lugares), orden(eventos)
+
+
+def _cambiar_especiales_locales(medios: list, accion: str, name: str):
+    """Lo mismo que acaba de guardar el NAS, en lo ya cargado (ver _cambiar_locales)."""
+    name = " ".join(name.strip().lower().split())
+    for m in medios:
+        if accion == "poner_lugar":
+            m.lugar = name
+        elif accion == "poner_evento":
+            m.eventos = sorted(set(m.eventos or []) | {name})
+        else:
+            if m.lugar == name:
+                m.lugar = None
+            m.eventos = [e for e in m.eventos or [] if e != name]
+
+
+def _motivo(e: BaseException, prefijo: str) -> str:
+    """El mensaje para el operador: el de la base si es un error de uso (un nombre
+    que ya es de otro tipo), o el prefijo y el de conexión."""
+    from ...catalog.repo import NombreEnUso, NoSePuedeConvertir
+    if isinstance(e, (NombreEnUso, NoSePuedeConvertir)):
+        return str(e)
+    return prefijo + texto_para(e)
+
+
 def _cambiar_locales(medios: list, accion: str, name: str):
     """Lo mismo que acaba de guardar el NAS, en las etiquetas ya cargadas, para
     que la barra cambie sin esperar a la nueva búsqueda (que después lo confirma)."""
@@ -1018,7 +1322,7 @@ def _iguales(antes, ahora) -> bool:
     if antes is None:
         return False
     clave = lambda m: (m.id, m.path, m.missing_since, m.quality_flag, m.width, m.height,  # noqa: E731
-                       tuple(m.etiquetas or ()))
+                       tuple(m.etiquetas or ()), m.lugar, tuple(m.eventos or ()), m.tomada)
     return [clave(m) for m in antes] == [clave(m) for m in ahora]
 
 

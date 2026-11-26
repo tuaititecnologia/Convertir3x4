@@ -18,6 +18,7 @@ de PyInstaller no necesite datos extra.
 """
 
 import configparser
+import io
 import os
 import re
 from dataclasses import dataclass
@@ -48,8 +49,8 @@ class CatalogoNoDisponible(Exception):
 class CatalogoNoConfigurado(Exception):
     """Esta PC no tiene `catalogo.ini` (ni las variables de desarrollo)."""
 
-    MENSAJE = ("Esta PC no tiene configurado el catálogo. Comuníquese con el "
-               "responsable de la aplicación.")
+    MENSAJE = ("Esta PC no tiene configurada la conexión al catálogo. Complétela con "
+               "«Conexión…».")
 
     def __init__(self, detalle: str = ""):
         super().__init__(self.MENSAJE)
@@ -130,6 +131,21 @@ class ConfigCatalogo:
             puerto=puerto,
             raiz=sec.get("raiz", r"\\truenas\multimedia").strip(),
         )
+
+    def a_ini(self) -> str:
+        """El texto de `catalogo.ini` con estos datos (lo escribe la pantalla
+        «Conexión al catálogo»)."""
+        ini = configparser.ConfigParser(interpolation=None)
+        ini["catalogo"] = {
+            "servidor": self.servidor, "puerto": str(self.puerto), "base": self.base,
+            "usuario": self.usuario, "clave": self.clave, "raiz": self.raiz,
+        }
+        out = io.StringIO()
+        out.write("; Configuración del catálogo de esta PC, escrita por la aplicación\n"
+                  "; (Catalogar, ⚙, «Conexión al catálogo»). Tiene la clave de la base:\n"
+                  "; no lo suba al repositorio ni lo comparta.\n\n")
+        ini.write(out)
+        return out.getvalue()
 
 
 def normalizar_carpetas(carpetas) -> tuple[str, ...]:
@@ -543,6 +559,19 @@ ALTER TABLE media
     ADD COLUMN notas_por      text;
 """
 
+# Carpetas del NAS y exclusiones (pedido del 24/11/2026, docs/carpetas-y-conexion.md).
+# - `carpeta_nas`: las carpetas de `multimedia` tal como las lee el catalogador
+#   (relativas, sin la raíz). Las PCs dibujan el árbol con esto, sin mirar el disco.
+# - `carpeta_catalogada` pasa a guardar marcas: solo las carpetas que difieren
+#   de su madre, "" es la raíz. Las filas de antes quedan como incluidas.
+_V10 = r"""
+CREATE TABLE carpeta_nas (
+    ruta text PRIMARY KEY
+);
+ALTER TABLE catalogado_estado ADD COLUMN carpetas_leidas timestamptz;
+ALTER TABLE carpeta_catalogada ADD COLUMN incluir boolean NOT NULL DEFAULT true;
+"""
+
 MIGRACIONES: list[tuple[int, str]] = [
     (1, _V1),
     (2, _V2),
@@ -553,6 +582,12 @@ MIGRACIONES: list[tuple[int, str]] = [
     (7, _V7),
     (8, _V8),
     (9, _V9),
+    (10, _V10),
 ]
 CANAL_CAMBIOS = "catalogo"
+# Una PC pide al catalogador que relea las carpetas del NAS; él avisa al terminar
+# por el otro canal (siempre, aunque no haya cambios). Van aparte de `catalogo`
+# para que abrir el árbol no haga volver a consultar a Buscar en todas las PCs.
+CANAL_PEDIR_CARPETAS = "carpetas_nas"
+CANAL_CARPETAS_LEIDAS = "carpetas_nas_leidas"
 VERSION_ESQUEMA = MIGRACIONES[-1][0]

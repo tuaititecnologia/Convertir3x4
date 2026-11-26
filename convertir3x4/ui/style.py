@@ -44,6 +44,8 @@ DARK = {
     "ia": "#b79cf7",
     "ia_soft": "rgba(150, 110, 240, 0.16)",
     "ia_hover": "rgba(150, 110, 240, 0.28)",
+    "evento": "#4fd1c5",        # eventos (Buscar): verde azulado, distinto de la IA y del aviso
+    "evento_soft": "rgba(79, 209, 197, 0.16)",
     "danger": "#f87171",
     "ok": "#4ade80",            # terminado bien (Discos: "Copiado completo")
     "on_image": "#ffffff",      # texto de insignias sobre la miniatura (fondo negro translúcido)
@@ -73,6 +75,8 @@ LIGHT = {
     "ia": "#6d28d9",
     "ia_soft": "rgba(109, 40, 217, 0.10)",
     "ia_hover": "rgba(109, 40, 217, 0.20)",
+    "evento": "#0f6e66",
+    "evento_soft": "rgba(15, 118, 110, 0.10)",
     "danger": "#c81e1e",
     "ok": "#166534",
     "on_image": "#ffffff",
@@ -432,6 +436,13 @@ QLineEdit:focus {{ border: 2px solid {T.accent_text}; padding: 6px 9px; }}
 QLineEdit:disabled {{ background-color: {T.panel}; color: {T.text_disabled}; border-color: {T.border_strong}; }}
 QLineEdit#search_field {{ padding-left: 4px; font-size: 14px; }}
 QLineEdit#search_field:focus {{ padding-left: 3px; }}
+/* lo escrito no se entiende (p. ej. una fecha mal escrita): no se busca */
+QLineEdit[error="true"], QLineEdit[error="true"]:hover {{
+    border: 2px solid {T.danger}; padding: 6px 9px;
+}}
+QLineEdit[error="true"]:focus {{ border-color: {T.danger}; }}
+QLineEdit#search_field[error="true"] {{ padding-left: 3px; }}
+QLabel#aviso_error {{ color: {T.danger}; }}
 
 QComboBox {{
     background-color: {T.raised}; color: {T.text}; border: 1px solid {T.field_border};
@@ -441,10 +452,12 @@ QComboBox:hover {{ border-color: {T.text_3}; }}
 QComboBox:focus {{ border-color: {T.accent_text}; }}
 QComboBox::drop-down {{ border: none; width: 24px; }}
 QComboBox::down-arrow {{ {f"image: url({flecha});" if flecha else ""} width: 14px; height: 14px; }}
-QComboBox QAbstractItemView {{
+QComboBox QAbstractItemView, QListView#sugerencias {{
     background-color: {T.raised}; color: {T.text}; border: 1px solid {T.border_strong};
     selection-background-color: {T.accent_soft}; selection-color: {T.text}; outline: none;
 }}
+QListView#sugerencias {{ padding: 4px; font-size: 13px; }}
+QListView#sugerencias::item {{ padding: 5px 8px; border-radius: 4px; }}
 
 QCheckBox {{ color: {T.text_2}; spacing: 8px; background: transparent; }}
 QCheckBox::indicator {{
@@ -461,6 +474,9 @@ QCheckBox::indicator:checked {{
 /* ---------- paneles y textos de sección ---------- */
 QFrame#sidebar, QFrame#panel {{
     background-color: {T.panel}; border: 1px solid {T.border}; border-radius: {T.radius}px;
+}}
+QFrame#busqueda_avanzada {{
+    background-color: {T.panel}; border: 1px solid {T.border_strong}; border-radius: {T.radius}px;
 }}
 QFrame#separator {{ background-color: {T.border}; border: none; }}
 QLabel#group_title {{ color: {T.text_3}; font-size: 11px; font-weight: 600; letter-spacing: 1px; }}
@@ -555,7 +571,7 @@ QPushButton#tag_chip_ia_x {{
 }}
 QPushButton#tag_chip_ia_x:hover {{ color: {T.danger}; }}
 
-/* ---------- detalles de un elemento de Buscar (tecla I) ---------- */
+/* ---------- detalles de un elemento de Buscar (Ctrl+I) ---------- */
 QFrame#detalle_panel {{
     background-color: {T.panel}; border: 1px solid {T.border}; border-radius: {T.radius}px;
 }}

@@ -35,6 +35,9 @@ PREVIEW_ROLE = Qt.ItemDataRole.UserRole + 9     # QPixmap del cuadro de vista pr
 SIZE_ROLE = Qt.ItemDataRole.UserRole + 10       # (ancho, alto) del original (vista previa de Convertir)
 ACTION_ROLE = Qt.ItemDataRole.UserRole + 11     # texto de un botón sobre la miniatura ("Cancelar", "Reintentar")
 TAGS_ROLE = Qt.ItemDataRole.UserRole + 12       # [(nombre, confirmada)] debajo del nombre (Buscar)
+LUGAR_ROLE = Qt.ItemDataRole.UserRole + 13      # lugar (Buscar), con un ícono debajo del nombre
+EVENTOS_ROLE = Qt.ItemDataRole.UserRole + 14    # [nombre] de los eventos: chips antes de las etiquetas
+FECHA_ROLE = Qt.ItemDataRole.UserRole + 15      # fecha de la toma ya escrita («21/09/2025»)
 
 # Estados que se dibujan sobre la miniatura. Sin estado: normal.
 #   loading  todavía no hay miniatura      working  convirtiendo/bajando (con %)
@@ -46,6 +49,31 @@ STATES = ("loading", "working", "done", "warning", "error", "missing", "offline"
 STORYBOARD_FRAMES = 16   # = clips.STORYBOARD_FRAMES (sin importar clips: la grilla no usa ffmpeg)
 STORYBOARD_COLS = 4
 PREVIEW_INTERVAL_MS = 250
+
+
+_PINES: dict = {}
+
+
+def _pin(color: str, lado: int) -> QPixmap:
+    """El ícono de lugar, pintado una vez por color y tamaño."""
+    clave = (color, lado)
+    if clave not in _PINES:
+        from .. import icons
+        _PINES[clave] = icons.pixmap("map-pin", lado, color)
+    return _PINES[clave]
+
+
+def es_para_escribir(event) -> bool:
+    """Una tecla que escribe (letra, número, signo, espacio) o borra, sin Ctrl,
+    ⌘ ni Alt: en Buscar va al campo de búsqueda esté donde esté el foco."""
+    mods = event.modifiers() & ~(Qt.KeyboardModifier.ShiftModifier
+                                 | Qt.KeyboardModifier.KeypadModifier)
+    if mods:
+        return False
+    if event.key() == Qt.Key.Key_Backspace:
+        return True
+    texto = event.text()
+    return bool(texto) and texto.isprintable()
 
 
 def format_duration(seconds: float | None) -> str:
@@ -64,9 +92,15 @@ class ThumbDelegate(QStyledItemDelegate):
     - El nombre va en UNA línea, cortado con "…" si no entra.
     - Videos: insignia con la duración abajo a la derecha.
     - Seleccionada: borde de acento. Con el mouse encima: fondo más claro.
+
+    Con `etiquetas` (la ficha de Buscar, rediseñada el 24/11/2026): el nombre a
+    la izquierda; debajo, el lugar con un ícono y la fecha de la toma; abajo, los
+    eventos (verde azulado), las etiquetas y las sugerencias de la IA (violeta).
+    Los renglones se reservan aunque estén vacíos: todas las celdas miden igual.
     """
 
     LABEL_H = 22
+    META_H = 17         # lugar · fecha (solo en la ficha de Buscar)
     TAGS_H = 22         # renglón de etiquetas (solo si la grilla las muestra)
     PAD = 6
 
@@ -80,7 +114,7 @@ class ThumbDelegate(QStyledItemDelegate):
 
     def cell_size(self) -> QSize:
         return QSize(self.thumb + self.PAD * 2, self.thumb + self.PAD * 2 + self.LABEL_H
-                     + (self.TAGS_H if self.etiquetas else 0))
+                     + (self.META_H + self.TAGS_H + 2 if self.etiquetas else 0))
 
     def sizeHint(self, option, index) -> QSize:
         # La celda toma el ancho de la columna (ver _fit_columns), sin el margen.
@@ -163,19 +197,19 @@ class ThumbDelegate(QStyledItemDelegate):
             # el violeta claro de la paleta oscura es el que se lee ahí.
             self._pill(painter, badge, img_rect, bottom_right=False, color=DARK["ia"])
 
-        # Nombre en una línea
-        fm = QFontMetrics(option.font)
-        text_rect = QRect(int(r.left()) + self.PAD, box.bottom() + 4,
-                          int(r.width()) - self.PAD * 2, self.LABEL_H - 4)
-        name = fm.elidedText(index.data(Qt.ItemDataRole.DisplayRole) or "",
-                             Qt.TextElideMode.ElideMiddle, text_rect.width())
-        painter.setPen(QColor(T.text if selected else T.text_2))
-        painter.drawText(text_rect, int(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter),
-                         name)
         if self.etiquetas:
-            self._paint_tags(painter, index.data(TAGS_ROLE) or [],
-                             QRectF(r.left() + self.PAD, text_rect.bottom() + 3,
-                                    r.width() - self.PAD * 2, self.TAGS_H - 4))
+            self._paint_ficha(painter, option, index, r, box, selected)
+        else:
+            # Nombre en una línea
+            fm = QFontMetrics(option.font)
+            text_rect = QRect(int(r.left()) + self.PAD, box.bottom() + 4,
+                              int(r.width()) - self.PAD * 2, self.LABEL_H - 4)
+            name = fm.elidedText(index.data(Qt.ItemDataRole.DisplayRole) or "",
+                                 Qt.TextElideMode.ElideMiddle, text_rect.width())
+            painter.setPen(QColor(T.text if selected else T.text_2))
+            painter.drawText(text_rect,
+                             int(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter),
+                             name)
 
         # Borde de selección por encima de todo; el foco de teclado, punteado
         if selected:
@@ -186,9 +220,66 @@ class ThumbDelegate(QStyledItemDelegate):
             painter.drawPath(path)
         painter.restore()
 
+    def _paint_ficha(self, painter, option, index, r: QRectF, box: QRect, selected: bool):
+        """Nombre, lugar · fecha y chips, alineados a la izquierda de la miniatura."""
+        izq = r.left() + self.PAD + 2
+        ancho = r.width() - self.PAD * 2 - 4
+        # Nombre
+        painter.save()
+        font = QFont(option.font)
+        font.setWeight(QFont.Weight.Medium)
+        painter.setFont(font)
+        fm = QFontMetrics(font)
+        nombre = QRectF(izq, box.bottom() + 5, ancho, self.LABEL_H - 4)
+        painter.setPen(QColor(T.text if selected else T.text))
+        painter.drawText(nombre, int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
+                         fm.elidedText(index.data(Qt.ItemDataRole.DisplayRole) or "",
+                                       Qt.TextElideMode.ElideMiddle, int(ancho)))
+        painter.restore()
+        # Lugar · fecha
+        meta = QRectF(izq, nombre.bottom() + 1, ancho, self.META_H - 2)
+        self._paint_meta(painter, index.data(LUGAR_ROLE), index.data(FECHA_ROLE), meta)
+        # Eventos, etiquetas y sugerencias
+        chips = [(e, "evento") for e in index.data(EVENTOS_ROLE) or []]
+        chips += [(n, "comun" if c else "ia") for n, c in index.data(TAGS_ROLE) or []]
+        self._paint_tags(painter, chips, QRectF(izq, meta.bottom() + 4, ancho,
+                                                self.TAGS_H - 4))
+
+    def _paint_meta(self, painter, lugar: str | None, fecha: str | None, rect: QRectF):
+        if not lugar and not fecha:
+            return
+        painter.save()
+        font = painter.font()
+        font.setPixelSize(11)
+        painter.setFont(font)
+        fm = QFontMetrics(font)
+        x = rect.left()
+        if lugar:
+            lado = 12
+            pin = _pin(T.text_2, lado)
+            painter.drawPixmap(QRectF(x - 1, rect.center().y() - lado / 2, lado, lado), pin,
+                               QRectF(pin.rect()))
+            x += lado + 3
+        resto = rect.right() - x
+        fecha_w = fm.horizontalAdvance(f" · {fecha}") if (lugar and fecha) else 0
+        if lugar:
+            texto = fm.elidedText(lugar, Qt.TextElideMode.ElideRight,
+                                  int(max(20, resto - fecha_w)))
+            painter.setPen(QColor(T.text_2))
+            painter.drawText(QRectF(x, rect.top(), resto, rect.height()),
+                             int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter), texto)
+            x += fm.horizontalAdvance(texto)
+        if fecha and rect.right() - x > fm.horizontalAdvance(fecha):
+            painter.setPen(QColor(T.text_3))
+            painter.drawText(QRectF(x, rect.top(), rect.right() - x, rect.height()),
+                             int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
+                             f" · {fecha}" if lugar else fecha)
+        painter.restore()
+
     def _paint_tags(self, painter, tags, rect: QRectF):
-        """Etiquetas en un renglón, centradas: violeta las que sugirió la IA y
-        nadie confirmó; las demás, en el color del texto. Si no entran: «+N»."""
+        """Chips en un renglón, de izquierda a derecha: [(nombre, clase)] con clase
+        'evento' (verde azulado), 'comun' o 'ia' (sugerida y sin confirmar,
+        violeta). Si no entran: «+N»."""
         if not tags:
             return
         painter.save()
@@ -210,14 +301,20 @@ class ThumbDelegate(QStyledItemDelegate):
         sobran = len(tags) - entran
         if sobran:
             usado += fm.horizontalAdvance(f"+{sobran}") + pad * 2 + gap
-        x = rect.left() + max(0.0, (rect.width() - (usado - gap)) / 2)
-        for (nombre, confirmada), w in zip(tags[:entran], anchos):
+        x = rect.left()
+        colores = {"evento": (T.evento_soft, T.evento), "comun": (T.raised, T.text_2),
+                   "ia": (T.ia_soft, T.ia)}
+        for (nombre, clase), w in zip(tags[:entran], anchos):
             w = min(w, rect.width())
             caja = QRectF(x, rect.top(), w, h)
             chip = QPainterPath()
             chip.addRoundedRect(caja, h / 2, h / 2)
-            painter.fillPath(chip, qcolor(T.raised if confirmada else T.ia_soft))
-            painter.setPen(QColor(T.text_2 if confirmada else T.ia))
+            fondo, letra = colores[clase]
+            painter.fillPath(chip, qcolor(fondo))
+            if clase == "comun":            # en el modo claro, sin borde no se ve
+                painter.setPen(QPen(qcolor(T.border_strong), 1))
+                painter.drawPath(chip)
+            painter.setPen(QColor(letra))
             painter.drawText(caja, int(Qt.AlignmentFlag.AlignCenter),
                              fm.elidedText(nombre, Qt.TextElideMode.ElideRight, int(w - pad * 2)))
             x += w + gap
@@ -429,7 +526,9 @@ class DragOutListWidget(_HoverPreview, QListWidget):
     copia. Se ofrece Copy|Link y el destino decide; PP linkea.
     """
 
-    detalles = pyqtSignal()          # tecla I: los detalles del elemento actual
+    # Lo que se teclea en la grilla va al campo de búsqueda (24/11/2026): la
+    # grilla no busca por la primera letra ni abre nada con una letra.
+    escribir = pyqtSignal(object)    # el QKeyEvent, para mandarlo al campo
 
     def __init__(self, parent=None, thumb: int = 150, etiquetas: bool = False):
         super().__init__(parent)
@@ -465,10 +564,8 @@ class DragOutListWidget(_HoverPreview, QListWidget):
         self.doItemsLayout()
 
     def keyPressEvent(self, event):
-        # Solo la I sola: sin esto, la grilla salta al primero que empieza con «i».
-        if event.key() == Qt.Key.Key_I and not (
-                event.modifiers() & ~Qt.KeyboardModifier.KeypadModifier):
-            self.detalles.emit()
+        if es_para_escribir(event):
+            self.escribir.emit(event)
             event.accept()
             return
         super().keyPressEvent(event)

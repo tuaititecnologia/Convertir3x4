@@ -1,7 +1,7 @@
 """Panel de detalles de Buscar, al costado de la grilla (pedidos del 24/11/2026).
 
 Reemplaza el cartel que aparecía al dejar el puntero. Se abre y se cierra con la
-tecla I o el botón «Detalles», y queda como el operador lo deje. Muestra lo
+Ctrl+I (⌘I en Mac) o el botón «Detalles», y queda como el operador lo deje. Muestra lo
 elegido en la grilla y lo sigue mientras se recorre:
 
 - un elemento: vista previa, fecha de la toma, medidas, etiquetas, el texto que
@@ -23,7 +23,7 @@ Mientras el operador escribe, lo que llega del NAS no le pisa el cuadro.
 from __future__ import annotations
 
 from PyQt6.QtCore import QEvent, QSize, Qt, QTimer, QUrl, pyqtSignal
-from PyQt6.QtGui import QDesktopServices, QImage, QPixmap
+from PyQt6.QtGui import QDesktopServices, QImage, QKeySequence, QPixmap
 from PyQt6.QtWidgets import (
     QFrame, QGridLayout, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QScrollArea,
     QSizePolicy, QVBoxLayout, QWidget,
@@ -40,7 +40,8 @@ _LADO_ORIGINAL = 1200            # la foto original se achica a esto para mostra
 _ESPERA_ORIGINAL_MS = 250        # recorriendo con las flechas no se lee cada foto
 _LISTA_MAX = 200                 # con más elegidos, la lista muestra estos y «y N más»
 _MINI_LISTA = 48
-_ESPERA_GUARDAR_MS = 1200        # se guarda al dejar de escribir este tiempo
+_ESPERA_GUARDAR_MS = 1200
+_ATAJO = QKeySequence("Ctrl+I").toString(QKeySequence.SequenceFormat.NativeText)        # se guarda al dejar de escribir este tiempo
 
 _CALIDAD = {"low_res": "Baja resolución: puede verse borrosa en la pantalla.",
             "corrupt": "El archivo parece dañado.",
@@ -92,6 +93,10 @@ def datos_de(m) -> list[tuple[str, str]]:
     filas = [("Tipo", "Video" if m.kind == "video" else "Foto")]
     if m.tomada:
         filas.append(("Fecha de la toma", fecha_de_toma(m.tomada)))
+    if m.lugar:
+        filas.append(("Lugar", m.lugar))
+    if m.eventos:
+        filas.append(("Eventos" if len(m.eventos) > 1 else "Evento", ", ".join(m.eventos)))
     if m.width and m.height:
         filas.append(("Medidas", f"{m.width} × {m.height} px"))
     if m.kind == "video" and m.duration:
@@ -147,6 +152,24 @@ def resumen_de(medios, estados: dict) -> list[tuple[str, str]]:
         if sin:
             txt += f" ({_plural(sin, 'sin fecha', 'sin fecha')})"
         filas.append(("Fecha de la toma", txt))
+    lugares = {m.lugar for m in medios}
+    if lugares != {None}:
+        if len(lugares) == 1:
+            filas.append(("Lugar", next(iter(lugares))))
+        else:
+            sin = sum(m.lugar is None for m in medios)
+            con = lugares - {None}
+            txt = next(iter(con)) if len(con) == 1 else f"{len(con)} lugares distintos"
+            filas.append(("Lugar", txt + (f" ({sin} sin lugar)" if sin else "")))
+    cuantos: dict[str, int] = {}
+    for m in medios:
+        for e in m.eventos or []:
+            cuantos[e] = cuantos.get(e, 0) + 1
+    if cuantos:
+        n = len(medios)
+        filas.append(("Eventos", ", ".join(
+            e if c == n else f"{e} ({c}/{n})"
+            for e, c in sorted(cuantos.items(), key=lambda t: (-t[1], t[0])))))
     carpetas = {m.folder_origin or "" for m in medios}
     filas.append(("Carpeta", next(iter(carpetas)) or "—") if len(carpetas) == 1
                  else ("Carpetas", f"{len(carpetas)} distintas"))
@@ -222,7 +245,7 @@ class PanelDetalles(QFrame):
         cab.addWidget(t, 1)
         self.btn_cerrar = QPushButton()
         self.btn_cerrar.setObjectName("btn_icon")
-        self.btn_cerrar.setToolTip("Cerrar los detalles (tecla I)")
+        self.btn_cerrar.setToolTip(f"Cerrar los detalles ({_ATAJO})")
         self.btn_cerrar.setAccessibleName("Cerrar los detalles")
         self.btn_cerrar.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_cerrar.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -316,7 +339,7 @@ class PanelDetalles(QFrame):
         self.pie.setObjectName("detalle_pie")
         pl = QHBoxLayout(self.pie)
         pl.setContentsMargins(16, 8, 16, 10)
-        ayuda = QLabel("Tecla I: abrir o cerrar")
+        ayuda = QLabel(f"{_ATAJO}: abrir o cerrar")
         ayuda.setObjectName("muted")
         pl.addWidget(ayuda, 1)
         self.btn_abrir = QPushButton("Abrir")
